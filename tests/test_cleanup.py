@@ -948,3 +948,18 @@ def test_dry_run_closes_nothing(world):
     window(world, argv=["--dry-run"])
     assert removes(world) == [] and world.cards == {}
     assert not any(c[:3] in (["herdr", "worktree", "remove"], ["herdr", "workspace", "close"]) for c in world.calls)
+
+
+def test_a_prefixed_branch_without_a_card_is_not_ours_and_not_a_failure(world, capsys):
+    (world.git_dir / core.CARD_FILE).unlink()
+    world.listed_branch = "muster/foo"
+    window(world)
+    assert main([]) == 0
+    assert removes(world) == [] and "failed" not in capsys.readouterr().out
+
+
+def test_a_run_worktree_under_an_overlapping_prefix_is_still_cleaned_by_its_record(world, monkeypatch):
+    monkeypatch.setitem(config.settings, "branch_prefix", "fix/cleanup-")
+    as_run(world)
+    window(world)
+    assert removes(world) == [["herdr", "worktree", "remove", "--workspace", "wZ"]]

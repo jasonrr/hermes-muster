@@ -78,3 +78,10 @@ def test_workflow_prompt_file_override(tmp_path):
     f.write_text("  custom  \n")
     config.settings["workflow_prompt_file"] = str(f)
     assert config.workflow_text() == "custom"
+
+
+@pytest.mark.parametrize("prefix", [None, "", 7])
+def test_require_rejects_a_branch_prefix_that_is_not_a_non_empty_string(prefix):
+    config.settings.update(approver_login="me", repos=["o/a"], approver_id=7, branch_prefix=prefix)
+    with pytest.raises(config.ConfigError, match="branch_prefix"):
+        config.require()
