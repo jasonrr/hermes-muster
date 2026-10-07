@@ -39,15 +39,16 @@ def setup(parser):
 
 def main(args, ctx):
     is_hook = args.muster_command == "hook"
+    failed = 1 if is_hook and args.event == "done" else 0  # `done` is run by the pane agent, which must see a failure
     try:
         config.load(ctx)
         module, fn = SUBCOMMANDS[args.muster_command]
         return getattr(importlib.import_module(f"{__package__}.{module}"), fn)(args) or 0
     except config.ConfigError as e:
         print(e, file=sys.stderr)
-        return 0 if is_hook else 2  # a hook never fails the agent
+        return failed if is_hook else 2  # a hook never fails the agent
     except Exception as e:  # noqa: BLE001 — same rule; anything else is a bug, logged not raised
         if not is_hook:
             raise
         print(f"muster hook: {e}", file=sys.stderr)
-        return 0
+        return failed
