@@ -26,3 +26,17 @@ GitHub Project status move, Sentry auto-approve, AUTO_REPOS, tally todo and dev-
 
 ## Catalog rules
 Public https repo; `hermes plugins validate .` passes; no network or subprocess at import/register time; README discloses gh/git/herdr shell-outs, interactive panes, gh login use, worktree writes; `register_cli_command` is skipped under `plugins.isolation: host`.
+
+## Deviations
+
+- Tests run from a project `.venv` (system python3 has no pytest); `.venv/` gitignored. (e77b87e)
+- Task 2: `claude.is_ours` returns a bool; core's `check_agent` still raises the refusal. Issue runs register the same seven hooks as ad-hoc runs, including Stop, so `hook stop` without `--card` is a no-op. (c45ad9f, a563da7)
+- Task 3: OWNER_FILE renamed `muster-launch-owner.json`; `is_bug()` replaces the tally skill routing; `board_exists()` (`hermes kanban boards list --json`) runs after the tick lock; the pane env carries an absolute `GH_CONFIG_DIR` and `HERMES_KANBAN_HOME` only when set and different; recover recomputes the whole pane env. (d36632d, abca6df)
+- Task 4/1: `hook done` exits 1 on a config error or unexpected exception; the CLI catch-all had turned a failed `done` into a false 0. (7a10b38)
+- Task 5: ad-hoc panes get `core.pane_env()`; reconcile checks agent kind only (as the source did), not name+cwd; rc_run's `status` subcommand not ported; `launch_run` defaults the model from config. (ce1da60, 42cba46)
+- Task 6: cleanup claims a prefixed worktree only if it carries `muster-card.json` (a user's own `muster/foo` branch made every run exit 1); `branch_prefix` must be a non-empty string. (0bfb367)
+- Task 7: a third cron script, `muster-flush.sh` (every 1m) — the source crontab ran `rc_run.py flush` every minute and the plan omitted it. (c0d111a)
+- Task 8: setting `model` renamed `agent_model` — Hermes rejects plugin setting keys whose first segment is reserved (`model`, `plugins`, `security`, `settings`). A no-context `hook notification` writes no events.log line (by design). (2d3aceb)
+- Review: config.require validates `agent_kind` and `branch_prefix` as a git ref prefix; notify ids stringified (`notify_target`); repo and label comparisons case-insensitive; label URL-quoted; one `core.READY`; a stale empty wait marker (>120 s) is reclaimed. (d984473)
+- Review: `prepare_env` no longer pins `HERMES_KANBAN_HOME` to `HERMES_HOME` (Hermes shares one board root across profiles; pinning forked the board from the gateway), and `board_db()` asks Hermes' own `kanban_db_path` when running inside Hermes. (70d163a)
+- Parked follow-ups (tally, tag `review:muster`): issue-run outbox (t_dlyswe6y4mpcp, p2), base branch hard-coded to main (t_dlyswe7pi4bsq, p2), ad-hoc agent-name collision (t_dlyswe89tmfkr, p3), p3 hardening batch (t_dlyswe8u0pl4s).
