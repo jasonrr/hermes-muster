@@ -78,10 +78,16 @@ def open_wait(git_dir, link, detail, key):
         # Claim the marker atomically: of two racing Notification hooks, only one opens a card.
         claim = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL)
     except FileExistsError:
-        card = path.read_text().strip()
-        if not card and time.time() - path.stat().st_mtime > STALE_CLAIM:
+        try:
+            card = path.read_text().strip()
+            stale = not card and time.time() - path.stat().st_mtime > STALE_CLAIM
+        except FileNotFoundError:  # another hook just reclaimed it
+            return open_wait(git_dir, link, detail, key)
+        if stale:
             # The hook that claimed it was killed (hook timeout) before recording a card.
-            path.unlink()
+            # ponytail: two hooks reclaiming the same stale marker within milliseconds can open two wait cards;
+            # rename-to-unique and re-check if that is ever seen.
+            path.unlink(missing_ok=True)
             return open_wait(git_dir, link, detail, key)
         # An empty marker is another hook mid-create. A recorded card still ready is one whose
         # subscribe or block failed: finish it rather than open a second.

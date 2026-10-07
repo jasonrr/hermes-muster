@@ -62,9 +62,16 @@ def hermes_home():
 
 
 def board_db():
-    """Where hermes keeps the board: <kanban home>/kanban.db for `default`, else <kanban home>/kanban/boards/<board>/."""
-    root = Path(os.environ.get("HERMES_KANBAN_HOME", "").strip() or hermes_home()).expanduser()
+    """Where hermes keeps the board. Inside hermes, hermes says (profiles share one root; HERMES_KANBAN_DB pins it).
+    Outside (tests): <kanban home>/kanban.db for `default`, else <kanban home>/kanban/boards/<board>/."""
     board = config.settings["board"]
+    try:
+        from hermes_cli.kanban_db import kanban_db_path
+    except ImportError:
+        pass
+    else:
+        return kanban_db_path(board)
+    root = Path(os.environ.get("HERMES_KANBAN_HOME", "").strip() or hermes_home()).expanduser()
     return root / "kanban.db" if board == "default" else root / "kanban" / "boards" / board / "kanban.db"
 
 
@@ -95,7 +102,6 @@ def kanban(*args):
 def prepare_env():
     """Point every hermes call at the configured home, and find hermes and herdr under cron's bare PATH."""
     os.environ["HERMES_HOME"] = os.environ.get("HERMES_HOME", str(Path.home() / ".hermes"))
-    os.environ.setdefault("HERMES_KANBAN_HOME", os.environ["HERMES_HOME"])
     os.environ["PATH"] = f"{Path.home() / '.local/bin'}:/opt/homebrew/bin:{os.environ.get('PATH', '')}"
 
 
@@ -117,7 +123,7 @@ def approval(events):
     """
     s = config.settings
     labeled = [event for event in events
-               if event.get("event") == "labeled" and (event.get("label") or {}).get("name", "").lower() == s["label"].lower()]
+               if event.get("event") == "labeled" and ((event.get("label") or {}).get("name") or "").lower() == s["label"].lower()]
     if not labeled:
         return None
     newest = labeled[-1]
