@@ -33,7 +33,7 @@ def launch_args(model: str, settings_path: Path) -> list[str]:
 
 
 def is_ours(agent: dict, name: str, cwd: Path) -> bool:
-    """Port SRC check_agent (rc_intake.py:575-583): the `herdr agent get` json names this kind, this name, this cwd."""
+    """The `herdr agent get` json names this kind, this name, this cwd."""
     if agent.get("agent") != KIND or agent.get("name") != name:
         return False
     where = agent.get("foreground_cwd") or agent.get("cwd") or ""
@@ -41,12 +41,12 @@ def is_ours(agent: dict, name: str, cwd: Path) -> bool:
 
 
 def ignore(event: str, payload: dict) -> bool:
-    """SRC rc_event.py:172: a session-end with reason 'clear' is not an end; the agent keeps working."""
+    """A session-end with reason 'clear' is not an end; the agent keeps working."""
     return event == "session-end" and payload.get("reason") == "clear"
 
 
 def detail(payload: dict) -> str:
-    """SRC rc_event.py:206-210: the message, or an AskUserQuestion's first question; whitespace-normalized."""
+    """The message, or an AskUserQuestion's first question; whitespace-normalized."""
     try:
         asked = payload["tool_input"]["questions"][0]["question"]
     except (KeyError, IndexError, TypeError):
