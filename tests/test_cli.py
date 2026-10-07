@@ -50,7 +50,7 @@ def test_main_returns_stub_exit_code(stub_core):
 
 @pytest.mark.parametrize(
     "argv, module, expected",
-    [(["hook", "stop"], "events", 0), (["tick"], "core", 2)],
+    [(["hook", "stop"], "events", 0), (["hook", "done"], "events", 1), (["tick"], "core", 2)],
 )
 def test_main_config_error(monkeypatch, argv, module, expected):
     def boom(args):
@@ -58,6 +58,15 @@ def test_main_config_error(monkeypatch, argv, module, expected):
 
     stub = types.SimpleNamespace(tick=boom, hook=boom)
     monkeypatch.setitem(sys.modules, f"muster.{module}", stub)
+    assert cli.main(parse(argv), StubCtx()) == expected
+
+
+@pytest.mark.parametrize("argv, expected", [(["hook", "notification"], 0), (["hook", "done"], 1)])
+def test_main_hook_bug_never_fails_the_agent_but_done_says_so(monkeypatch, argv, expected):
+    def boom(args):
+        raise AttributeError("bug")
+
+    monkeypatch.setitem(sys.modules, "muster.events", types.SimpleNamespace(hook=boom))
     assert cli.main(parse(argv), StubCtx()) == expected
 
 
