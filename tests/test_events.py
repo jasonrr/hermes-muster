@@ -382,3 +382,11 @@ def test_core_and_events_agree_on_card_file(board, tmp_path):
     (board["git_dir"] / core.CARD_FILE).write_text(json.dumps(core.links(record, rec)))
     git_dir, link = events.context("/wt")
     assert git_dir == board["git_dir"] and link["card"] == "t_abc123"
+
+
+def test_hook_with_card_delegates_to_runs(monkeypatch):
+    import muster.runs as runs
+    seen = []
+    monkeypatch.setattr(runs, "hook", lambda args: seen.append(args.card) or 0)
+    assert events.hook(argparse.Namespace(event="stop", url=None, card="t_run1")) == 0
+    assert seen == ["t_run1"]
