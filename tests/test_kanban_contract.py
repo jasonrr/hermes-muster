@@ -136,3 +136,24 @@ def test_recover_unblocks_a_launch_failure_once_and_a_later_ask_still_blocks(k, 
     k("unblock", again)
     k("block", "--kind", "capability", again, "two")
     assert status(k, again) == "triage"
+
+
+def test_the_run_ack_reads_event_ids_from_the_board_db_and_cursors_from_notify_list(k):
+    """runs.acked compares notify-list's two cursors with the card's newest blocked/completed event
+    id, which runs.last_event reads from the board db. The gateway's own cursor moves are not
+    exercised here (no gateway runs): they are hermes' notifier as read on 2026-09-28."""
+    import muster.runs as runs
+    card = new(k, "run:o/r:fix/x")["id"]
+    k("notify-subscribe", card, "--platform", "telegram", "--chat-id", "4242", "--user-id", "4242",
+      "--chat-type", "dm", "--notifier-profile", "default", "--delivery-mode", "notify+wake")
+    assert runs.last_event(card) == 0
+    k("block", "--kind", "needs_input", card, "waiting")
+    blocked = runs.last_event(card)
+    assert blocked > 0
+    k("comment", card, "a comment is not a notifier event")
+    assert runs.last_event(card) == blocked
+    k("complete", card, "--summary", "s")
+    assert runs.last_event(card) > blocked
+    [sub] = json.loads(k("notify-list", card, "--json"))
+    assert sub["delivery_mode"] == "notify+wake"
+    assert sub["last_event_id"] >= 0 and sub["last_ping_event_id"] == 0  # nothing pinged: no gateway
