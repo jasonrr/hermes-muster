@@ -58,7 +58,9 @@ def require():
         raise ConfigError("muster: cannot run git to check branch_prefix") from None
     if not valid:
         raise ConfigError(f"muster: branch_prefix {settings['branch_prefix']!r} does not make a valid branch name")
-    repos()  # raises on a malformed slug
+    for slug, (_, _, base) in repos().items():  # repos() raises on a malformed slug
+        if base and subprocess.run(["git", "check-ref-format", "--branch", base], capture_output=True).returncode:
+            raise ConfigError(f"muster: repos entry {slug}: @{base} is not a valid base branch name")
     wf = workflow_path()
     if not wf.is_file() or not wf.read_text().strip():
         raise ConfigError(f"muster: workflow prompt file missing or empty: {wf}")
@@ -77,14 +79,20 @@ def data_dir() -> Path:
         return p
 
 
-def repos() -> dict[str, tuple[Path, str]]:
+def repos() -> dict[str, tuple[Path, str, str | None]]:
+    """slug -> (clone, name, base branch or None when origin's default decides)."""
     out = {}
     for item in settings["repos"]:
-        slug, _, path = str(item).partition("=")
+        entry, at, base = str(item).rpartition("@")
+        if not at or entry.endswith("/"):  # no suffix; "/@" starts a path segment (node_modules/@scope)
+            entry, base = str(item), None
+        elif not base:
+            raise ConfigError(f"muster: repos entry {item!r} has an empty @base")
+        slug, _, path = entry.partition("=")
         if not SLUG.match(slug):
-            raise ConfigError(f"muster: repos entry {item!r} is not owner/name[=path]")
+            raise ConfigError(f"muster: repos entry {item!r} is not owner/name[=path][@base]")
         name = slug.split("/", 1)[1]
-        out[slug] = (Path(path).expanduser() if path else Path(settings["clone_root"]).expanduser() / name, name)
+        out[slug] = (Path(path).expanduser() if path else Path(settings["clone_root"]).expanduser() / name, name, base)
     return out
 
 

@@ -181,7 +181,7 @@ def test_an_approved_issue_gets_one_card_one_subscription_and_one_agent_pane(tmp
     fake, worktree, git_dir = fake_world(tmp_path, calls)
     monkeypatch.setattr(core, "run", fake)
     assert tick() == 0
-    clone, _ = config.repos()[REPO]
+    clone = config.repos()[REPO][0]
     # one active path: never the Docker dispatcher, never an assignee
     assert not any("dispatch" in c or "--assignee" in c for c in calls)
     assert len([c for c in calls if c[:2] == ["hermes", "kanban"] and c[4] == "create"]) == 1
@@ -220,7 +220,7 @@ def test_an_approved_issue_gets_one_card_one_subscription_and_one_agent_pane(tmp
     links = json.loads((git_dir / core.CARD_FILE).read_text())
     assert links == {"card": "t_abc123", "repo": REPO, "issue": 397, "title": "Add a unit test",
                      "pane": "w1:p2", "workspace": "w1",
-                     "worktree": str(worktree), "launch_dir": str(core.intake_dir() / "t_abc123")}
+                     "worktree": str(worktree), "base": "main", "launch_dir": str(core.intake_dir() / "t_abc123")}
     record = json.loads((core.intake_dir() / "t_abc123" / "launch.json").read_text())
     assert record["event"] == 407 and record["bug"] is False
     assert record["launch"]["prompt"]["state"] == "working" and record["launch"]["step"] == "done"
@@ -241,6 +241,51 @@ def test_an_approved_issue_gets_one_card_one_subscription_and_one_agent_pane(tmp
     out = capsys.readouterr().out
     assert f"{REPO}#397 task t_abc123 pane w1:p2 (first prompt: working)" in out
     assert f"{REPO}#5 skipped" in out and "#6" not in out
+
+
+def launched_base(tmp_path, monkeypatch, world):
+    calls = []
+    monkeypatch.setattr(core, "run", fake_world(tmp_path, calls, world=world)[0])
+    assert tick() == 0
+    create = next(c for c in calls if c[:3] == ["herdr", "worktree", "create"])
+    base = create[create.index("--base") + 1]
+    assert base.startswith("origin/") and ["git", "-C", str(config.repos()[REPO][0]), "fetch", "origin", base[7:]] in calls
+    record = json.loads((core.intake_dir() / "t_abc123" / "launch.json").read_text())
+    assert record["launch"]["base"] == base[7:]
+    return base[7:], record, json.loads(world.submitted[0].split("(JSON): ", 1)[1])
+
+
+def test_a_repo_whose_default_branch_is_master_launches_from_master(tmp_path, monkeypatch):
+    world = World(tmp_path)
+    world.origin_head = "master"
+    base, record, brief = launched_base(tmp_path, monkeypatch, world)
+    assert base == "master" and "cut from origin/master" in brief and "against master" in brief
+    git_dir = Path(world.worktrees[record["launch"]["path"]]["git_dir"])
+    assert json.loads((git_dir / core.CARD_FILE).read_text())["base"] == "master"
+
+
+def test_an_at_base_suffix_wins_over_origin_head(tmp_path, monkeypatch):
+    monkeypatch.setitem(config.settings, "repos", [r + "@develop" if r.startswith(REPO + "=") else r
+                                                   for r in config.settings["repos"]])
+    world = World(tmp_path)
+    world.origin_head = "master"
+    assert launched_base(tmp_path, monkeypatch, world)[0] == "develop"
+    assert world.set_heads == 0
+
+
+def test_an_unset_origin_head_is_set_from_the_remote_once(tmp_path, monkeypatch):
+    world = World(tmp_path)
+    world.origin_head, world.remote_head = None, "master"
+    assert launched_base(tmp_path, monkeypatch, world)[0] == "master"
+    assert world.set_heads == 1
+
+
+def test_no_origin_head_and_no_suffix_launches_from_main_and_records_why(tmp_path, monkeypatch):
+    world = World(tmp_path)
+    world.origin_head = None
+    base, record, _ = launched_base(tmp_path, monkeypatch, world)
+    assert base == "main" and world.set_heads == 1
+    assert any("launched from main" in line for line in record["launch"]["evidence"])
 
 
 def test_an_existing_card_launches_nothing(tmp_path, monkeypatch, capsys):

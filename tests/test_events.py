@@ -379,7 +379,7 @@ def test_a_stop_without_a_card_does_nothing_at_all(board, monkeypatch):
 def test_core_and_events_agree_on_card_file(board, tmp_path):
     """The marker core writes at launch is the one events reads."""
     record = {"card": "t_abc123", "repo": "acme/app", "issue": 397, "title": "T"}
-    rec = {"pane": "p_agent", "workspace": "w_1", "path": "/wt"}
+    rec = {"pane": "p_agent", "workspace": "w_1", "path": "/wt", "base": "main"}
     (board["git_dir"] / core.CARD_FILE).write_text(json.dumps(core.links(record, rec)))
     git_dir, link = events.context("/wt")
     assert git_dir == board["git_dir"] and link["card"] == "t_abc123"

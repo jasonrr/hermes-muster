@@ -23,6 +23,9 @@ class World:
         self.worktrees = {}  # path -> {branch, clone, workspace, git_dir}
         self.branches = {}   # (clone, branch) -> sha
         self.origin = "sha_main"
+        self.origin_head = "main"  # what refs/remotes/origin/HEAD names; None = unset
+        self.remote_head = None    # what `git remote set-head origin -a` finds; None = it fails
+        self.set_heads = 0
         self.panes = {}      # pane -> workspace
         self.agents = {}     # pane -> agent dict
         self.dirty, self.ahead, self.prs = {}, {}, []
@@ -122,6 +125,16 @@ class World:
     def git(self, where, args):
         wt = self.worktrees.get(where)
         if args[:1] == ["fetch"]:
+            return ""
+        if args == ["symbolic-ref", "refs/remotes/origin/HEAD"]:
+            if self.origin_head is None:
+                raise core.CommandError("git -C x: exit 128\nfatal: ref refs/remotes/origin/HEAD is not a symbolic ref")
+            return f"refs/remotes/origin/{self.origin_head}\n"
+        if args == ["remote", "set-head", "origin", "-a"]:
+            self.set_heads += 1
+            if self.remote_head is None:
+                raise core.CommandError("git -C x: exit 128\nfatal: could not read from remote repository")
+            self.origin_head = self.remote_head
             return ""
         if args == ["rev-parse", "--absolute-git-dir"]:
             return wt["git_dir"] + "\n"

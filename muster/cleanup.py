@@ -141,8 +141,9 @@ def intake_link(repo, wt):
             or (card.get("repo"), card.get("worktree"), card.get("workspace")) != (repo, path, workspace)):
         raise NotReady(f"card names {card.get('repo')}#{number} {card.get('worktree')} {card.get('workspace')}; "
                        f"herdr has {wt.get('branch')} {path} {workspace}")
-    return {"repo": repo, "branch": f"{config.settings['branch_prefix']}{number}", "base": "main", "worktree": path,
-            "workspace": workspace, "issue": number, "card": card}
+    return {"repo": repo, "branch": f"{config.settings['branch_prefix']}{number}",
+            "base": card.get("base", "main"),  # cards from before the base was recorded
+            "worktree": path, "workspace": workspace, "issue": number, "card": card}
 
 
 def processes():
@@ -501,7 +502,7 @@ def targets(dry=False):
         return lists[str(clone)]
 
     prefix = config.settings["branch_prefix"]
-    for repo, (clone, _) in config.repos().items():
+    for repo, (clone, _, _) in config.repos().items():
         if worktrees(repo, clone) is None:
             failed = True
             continue
