@@ -1,0 +1,25 @@
+name: muster
+version: "0.1.0"
+description: One named human labels a GitHub issue; muster opens a herdr worktree pane, starts your coding agent with a brief, and reports blocked/done to a Hermes kanban card. Disclosure — shells out to gh, git, herdr and hermes; starts interactive agent panes on this machine; uses your gh login (or a GH_CONFIG_DIR you name); writes worktrees under ~/.herdr/worktrees.
+manifest_version: 2
+license: MIT
+requires_hermes: ">=0.21.5"
+config_schema:
+  label: {type: str, default: agent-ready, description: Label whose application by the approver authorizes work}
+  bug_label: {type: str, default: bug, description: Issues carrying it are briefed as bugs}
+  approver_login: {type: str, default: "", required: true, description: GitHub login allowed to approve (case-insensitive)}
+  approver_id: {type: int, default: 0, required: true, description: "Numeric GitHub id of the approver (gh api user --jq .id)"}
+  repos: {type: list, default: [], required: true, description: "owner/name or owner/name=/abs/clone/path"}
+  clone_root: {type: str, default: "~/Code", description: Where owner/name clones live when no path is given}
+  board: {type: str, default: muster, description: Hermes kanban board slug; give muster its own board}
+  agent_kind: {type: str, default: claude, choices: [claude], description: Coding agent CLI (v1 claude only)}
+  model: {type: str, default: opus, description: Model passed to the agent CLI}
+  branch_prefix: {type: str, default: "muster/", description: Issue branches are <prefix><number>}
+  notify_platform: {type: str, default: telegram}
+  notify_chat_id: {type: str, default: "", description: Empty = DM the TELEGRAM_HOME_CHANNEL from $HERMES_HOME/.env}
+  notify_user_id: {type: str, default: ""}
+  notify_chat_type: {type: str, default: group}
+  gh_config_dir: {type: str, default: "", description: Optional GH_CONFIG_DIR for a bot login used by gh/git in the pane}
+  notes_dir: {type: str, default: "", description: Per-repo production notes; empty = plugin-data/muster/repos}
+  workflow_prompt_file: {type: str, default: "", description: Overrides prompts/workflow.md in the brief}
+  worktrees: {type: str, default: "~/.herdr/worktrees"}
