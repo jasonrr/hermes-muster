@@ -56,7 +56,7 @@ hermes kanban boards create muster
 Install the cron scripts and schedule them:
 
 ```bash
-cp scripts/*.sh "$HERMES_HOME/scripts/"
+cp scripts/*.sh "${HERMES_HOME:-$HOME/.hermes}/scripts/"   # from this repo
 hermes cron create "every 1m" --no-agent --script muster-tick.sh --name muster-tick
 hermes cron create "every 5m" --no-agent --script muster-cleanup.sh --name muster-cleanup
 hermes cron create "every 1m" --no-agent --script muster-flush.sh --name muster-flush
@@ -102,7 +102,7 @@ Set under `plugins.entries.muster.settings`. Required: `approver_login`, `approv
 - The **ledger card** is the record of one approval (or ad-hoc run). It is blocked when the agent's launch fails or its session ends without a pull request, and completed when the pull request is done.
 - A **wait card** opens each time the agent stops to wait for you (a question or permission prompt) and is archived when you type in the pane. After 10 idle minutes without a finished run, an ad-hoc run's wait card says so.
 - Every card is subscribed `notify+wake`: the gateway pings you, then queues a Hermes agent turn. The skills `muster:escalation` and `muster:run` tell that agent to inform you and never act on the pane, the issue or the pull request.
-- If a launch failed ("The coding agent did not start", "did not become ready", "its first prompt may not have arrived", "The launch was refused"), fix the cause and run `hermes muster recover <ledger card id>`. For "may not have arrived", look at the pane first and add `--resend` only if it shows no brief. `--adopt` is for a run that predates launch records. Never re-launch the work on a new branch.
+- If a launch failed ("The coding agent did not start", "did not become ready", "its first prompt may not have arrived", "The launch was refused"), fix the cause and run `hermes muster recover <ledger card id>`. For "may not have arrived", look at the pane first and add `--resend` only if it shows no brief. Add `--adopt` when a launch refused a branch that already has commits ahead of base, or a worktree muster did not make, and you want the agent to work on it as is (it also resumes an ad-hoc run from before launch records). An issue card from before launch records cannot be recovered: remove and re-apply the label. Never re-launch the work on a new branch.
 
 ## Ad-hoc runs
 
@@ -118,7 +118,7 @@ The branch must match `feat|fix|chore|deps/<name>`. It makes a card, opens the p
 
 `hermes muster cleanup` covers only workspaces muster has a record for: issue worktrees, ad-hoc runs, and analysis workspaces. A coding worktree is removed (never with `--force`; the branch stays) only when its pull request(s) are merged with HEAD as the head, the checkout is clean (agent scaffolding copied from the main checkout aside), everything is pushed, and every pane has been quiet for 30 minutes (agents idle or done, no job running under a shell). An analysis workspace needs only the quiet window; closing it deletes no file. Any failed check restarts the 30-minute window.
 
-A coding worktree that is quiet but has unsaved work is never removed: once per state, a blocked card "Unsaved work in <repo>" pings you and asks whether to push or commit, discard, or keep. `hermes muster cleanup --dry-run` reports what it would do without acting. `hermes muster open` is described under Ad-hoc runs.
+A coding worktree that is quiet but has unsaved work is never removed: unless a pull request from its branch is still open (work under way), once per state a blocked card "Unsaved work in <repo>" pings you and asks whether to push or commit, discard, or keep. `hermes muster cleanup --dry-run` reports what it would do without acting. `hermes muster open` is described under Ad-hoc runs.
 
 ## Agents
 
@@ -128,7 +128,7 @@ v1 supports Claude Code. To add a kind, write one module in `muster/` with `KIND
 
 - Shells out to `gh`, `git`, `herdr` and `hermes`. Reads GitHub issues and timelines, the board's sqlite (read-only), `$HERMES_HOME/.env` for the DM chat id, and the per-repo notes.
 - Writes: kanban cards, worktrees under `worktrees`, state under `$HERMES_HOME/plugin-data/muster/`, and per-pane agent settings (the hooks) in that data directory. Nothing global in your agent's config changes.
-- The agent is interactive, runs as you, and is not sandboxed. The brief forbids it to push to main, merge, approve, deploy or force-push, to edit `.github/`, CI, deployment config, secrets, lockfiles or agent-instruction files, or to add dependencies. Issue text never enters the brief and is treated as data.
+- The agent is interactive, runs as you, and is not sandboxed. Claude Code starts with `--permission-mode auto`, so it runs most tools without asking. The brief forbids it to push to main, merge, approve, deploy or force-push, to edit `.github/`, CI, deployment config, secrets, lockfiles or agent-instruction files, or to add dependencies. Issue text never enters the brief and is treated as data.
 - Human review of the pull request is the control: nothing merges or deploys without you.
 - Under `plugins.isolation: host`, Hermes skips `register_cli_command`, so the `hermes muster` commands do not exist.
 

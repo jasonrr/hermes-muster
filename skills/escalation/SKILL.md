@@ -13,7 +13,7 @@ The muster board (the `board` setting) holds three kinds of card:
   for the human; its body names the ledger card, the issue or branch, the pane and the worktree. It is
   archived when the human types in the pane.
 - A CLEANUP WARNING card, titled "Unsaved work in <repo>": cleanup kept a finished workspace because it has
-  unsaved work. Its body names the workspace, repository, branch, worktree and the reason.
+  unsaved work and no open pull request from its branch. Its body names the workspace, repository, branch, worktree and the reason.
 The ping the human already got gives the card's title, the agent's whole question or the reason, and where
 to reply, or the pull request link. Do not repeat it; add only what it lacks.
 
@@ -27,7 +27,7 @@ On a wake:
    `hermes muster recover <ledger card id>`. For "may not have arrived", they look at the pane first and
    add `--resend` only if it shows no brief. Nothing needs deleting first. Never run it yourself. A
    comment "Recovery failed again" on a blocked card is that command's result; it raises no ping.
-   Triage (the ping says "routed to TRIAGE"): say the card needs the human's attention and quote the
+   Triage (the ping says "routed to triage"): say the card needs the human's attention and quote the
    reason. Do not try to move it.
    Cleanup warning (the body says "This card is a cleanup warning"): give the workspace, branch and reason
    from its body (uncommitted or untracked files, or local commits not pushed), and ask the human to
