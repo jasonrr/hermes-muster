@@ -17,3 +17,4 @@
 - Judging a prompt delivered by the call returning → a brief that never arrived looks sent; save "sending" before the prompt call and judge delivery by herdr state + `completion_seq` + the UserPromptSubmit hook's sha256.
 - Trusting `kanban show --json` for the block kind → it lacks `block_kind`; read it from the board sqlite read-only.
 - Treating an untrusted-path `agent_not_ready` as a failure → a retry loop on a question only a person can answer; it is a person-wait.
+- The plan inventoried scripts, not the live crontab: the source ran a third every-minute job (`rc_run.py flush`) the plan never named → read `crontab -l` (or the scheduler) when porting cron-driven code; muster-flush.sh was added at Task 7.

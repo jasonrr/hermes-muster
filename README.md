@@ -59,6 +59,7 @@ Install the cron scripts and schedule them:
 cp scripts/*.sh "$HERMES_HOME/scripts/"
 hermes cron create "every 1m" --no-agent --script muster-tick.sh --name muster-tick
 hermes cron create "every 5m" --no-agent --script muster-cleanup.sh --name muster-cleanup
+hermes cron create "every 1m" --no-agent --script muster-flush.sh --name muster-flush
 ```
 
 Check the setup without launching anything:
@@ -111,7 +112,7 @@ For coding work that is not a labeled issue:
 hermes muster launch --cwd ~/Code/app --branch feat/thing --title "Add thing" --brief brief.md [--base main] [--model opus]
 ```
 
-The branch must match `feat|fix|chore|deps/<name>`. It makes a card, opens the pane, delivers the brief, and prints the run as JSON. Hook events the pane could not deliver are queued and delivered by `hermes muster flush`, which nothing schedules for you: run it by hand, or add a cron job for it like the other two. For research with no pull request, `hermes muster open --cwd <dir> --label <label>` opens an analysis workspace muster owns, so cleanup can close it.
+The branch must match `feat|fix|chore|deps/<name>`. It makes a card, opens the pane, delivers the brief, and prints the run as JSON. Hook events the pane could not deliver are queued and delivered by `hermes muster flush`, which the `muster-flush` cron job runs every minute. For research with no pull request, `hermes muster open --cwd <dir> --label <label>` opens an analysis workspace muster owns, so cleanup can close it.
 
 ## Cleanup
 
