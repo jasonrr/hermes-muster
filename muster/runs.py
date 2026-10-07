@@ -386,7 +386,7 @@ def launch_run(clone, branch, title, brief, base="main", model=None):
     repo = match.group(1)
     # Every input is checked before the card: the plan refuses a bad branch or agent name.
     plan = core.plan(None, repo, clone, branch, base, title[:40], core.agent_name("run", branch.split("/", 1)[1]),
-                     model or config.settings["model"], "", "run", core.pane_env())
+                     model or config.settings["agent_model"], "", "run", core.pane_env())
     runs_dir().mkdir(parents=True, exist_ok=True)
     with open(runs_dir() / "launch.lock", "w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)  # hermes' idempotency check is not atomic
@@ -462,7 +462,7 @@ def recover(card, resend=False, adopt=False):
                     raise core.LaunchFailure("refused", f"run {card} predates launch records. Check its "
                                                         f"worktree and pane, then recover with --adopt")
                 plan = core.plan(card, run["repo"], run["clone"], run["branch"], run["base"], run["title"][:40],
-                                 core.agent_name("run", run["branch"].split("/", 1)[1]), config.settings["model"],
+                                 core.agent_name("run", run["branch"].split("/", 1)[1]), config.settings["agent_model"],
                                  directory / "settings.json", "run", core.pane_env())
                 live = core.agent_at(run["pane"]) if run.get("pane") else None
                 plan.update(workspace=run.get("workspace"), pane=run.get("pane") if live else None,

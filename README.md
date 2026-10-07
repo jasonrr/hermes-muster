@@ -44,7 +44,7 @@ plugins:
         approver_id: 123456      # gh api user --jq .id
         repos: ["you/app", "you/site=/srv/site"]
         board: muster
-        model: opus
+        agent_model: opus
 ```
 
 Create the board muster uses (the slug is your `board` setting); a tick fails on a missing board:
@@ -82,7 +82,7 @@ Set under `plugins.entries.muster.settings`. Required: `approver_login`, `approv
 | `clone_root` | `~/Code` | Where clones live when no path is given. |
 | `board` | `muster` | Hermes kanban board slug. Give muster its own board; idempotency keys are per board. It must exist before the first tick. |
 | `agent_kind` | `claude` | Coding agent. v1: `claude` only. |
-| `model` | `opus` | Model passed to the agent CLI. |
+| `agent_model` | `opus` | Model passed to the agent CLI. |
 | `branch_prefix` | `muster/` | Issue branches are `<prefix><issue number>`. Must be a non-empty string, and a namespace muster owns: cleanup treats worktrees on `<prefix><n>` branches as its own. |
 | `notify_platform` | `telegram` | Gateway platform for pings. |
 | `notify_chat_id` | `""` | Empty = DM the `TELEGRAM_HOME_CHANNEL` from `$HERMES_HOME/.env`. When you set it to a group, also set `notify_user_id` (the code falls back to the chat id as the user id). |

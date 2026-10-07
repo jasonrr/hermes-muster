@@ -13,7 +13,7 @@ config_schema:
   clone_root: {type: str, default: "~/Code", description: Where owner/name clones live when no path is given}
   board: {type: str, default: muster, description: Hermes kanban board slug; give muster its own board}
   agent_kind: {type: str, default: claude, choices: [claude], description: Coding agent CLI (v1 claude only)}
-  model: {type: str, default: opus, description: Model passed to the agent CLI}
+  agent_model: {type: str, default: opus, description: Model passed to the agent CLI}
   branch_prefix: {type: str, default: "muster/", description: Issue branches are <prefix><number>}
   notify_platform: {type: str, default: telegram}
   notify_chat_id: {type: str, default: "", description: Empty = DM the TELEGRAM_HOME_CHANNEL from $HERMES_HOME/.env}

@@ -20,7 +20,7 @@ class StubCtx:
 
 
 def test_load_with_defaults_leaves_settings_equal_defaults():
-    config.settings["model"] = "changed"
+    config.settings["agent_model"] = "changed"
     config.load(StubCtx())
     assert config.settings == config.DEFAULTS
 
@@ -85,3 +85,8 @@ def test_require_rejects_a_branch_prefix_that_is_not_a_non_empty_string(prefix):
     config.settings.update(approver_login="me", repos=["o/a"], approver_id=7, branch_prefix=prefix)
     with pytest.raises(config.ConfigError, match="branch_prefix"):
         config.require()
+
+
+def test_setting_keys_avoid_hermes_reserved_roots():
+    # ctx.get_config rejects these first segments (hermes_cli/plugins_state.py)
+    assert not {"model", "plugins", "security", "settings"} & set(config.DEFAULTS)

@@ -18,7 +18,7 @@ Only when the human asks for coding work in a herdr pane.
      --branch <feat|fix|chore|deps>/<name> --title "<short title>" --brief <file>
    ```
 
-   Optional: `--base <branch>` (default `main`), `--model <model>` (default: the `model` setting).
+   Optional: `--base <branch>` (default `main`), `--model <model>` (default: the `agent_model` setting).
 3. Exit 0 prints the run as JSON; tell the human the `card` id and the pane. Exit 1 prints why on stderr.
    If it names a failed step, the card is blocked; tell the human the step and the details (a failed
    subscribe pings no one, so your message is their only notice). The retry is theirs:

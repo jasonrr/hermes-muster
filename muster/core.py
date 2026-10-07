@@ -774,7 +774,7 @@ def launch(repo, issue, card, event=None):
                       "event": (event or {}).get("id"), "bug": is_bug(issue),
                       "launch": plan(card, repo, clone, f"{config.settings['branch_prefix']}{number}", "main",
                                      f"{short}#{number}", agent_name("muster", f"{short}-{number}"),
-                                     config.settings["model"], directory / SETTINGS_FILE, "muster", pane_env())}
+                                     config.settings["agent_model"], directory / SETTINGS_FILE, "muster", pane_env())}
             save_json(directory / "launch.json", record)
             # Subscribe first, so a block at any later step pings the human.
             at["step"] = "subscribe"

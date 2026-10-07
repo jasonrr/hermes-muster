@@ -12,7 +12,7 @@ DEFAULTS = {
     "clone_root": "~/Code",  # clone = clone_root/<name> when no =path given
     "board": "muster",  # hermes kanban board slug; give muster its own board (idempotency keys are per board)
     "agent_kind": "claude",  # v1: claude only
-    "model": "opus",  # passed to the agent CLI
+    "agent_model": "opus",  # passed to the agent CLI
     "branch_prefix": "muster/",  # issue branch = f"{branch_prefix}{number}"
     "notify_platform": "telegram",
     "notify_chat_id": "",  # "" → DM: TELEGRAM_HOME_CHANNEL from $HERMES_HOME/.env
