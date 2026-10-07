@@ -610,3 +610,15 @@ def test_a_left_over_branch_with_no_commits_relaunches_from_current_main(tmp_pat
     monkeypatch.setattr(core, "run", fake_world(tmp_path, calls, world=world)[0])
     assert tick() == 0
     assert any("update-ref" in c for c in calls) and len(world.submitted) == 1
+
+
+def test_pane_env_expands_a_tilde_gh_config_dir(monkeypatch):
+    monkeypatch.setitem(config.settings, "gh_config_dir", "~/.config/gh-bot")
+    expected = str(Path("~/.config/gh-bot").expanduser())
+    assert f"GH_CONFIG_DIR={expected}" in core.pane_env()
+    assert f"`{expected}`" in core.brief(REPO, 1, False)
+
+
+def test_pane_env_carries_a_kanban_home_that_differs(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_KANBAN_HOME", str(tmp_path / "kanban"))
+    assert core.pane_env()[:2] == [f"HERMES_HOME={tmp_path / 'hermes'}", f"HERMES_KANBAN_HOME={tmp_path / 'kanban'}"]

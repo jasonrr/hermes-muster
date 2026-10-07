@@ -138,7 +138,7 @@ def production_note(repo):
 def brief(repo, number, bug):
     """What the pane agent reads first. Fixed text and numbers only: issue text never enters it."""
     s = config.settings
-    bot = (f" `gh` and `git push` act as the login configured in `{s['gh_config_dir']}`." if s["gh_config_dir"] else "")
+    bot = (f" `gh` and `git push` act as the login configured in `{gh_config_dir()}`." if s["gh_config_dir"] else "")
     return f"""# muster: {repo}#{number}
 
 {s['approver_login']} approved issue {repo}#{number} for work by labeling it `{s['label']}`. You are an
@@ -237,12 +237,19 @@ def agent_settings():
     return adapter().hook_settings(hook_cmd())
 
 
+def gh_config_dir():
+    """The bot's gh config dir, absolute: herdr --env is not shell-expanded."""
+    return Path(config.settings["gh_config_dir"]).expanduser()
+
+
 def pane_env():
     """The pane's env pairs: the hermes home always; the bot's gh login, with token vars blanked, when configured.
     gh prefers a token env var over GH_CONFIG_DIR, so both are blanked."""
     env = [f"HERMES_HOME={os.environ['HERMES_HOME']}"]
+    if os.environ.get("HERMES_KANBAN_HOME", os.environ["HERMES_HOME"]) != os.environ["HERMES_HOME"]:
+        env.append(f"HERMES_KANBAN_HOME={os.environ['HERMES_KANBAN_HOME']}")
     if config.settings["gh_config_dir"]:
-        env += [f"GH_CONFIG_DIR={config.settings['gh_config_dir']}", "GH_TOKEN=", "GITHUB_TOKEN="]
+        env += [f"GH_CONFIG_DIR={gh_config_dir()}", "GH_TOKEN=", "GITHUB_TOKEN="]
     return env
 
 
@@ -778,7 +785,7 @@ def launch(repo, issue, card, event=None):
                 raise LaunchError(f"card is {task.get('status')} assigned to {task.get('assignee')}")
             if config.settings["gh_config_dir"]:
                 at["step"] = "bot identity"
-                hosts = Path(config.settings["gh_config_dir"]).expanduser() / "hosts.yml"
+                hosts = gh_config_dir() / "hosts.yml"
                 if not hosts.is_file():
                     raise LaunchError(f"gh-bot login missing: {hosts}")
             return relaunch(record, directory, at)
@@ -842,9 +849,8 @@ def recover_card(card, resend=False, adopt=False):
                 raise LaunchFailure("refused", f"the approval of {repo}#{number} changed: this card's label event is "
                                                f"{record['event']}, the current approving one is "
                                                f"{(current or {}).get('id', 'none (revoked)')}")
-            # The recorded env pairs were fixed at launch; the home may have moved since.
-            record["launch"]["env"] = [pair if not pair.startswith("HERMES_HOME=") else pane_env()[0]
-                                       for pair in record["launch"]["env"]]
+            # The recorded env pairs were fixed at launch; the hermes homes may have moved since.
+            record["launch"]["env"] = pane_env()
             if resend:
                 record["launch"]["resend"] = True
             if adopt:
