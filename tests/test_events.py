@@ -232,7 +232,7 @@ def test_a_hook_that_keeps_failing_is_logged_and_never_fails_the_agent(board, mo
 def test_hook_events_point_hermes_at_the_configured_home(board, monkeypatch):
     monkeypatch.delenv("HERMES_KANBAN_HOME")
     hook(monkeypatch, "prompt")
-    assert os.environ["HERMES_KANBAN_HOME"] == os.environ["HERMES_HOME"]
+    assert os.environ["HERMES_HOME"] and "HERMES_KANBAN_HOME" not in os.environ
 
 
 def test_an_unreadable_links_file_is_logged_and_never_fails_the_agent(board, monkeypatch):

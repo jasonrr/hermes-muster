@@ -5,7 +5,9 @@ import fcntl
 import json
 import os
 import shutil
+import sys
 import time
+import types
 from pathlib import Path
 
 import pytest
@@ -369,11 +371,13 @@ def test_a_held_lock_means_another_tick_is_running_and_this_one_does_nothing(tmp
     assert calls == []
 
 
-def test_tick_keeps_the_hermes_home_and_defaults_the_kanban_home(tmp_path, monkeypatch):
+def test_tick_keeps_the_hermes_home_and_leaves_the_kanban_home_to_hermes(tmp_path, monkeypatch):
+    # Hermes shares one board root across profiles; pinning it to a profile's home would fork the board.
     monkeypatch.setattr(core, "run", fake_world(tmp_path, [])[0])
     monkeypatch.delenv("HERMES_KANBAN_HOME")
     tick(dry_run=True)
-    assert os.environ["HERMES_HOME"] == os.environ["HERMES_KANBAN_HOME"] == str(tmp_path / "hermes")
+    assert os.environ["HERMES_HOME"] == str(tmp_path / "hermes")
+    assert "HERMES_KANBAN_HOME" not in os.environ
     monkeypatch.setenv("HERMES_KANBAN_HOME", str(tmp_path / "kanban"))
     tick(dry_run=True)
     assert os.environ["HERMES_KANBAN_HOME"] == str(tmp_path / "kanban")
@@ -637,6 +641,13 @@ def test_board_db_follows_the_kanban_home_and_the_default_board_layout(tmp_path,
     assert core.board_db() == tmp_path / "kb" / "kanban" / "boards" / "muster" / "kanban.db"
     monkeypatch.setitem(config.settings, "board", "default")
     assert core.board_db() == tmp_path / "kb" / "kanban.db"
+
+
+def test_board_db_asks_hermes_when_it_runs_inside_hermes(monkeypatch):
+    fake = types.ModuleType("hermes_cli.kanban_db")
+    fake.kanban_db_path = lambda board: Path("/root") / f"{board}.db"
+    monkeypatch.setitem(sys.modules, "hermes_cli.kanban_db", fake)
+    assert core.board_db() == Path("/root/muster.db")
 
 
 def test_approval_label_name_is_case_insensitive():
