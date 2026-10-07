@@ -203,8 +203,8 @@ def test_done_outside_a_muster_worktree_errors_instead_of_silently_succeeding(tm
     monkeypatch.chdir(tmp_path)
     assert done(PR) == 1
     err = capsys.readouterr().err
-    assert "not inside an muster worktree" in err and str(tmp_path) in err
-    assert "not inside an muster worktree" in events.log_path().read_text()
+    assert "not inside a muster worktree" in err and str(tmp_path) in err
+    assert "not inside a muster worktree" in events.log_path().read_text()
 
 
 @pytest.mark.parametrize("raw", ["null", "[]", '"x"', "5"])
