@@ -366,7 +366,7 @@ def relaunch(run, prepare_text):
     return run
 
 
-def launch_run(clone, branch, title, brief, base="main", model="opus"):
+def launch_run(clone, branch, title, brief, base="main", model=None):
     """Register the run (card, run.json, subscription), then open its pane. Returns run.json's content.
 
     Raises LaunchError. After the card exists, a failed step blocks it, which pings the human and wakes the agent.
@@ -386,7 +386,7 @@ def launch_run(clone, branch, title, brief, base="main", model="opus"):
     repo = match.group(1)
     # Every input is checked before the card: the plan refuses a bad branch or agent name.
     plan = core.plan(None, repo, clone, branch, base, title[:40], core.agent_name("run", branch.split("/", 1)[1]),
-                     model, "", "run", core.pane_env())
+                     model or config.settings["model"], "", "run", core.pane_env())
     runs_dir().mkdir(parents=True, exist_ok=True)
     with open(runs_dir() / "launch.lock", "w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)  # hermes' idempotency check is not atomic
@@ -428,7 +428,7 @@ def launch(args):
     config.require()
     try:
         run = launch_run(args.cwd, args.branch, args.title, args.brief, args.base,
-                         args.model or config.settings["model"])
+                         args.model)
     except ERRORS as error:
         print(f"muster launch: {' '.join(str(error).split())}", file=sys.stderr)
         return 1
