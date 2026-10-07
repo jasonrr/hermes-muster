@@ -356,3 +356,9 @@ def test_a_branch_git_would_refuse_is_refused_before_any_side_effect(world, bran
     with pytest.raises(core.LaunchFailure, match="not a valid branch name"):
         core.plan("t", "o/r", world.clone, branch, "main", "l", "run-x", "opus", "/s", "run")
     assert world.calls == []
+
+
+@pytest.mark.parametrize("base", ["-x", "a b", "a..b"])
+def test_a_base_git_would_refuse_is_refused_before_any_side_effect(world, base):
+    with pytest.raises(core.LaunchFailure, match="not a valid base branch"):
+        core.plan("t", "o/r", world.clone, "fix/x", base, "l", "run-x", "opus", "/s", "run")

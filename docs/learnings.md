@@ -8,6 +8,10 @@
 - `hermes plugins validate` uses a RecordingContext whose get_config returns the default, so it never sees Hermes rejecting a plugin setting key whose first segment is reserved (`model`, `plugins`, `security`, `settings`; hermes_cli/plugins_state.py) → every command crashed under real Hermes; only a temp-HERMES_HOME run of the real CLI caught it (setting renamed `agent_model`).
 - Hand-mirroring a host path resolver (board db) missed profiles, the `HERMES_KANBAN_DB` pin and slug normalisation → when code runs inside the host process, import the host's resolver instead of copying it.
 
+## base branch (issue #4, 2026-10-07)
+
+- A config suffix on a free-form path (`owner/name=/path@base`) → any `@` already in the path parses as a branch that `check-ref-format` accepts, so the clone path is silently cut; exempt only the unambiguous form (`/@`), document the rest, and validate every git ref argument (`--base -x` reached `git fetch` as an option) in the one function all launches route through (`core.plan`).
+
 ## 2026-10-07 carried from rc-intake docs/learnings.md
 
 - A hermes call without `HERMES_HOME` set → it reads another home's board; set it before any `hermes` call. Do not pin `HERMES_KANBAN_HOME` to it: hermes shares one board root across profiles (`kanban_home()`), so pinning forks the board away from the gateway; ask `hermes_cli.kanban_db.kanban_db_path` for the db path.
