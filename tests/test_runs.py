@@ -504,7 +504,7 @@ def test_the_launch_entry_exits_one_on_a_refused_launch(board, clone, monkeypatc
 
 def test_the_launch_entry_prints_the_run_and_defaults_the_model(board, clone, monkeypatch, capsys):
     monkeypatch.setattr(config, "require", lambda: None)
-    monkeypatch.setitem(config.settings, "model", "sonnet")
+    monkeypatch.setitem(config.settings, "agent_model", "sonnet")
     args = argparse.Namespace(cwd=str(clone["path"]), branch="fix/x", title="T", brief=str(clone["brief"]),
                               base="main", model=None)
     assert runs.launch(args) == 0
