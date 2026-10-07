@@ -43,6 +43,8 @@ def require():
             missing.append("approver_id")
     except (TypeError, ValueError):
         missing.append("approver_id")
+    if not isinstance(settings["branch_prefix"], str) or not settings["branch_prefix"]:
+        missing.append("branch_prefix")
     if missing:
         raise ConfigError(f"muster: set plugins.entries.muster.settings.{{{', '.join(missing)}}} in config.yaml")
     repos()  # raises on a malformed slug

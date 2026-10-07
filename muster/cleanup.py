@@ -515,6 +515,13 @@ def targets(dry=False):
                 say(f"{repo}: {wt.get('path')}: kept, herdr lists no path")
                 failed = True
                 continue
+            try:
+                if not Path(git(wt["path"], "rev-parse", "--absolute-git-dir").strip(), core.CARD_FILE).is_file():
+                    continue  # the user's own branch, or a run's: not an issue worktree
+            except FAILURES as error:
+                say(f"{repo}: {wt['path']}: kept, check failed: {error}")
+                failed = True
+                continue
             paths.add(wt["path"])
             found.append(coding_target(f"{repo}#{branch[len(prefix):]}", repo, clone, wt["path"]))
     workspaces = None
