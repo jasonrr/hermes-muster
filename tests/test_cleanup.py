@@ -35,7 +35,7 @@ class World:
     any analysis workspaces in self.spaces."""
 
     def __init__(self, tmp_path):
-        self.clone, _ = config.repos()[REPO]
+        self.clone = config.repos()[REPO][0]
         self.path = str(tmp_path / "wt15")
         self.git_dir = tmp_path / "wt15-gitdir"
         self.git_dir.mkdir()
@@ -671,6 +671,15 @@ def test_every_pr_merged_and_head_is_the_newest_removes(world):
     world.pulls.insert(0, world._pr(number=9, sha="first", merged_at="2026-09-27T10:00:00Z"))
     window(world)
     assert len(removes(world)) == 1
+
+
+@pytest.mark.parametrize("pr_base, removed", [("master", 1), ("main", 0)])
+def test_the_merged_gate_compares_against_the_base_the_launch_recorded(world, pr_base, removed):
+    world.card["base"] = "master"
+    world._write_card()
+    world.pulls[0]["base"]["ref"] = pr_base
+    window(world)
+    assert len(removes(world)) == removed
 
 
 def test_head_of_an_older_merged_pr_only_is_kept(world):

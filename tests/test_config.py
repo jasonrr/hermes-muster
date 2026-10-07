@@ -1,4 +1,5 @@
 import re
+from pathlib import Path
 
 import pytest
 
@@ -29,11 +30,27 @@ def test_repos_parses_both_forms(tmp_path):
     config.settings["clone_root"] = str(tmp_path)
     config.settings["repos"] = ["o/a", "o/b=~/clones/b"]
     out = config.repos()
-    assert out["o/a"] == (tmp_path / "a", "a")
+    assert out["o/a"] == (tmp_path / "a", "a", None)
     assert out["o/b"][0].is_absolute()
     assert out["o/b"][0].name == "b"
     assert "~" not in str(out["o/b"][0])
     assert out["o/b"][1] == "b"
+
+
+def test_repos_takes_an_optional_base_suffix(tmp_path):
+    config.settings["clone_root"] = str(tmp_path)
+    config.settings["repos"] = ["o/a@develop", "o/b=/c/b@release/2", "o/c=/x/node_modules/@scope/c"]
+    out = config.repos()
+    assert out["o/a"] == (tmp_path / "a", "a", "develop")
+    assert out["o/b"] == (Path("/c/b"), "b", "release/2")
+    assert out["o/c"] == (Path("/x/node_modules/@scope/c"), "c", None)  # "/@" belongs to the path
+
+
+@pytest.mark.parametrize("entry", ["o/a@bad..ref", "o/a@"])
+def test_require_rejects_a_base_that_is_not_a_branch_name(entry):
+    config.settings.update(approver_login="me", repos=[entry], approver_id=7)
+    with pytest.raises(config.ConfigError, match="base"):
+        config.require()
 
 
 def test_repos_rejects_malformed_slug():

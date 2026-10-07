@@ -2,7 +2,8 @@
 session end and a turn end with a finished pull request become verified kanban events that ping the
 human and wake the agent.
 
-  launch --cwd <clone> --branch <type>/<name> --title <t> --brief <file> [--base main] [--model m]
+  launch --cwd <clone> --branch <type>/<name> --title <t> --brief <file> [--base <branch>] [--model m]
+      (--base defaults to the repos entry's @base, else origin's default branch, else main)
       the ledger card (key run:<repo>:<branch>), then <data dir>/runs/<card>/run.json, then the
       notify+wake subscription, then core.ensure: a trusted herdr worktree, an agent pane (its own
       --settings carry the hooks) started with no task, then its brief as the first prompt (brief.md
@@ -364,7 +365,7 @@ def relaunch(run, prepare_text):
     return run
 
 
-def launch_run(clone, branch, title, brief, base="main", model=None):
+def launch_run(clone, branch, title, brief, base=None, model=None):
     """Register the run (card, run.json, subscription), then open its pane. Returns run.json's content.
 
     Raises LaunchError. After the card exists, a failed step blocks it, which pings the human and wakes the agent.
@@ -382,9 +383,13 @@ def launch_run(clone, branch, title, brief, base="main", model=None):
     if not match:
         raise core.LaunchError(f"{clone}: origin {origin} is not a GitHub repository")
     repo = match.group(1)
+    configured = next((b for slug, (_, _, b) in config.repos().items() if slug.lower() == repo.lower()), None)
+    base, why = core.base_of(clone, base or configured)
     # Every input is checked before the card: the plan refuses a bad branch or agent name.
     plan = core.plan(None, repo, clone, branch, base, title[:40], core.agent_name("run", branch.split("/", 1)[1]),
                      model or config.settings["agent_model"], "", "run", core.pane_env())
+    if why:
+        core.note(plan, why)
     runs_dir().mkdir(parents=True, exist_ok=True)
     with open(runs_dir() / "launch.lock", "w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)  # hermes' idempotency check is not atomic

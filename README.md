@@ -78,7 +78,7 @@ Set under `plugins.entries.muster.settings`. Required: `approver_login`, `approv
 | `bug_label` | `bug` | Issues carrying it are briefed as bugs, others as features. |
 | `approver_login` | (required) | GitHub login allowed to approve. Compared case-insensitively, but `approver_id` is what authorizes. |
 | `approver_id` | (required) | The approver's numeric GitHub id (`gh api user --jq .id`). A login can be renamed; an id cannot. |
-| `repos` | (required) | List of `owner/name` (clone at `clone_root/<name>`) or `owner/name=/abs/clone/path`. |
+| `repos` | (required) | List of `owner/name` (clone at `clone_root/<name>`) or `owner/name=/abs/clone/path`, each with an optional `@base` suffix (`you/app@develop`, `you/site=/srv/site@master`): the branch worktrees are cut from and pull requests target. Without it, muster reads `origin/HEAD` in the clone (running `git remote set-head origin -a` once if unset), else uses `main` and notes that in the launch record. An `@` right after `/` belongs to the path (`node_modules/@scope`). `launch --base` overrides it for an ad-hoc run. |
 | `clone_root` | `~/Code` | Where clones live when no path is given. |
 | `board` | `muster` | Hermes kanban board slug. Give muster its own board; idempotency keys are per board. It must exist before the first tick. |
 | `agent_kind` | `claude` | Coding agent. v1: `claude` only. |

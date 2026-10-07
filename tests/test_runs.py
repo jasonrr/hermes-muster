@@ -429,6 +429,16 @@ def test_launch_registers_and_subscribes_before_any_herdr_call(board, clone):
     assert board["cards"][card] == "ready"
 
 
+def test_launch_without_base_uses_origin_head_and_base_wins_when_given(board, clone):
+    board["world"].origin_head = "master"
+    run = launch(clone)
+    assert run["base"] == run["launch"]["base"] == "master"
+    create = next(c for c in board["calls"] if c[:3] == ["herdr", "worktree", "create"])
+    assert create[create.index("--base") + 1] == "origin/master"
+    other = runs.launch_run(clone["path"], "fix/y", "Fix another", clone["brief"], base="develop")
+    assert other["base"] == "develop"
+
+
 def test_launch_settings_hook_the_run_card_including_stop_and_session_end(board, clone):
     card = launch(clone)["card"]
     hooks = json.loads((runs.run_dir(card) / "settings.json").read_text())["hooks"]

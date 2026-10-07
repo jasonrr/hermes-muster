@@ -24,7 +24,7 @@ def setup(parser):
     p = sub.add_parser("launch", help="ad-hoc coding run (no issue)")
     for flag in ("--cwd", "--branch", "--title", "--brief"):
         p.add_argument(flag, required=True)
-    p.add_argument("--base", default="main")
+    p.add_argument("--base", default=None, help="default: the repos entry's @base, else origin's default branch")
     p.add_argument("--model", default=None)
     sub.add_parser("flush", help="deliver hook events a pane could not")
     p = sub.add_parser("hook", help="agent hook entry point; reads the hook payload on stdin")
