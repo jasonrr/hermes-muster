@@ -33,6 +33,7 @@ from pathlib import Path
 
 from . import claude, config, core
 
+STALE_CLAIM = 120  # s: an empty wait marker this old is from a hook killed at its 30 s timeout
 PR_URL = re.compile(r"https://github\.com/([\w.-]+/[\w.-]+)/pull/\d+")
 
 
@@ -78,6 +79,10 @@ def open_wait(git_dir, link, detail, key):
         claim = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL)
     except FileExistsError:
         card = path.read_text().strip()
+        if not card and time.time() - path.stat().st_mtime > STALE_CLAIM:
+            # The hook that claimed it was killed (hook timeout) before recording a card.
+            path.unlink()
+            return open_wait(git_dir, link, detail, key)
         # An empty marker is another hook mid-create. A recorded card still ready is one whose
         # subscribe or block failed: finish it rather than open a second.
         if not card or status(card) != "ready":
@@ -202,7 +207,7 @@ def hook(args):
             core.prompt_seen(link["launch_dir"], payload)
     if event == "done":
         match = PR_URL.fullmatch(args.url or "")
-        if not match or match.group(1) != link["repo"]:
+        if not match or match.group(1).lower() != link["repo"].lower():
             print(f"usage: hermes muster hook done https://github.com/{link['repo']}/pull/<n>", file=sys.stderr)
             return 2
         detail = args.url

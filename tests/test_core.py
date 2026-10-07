@@ -622,3 +622,30 @@ def test_pane_env_expands_a_tilde_gh_config_dir(monkeypatch):
 def test_pane_env_carries_a_kanban_home_that_differs(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_KANBAN_HOME", str(tmp_path / "kanban"))
     assert core.pane_env()[:2] == [f"HERMES_HOME={tmp_path / 'hermes'}", f"HERMES_KANBAN_HOME={tmp_path / 'kanban'}"]
+
+
+def test_notify_target_stringifies_ids_yaml_parsed_as_ints(monkeypatch):
+    monkeypatch.setitem(config.settings, "notify_chat_id", -1004455490829)
+    monkeypatch.setitem(config.settings, "notify_user_id", 8768235002)
+    assert core.notify_target() == {"chat_id": "-1004455490829", "user_id": "8768235002", "chat_type": "group"}
+    monkeypatch.setitem(config.settings, "notify_user_id", "")
+    assert core.notify_target()["user_id"] == "-1004455490829"
+
+
+def test_board_db_follows_the_kanban_home_and_the_default_board_layout(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_KANBAN_HOME", str(tmp_path / "kb"))
+    assert core.board_db() == tmp_path / "kb" / "kanban" / "boards" / "muster" / "kanban.db"
+    monkeypatch.setitem(config.settings, "board", "default")
+    assert core.board_db() == tmp_path / "kb" / "kanban.db"
+
+
+def test_approval_label_name_is_case_insensitive():
+    assert core.approval([labeled(JASON, 18, "2026-09-16T10:00:00Z", name="Agent-Ready")])["id"] == 18
+
+
+def test_the_issue_query_url_encodes_the_label(tmp_path, monkeypatch):
+    monkeypatch.setitem(config.settings, "label", "ready & go")
+    calls = []
+    monkeypatch.setattr(core, "run", lambda argv: calls.append(argv) or "")
+    core.intake(REPO)
+    assert "labels=ready%20%26%20go&" in calls[0][-1]

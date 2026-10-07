@@ -21,6 +21,7 @@ import sqlite3
 import subprocess
 import sys
 import time
+import urllib.parse
 from pathlib import Path
 
 from . import claude, config
@@ -61,7 +62,10 @@ def hermes_home():
 
 
 def board_db():
-    return hermes_home() / "kanban" / "boards" / config.settings["board"] / "kanban.db"
+    """Where hermes keeps the board: <kanban home>/kanban.db for `default`, else <kanban home>/kanban/boards/<board>/."""
+    root = Path(os.environ.get("HERMES_KANBAN_HOME", "").strip() or hermes_home()).expanduser()
+    board = config.settings["board"]
+    return root / "kanban.db" if board == "default" else root / "kanban" / "boards" / board / "kanban.db"
 
 
 class CommandError(Exception):
@@ -113,7 +117,7 @@ def approval(events):
     """
     s = config.settings
     labeled = [event for event in events
-               if event.get("event") == "labeled" and (event.get("label") or {}).get("name") == s["label"]]
+               if event.get("event") == "labeled" and (event.get("label") or {}).get("name", "").lower() == s["label"].lower()]
     if not labeled:
         return None
     newest = labeled[-1]
@@ -210,11 +214,12 @@ def telegram_home():
     raise LaunchError("TELEGRAM_HOME_CHANNEL is not set in $HERMES_HOME/.env")
 
 
-def engineering_chat():
+def notify_target():
     """The notify target: the configured chat, or the human's DM when notify_chat_id is empty."""
     s = config.settings
     if s["notify_chat_id"]:
-        return {"chat_id": s["notify_chat_id"], "user_id": s["notify_user_id"] or s["notify_chat_id"],
+        # YAML parses an unquoted Telegram id as an int; argv needs strings.
+        return {"chat_id": str(s["notify_chat_id"]), "user_id": str(s["notify_user_id"] or s["notify_chat_id"]),
                 "chat_type": s["notify_chat_type"]}
     chat = telegram_home()
     return {"chat_id": chat, "user_id": chat, "chat_type": "dm"}
@@ -222,7 +227,7 @@ def engineering_chat():
 
 def subscribe(card):
     """notify+wake: the gateway pings the human, then queues a fresh agent turn, for every card event."""
-    target = engineering_chat()
+    target = notify_target()
     kanban("notify-subscribe", card, "--platform", config.settings["notify_platform"], "--chat-id", target["chat_id"],
            "--user-id", target["user_id"], "--chat-type", target["chat_type"],
            "--notifier-profile", "default", "--delivery-mode", "notify+wake")
@@ -885,7 +890,7 @@ def intake(repo, dry=False):
     # REST, not `gh issue list`: that one is GraphQL, whose quota is far smaller.
     # The REST issues endpoint also returns pull requests; those carry `pull_request`.
     out = run(["gh", "api", "--paginate", "--jq", ".[]",
-               f"repos/{repo}/issues?labels={label}&state=open&per_page=100"])
+               f"repos/{repo}/issues?labels={urllib.parse.quote(label)}&state=open&per_page=100"])
     issues = [i for i in (json.loads(line) for line in out.splitlines() if line.strip())
               if "pull_request" not in i]
     failed = False

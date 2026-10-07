@@ -90,3 +90,16 @@ def test_require_rejects_a_branch_prefix_that_is_not_a_non_empty_string(prefix):
 def test_setting_keys_avoid_hermes_reserved_roots():
     # ctx.get_config rejects these first segments (hermes_cli/plugins_state.py)
     assert not {"model", "plugins", "security", "settings"} & set(config.DEFAULTS)
+
+
+def test_require_rejects_an_unknown_agent_kind():
+    config.settings.update(approver_login="me", repos=["o/a"], approver_id=7, agent_kind="codex")
+    with pytest.raises(config.ConfigError, match="agent_kind"):
+        config.require()
+
+
+@pytest.mark.parametrize("prefix", ["bad prefix/", "a..b/", "x~"])
+def test_require_rejects_a_branch_prefix_that_is_not_a_valid_ref(prefix):
+    config.settings.update(approver_login="me", repos=["o/a"], approver_id=7, branch_prefix=prefix)
+    with pytest.raises(config.ConfigError, match="branch_prefix"):
+        config.require()

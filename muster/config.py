@@ -1,6 +1,7 @@
 import os
 import re
 import shutil
+import subprocess
 from pathlib import Path
 
 DEFAULTS = {
@@ -47,6 +48,16 @@ def require():
         missing.append("branch_prefix")
     if missing:
         raise ConfigError(f"muster: set plugins.entries.muster.settings.{{{', '.join(missing)}}} in config.yaml")
+    from . import claude
+
+    claude.get_adapter(settings["agent_kind"])  # raises ConfigError: fail before any worktree or card exists
+    try:
+        valid = subprocess.run(["git", "check-ref-format", "--branch", f"{settings['branch_prefix']}1"],
+                               capture_output=True).returncode == 0
+    except OSError:
+        raise ConfigError("muster: cannot run git to check branch_prefix") from None
+    if not valid:
+        raise ConfigError(f"muster: branch_prefix {settings['branch_prefix']!r} does not make a valid branch name")
     repos()  # raises on a malformed slug
     wf = workflow_path()
     if not wf.is_file() or not wf.read_text().strip():

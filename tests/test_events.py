@@ -5,6 +5,7 @@ import hashlib
 import io
 import json
 import os
+import time
 
 import pytest
 
@@ -390,3 +391,18 @@ def test_hook_with_card_delegates_to_runs(monkeypatch):
     monkeypatch.setattr(runs, "hook", lambda args: seen.append(args.card) or 0)
     assert events.hook(argparse.Namespace(event="stop", url=None, card="t_run1")) == 0
     assert seen == ["t_run1"]
+
+
+def test_a_stale_empty_wait_marker_is_replaced_and_a_fresh_one_is_left(board, monkeypatch):
+    marker = board["git_dir"] / core.WAIT_KIND
+    marker.write_text("")
+    assert hook(monkeypatch, "notification") == 0
+    assert verbs(board) == []  # fresh: another hook is mid-create
+    old = time.time() - 121
+    os.utime(marker, (old, old))
+    assert hook(monkeypatch, "notification") == 0
+    assert board["cards"]["t_wait1"] == "blocked" and marker.read_text() == "t_wait1"
+
+
+def test_done_compares_the_repository_case_insensitively(board, monkeypatch):
+    assert done(f"https://github.com/{LINKS['repo'].upper()}/pull/1") == 0
