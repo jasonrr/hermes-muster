@@ -39,8 +39,6 @@ from . import claude, config, core, events
 
 UNACKED_AFTER = 15 * 60
 IDLE_AFTER = 10 * 60
-# herdr agent_status values that mean the agent waits for input.
-READY = ("idle", "done")
 BRANCH = re.compile(r"(feat|fix|chore|deps)/[a-z0-9][a-z0-9._-]*")
 ORIGIN = re.compile(r"github\.com[:/]([\w.-]+/[\w.-]+?)(?:\.git)?/?$")
 ERRORS = (core.CommandError, core.LaunchError, OSError, ValueError, KeyError, TypeError,
@@ -273,7 +271,7 @@ def reconcile(run):
     state, idle_file = agent.get("agent_status"), directory / "idle.json"
     if state == "blocked":
         enqueue(card, "notification", "The agent is waiting on a dialog.")
-    if state not in READY:
+    if state not in core.READY:
         idle_file.unlink(missing_ok=True)
         return
     # herdr keeps no idle-since time: the first flush that sees this state change starts the clock.

@@ -81,8 +81,6 @@ IDLE = 1800
 MAX_GAP = 900
 # How far GitHub's merge time may run ahead of this clock before the clock is not trusted.
 SKEW = 300
-# herdr: both mean the agent is ready for input.
-READY = {"idle", "done"}
 # The only foreground processes a pane without an agent may run.
 # The herdr layout's own tools: herdr-reviewr and herdr-file-view only show files; lazygit keeps
 # nothing but the repository, and a change it has not committed still fails `clean`.
@@ -92,7 +90,7 @@ QUIET = {"zsh", "bash", "sh", "fish", "herdr-reviewr", "herdr-file-view", "lazyg
 # never by a path or word further along. An MCP server named otherwise keeps the workspace (safe side).
 HELPER = re.compile(r"mcp|.+-mcp|mcp-.+|.*langserver.*|.+-language-server|.+-lsp", re.I)
 SECRET = re.compile(r"gh[pousr]_\w+|github_pat_\w+")
-# Agent scaffolding a tool copies into each new worktree (Codex, 2026-10: radicalcandorai #461).
+# Agent scaffolding files a tool copies into each new worktree.
 # Only these paths may be deleted as copies, and only when `copied` proves them one.
 SCAFFOLD = re.compile(r"AGENTS\.md|\.agents/.+|\.codex/.+")
 FAILURES = (core.CommandError, OSError, ValueError, KeyError, TypeError, AttributeError)
@@ -196,7 +194,7 @@ def quiet(workspace):
             raise NotReady(f"pane {pid} runs in the background: {busy[0][:80]}")
         if pane.get("agent"):
             agent = herdr("agent", "get", pid)["agent"]
-            if agent.get("agent_status") not in READY:
+            if agent.get("agent_status") not in core.READY:
                 raise NotReady(f"pane {pid}: {agent.get('agent')} is {agent.get('agent_status')}")
             state = [agent.get("agent"), agent.get("agent_status"), agent.get("state_change_seq")]
         else:
@@ -307,7 +305,7 @@ def merged_gate(link, prs, head, now):
         return f"no pull request from {branch}"
     for pr in prs:
         if (not pr["merged_at"] or pr["base"]["ref"] != base or pr["head"]["ref"] != branch
-                or pr["head"]["repo"]["full_name"] != repo):
+                or pr["head"]["repo"]["full_name"].lower() != repo.lower()):
             return f"PR #{pr['number']} is not merged from {branch} into {base}"
         if datetime.fromisoformat(pr["merged_at"].replace("Z", "+00:00")).timestamp() > now + SKEW:
             return f"PR #{pr['number']} merged after this clock's now: clock not trusted"

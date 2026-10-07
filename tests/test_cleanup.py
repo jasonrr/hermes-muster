@@ -963,3 +963,9 @@ def test_a_run_worktree_under_an_overlapping_prefix_is_still_cleaned_by_its_reco
     as_run(world)
     window(world)
     assert removes(world) == [["herdr", "worktree", "remove", "--workspace", "wZ"]]
+
+
+def test_the_head_repository_compares_case_insensitively(world):
+    world.pulls[0]["head"]["repo"]["full_name"] = REPO.upper()
+    window(world)
+    assert len(removes(world)) == 1
