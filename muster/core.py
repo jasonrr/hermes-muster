@@ -354,6 +354,8 @@ def plan(owner, repo, clone, branch, base, label, name, model, settings, tab, en
     # git's own rule, run locally: a pure check, so not through the run() seam.
     if subprocess.run(["git", "check-ref-format", "--branch", branch], capture_output=True, check=False).returncode:
         raise LaunchFailure("refused", f"{branch!r} is not a valid branch name")
+    if subprocess.run(["git", "check-ref-format", "--branch", base], capture_output=True, check=False).returncode:
+        raise LaunchFailure("refused", f"{base!r} is not a valid base branch name")
     return {"version": LAUNCH_VERSION, "owner": owner, "repo": repo, "clone": str(clone), "branch": branch,
             "base": base, "path": worktree_path(clone, branch), "planned": worktree_path(clone, branch), "label": label, "name": name, "model": model,
             "settings": str(settings), "tab": tab, "env": list(env), "step": None, "workspace": None,
