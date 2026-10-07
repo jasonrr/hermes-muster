@@ -5,6 +5,7 @@
 - `python3 -m pytest` assumed by the plan, but the system python3 has no pytest → verify commands fail as written; run them inside a project `.venv` (`uv venv .venv && uv pip install --python .venv/bin/python pytest`, then `. .venv/bin/activate`).
 - A contract test file that mixes modules (test_kanban_contract imported rc_intake and rc_run) cannot port whole in the first module's task → assign each test to the task that ports the module it imports, or it silently drops.
 - The plan inventoried scripts, not the live crontab: the source ran a third every-minute job (`rc_run.py flush`) the plan never named → read `crontab -l` (or the scheduler) when porting cron-driven code; muster-flush.sh was added at Task 7.
+- `hermes plugins validate` uses a RecordingContext whose get_config returns the default, so it never sees Hermes rejecting a plugin setting key whose first segment is reserved (`model`, `plugins`, `security`, `settings`; hermes_cli/plugins_state.py) → every command crashed under real Hermes; only a temp-HERMES_HOME run of the real CLI caught it (setting renamed `agent_model`).
 
 ## 2026-10-07 carried from rc-intake docs/learnings.md
 
