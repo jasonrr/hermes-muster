@@ -21,12 +21,14 @@ def await_approval(session_key, notify, command, request_id):
         surface="muster")
 
 
-def user_authorized(gateway, source):
-    """Hermes's own authorization for an inbound message (allowlists, pairing).
+def approval_session(adapter, callback_data):
+    """The session key of the Hermes approval card an `ea:<choice>:<id>` tap is for, or None.
 
-    pre_gateway_dispatch runs before Hermes authorizes (hermes_cli/plugins.py), so a hook that consumes a
-    message must check itself. Relies on gateway/authz_mixin.py `GatewayRunner._is_user_authorized`. Wanted
-    upstream: authorization before pre_gateway_dispatch, or a public `is_authorized(source)`. Fails closed.
+    muster's cards must take only the notify user's tap, while Hermes's own cards keep Hermes's rules, so the
+    guard must tell them apart. Relies on plugins/platforms/telegram/adapter.py `_approval_state` (approval id ->
+    session key). Wanted upstream: a session-key or plugin-namespace filter for approval callbacks.
     """
-    check = getattr(gateway, "_is_user_authorized", None)
-    return bool(check and check(source))
+    try:
+        return (getattr(adapter, "_approval_state", None) or {}).get(int(str(callback_data).split(":", 2)[2]))
+    except (ValueError, IndexError):
+        return None

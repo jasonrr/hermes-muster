@@ -66,11 +66,6 @@ def test_the_clarify_functions_the_gateway_calls_exist_with_their_arguments():
     assert 'CANCELLED = "\\x00cancelled"' in source  # the gateway's waiter ignores values starting with \x00
 
 
-def test_is_user_authorized_still_takes_a_source():
-    positional, _ = signature("gateway.authz_mixin", "gateway/authz_mixin.py", "_is_user_authorized")
-    assert positional == ["self", "source"]
-
-
 def test_the_adapter_methods_the_gateway_calls_exist():
     tree = ast.parse((HERMES / "gateway/platforms/base.py").read_text())  # the adapter contract
     found = {n.name: [a.arg for a in n.args.args + n.args.kwonlyargs]
@@ -80,9 +75,20 @@ def test_the_adapter_methods_the_gateway_calls_exist():
     assert {"chat_id", "message_id", "content"} <= set(found["edit_message"])
 
 
-def test_user_authorized_fails_closed():
-    class No:
-        _is_user_authorized = staticmethod(lambda source: False)
+def test_the_telegram_adapter_still_keeps_approval_state():
+    files = list((HERMES / "plugins/platforms/telegram").glob("*.py")) + list((HERMES / "gateway/platforms").glob("telegram*.py"))
+    init = [n for f in files for c in ast.walk(ast.parse(f.read_text())) if isinstance(c, ast.ClassDef)
+            for n in c.body if isinstance(n, ast.FunctionDef) and n.name == "__init__"
+            and "_approval_state" in (ast.get_source_segment(f.read_text(), n) or "")]
+    assert init, "no Telegram adapter __init__ mentions _approval_state: hermes_private.approval_session is stale"
 
-    assert hermes_private.user_authorized(object(), "s") is False
-    assert hermes_private.user_authorized(No(), "s") is False
+
+def test_approval_session_reads_the_adapters_state_and_returns_none_on_bad_data():
+    class Adapter:
+        _approval_state = {7: "muster:abc"}
+
+    assert hermes_private.approval_session(Adapter(), "ea:once:7") == "muster:abc"
+    assert hermes_private.approval_session(Adapter(), "ea:once:8") is None
+    assert hermes_private.approval_session(Adapter(), "ea:junk") is None
+    assert hermes_private.approval_session(Adapter(), "ea:once:x") is None
+    assert hermes_private.approval_session(object(), "ea:once:7") is None

@@ -2,9 +2,12 @@
 
 Runs inside the Hermes gateway process. A scan task presents each `open` request (muster.decisions): a
 question, build or feedback choice as Hermes clarify prompts, a permission prompt as Hermes's own approval
-card. Hermes owns the buttons, who may tap them, the typed-text parsing, the edit after a tap and the
-"expired" notice on a dead prompt. muster adds only what Hermes lacks (upstream asks:
-jasonrr/hermes-muster#20):
+card. Hermes owns the buttons, the typed-text parsing and the "expired" notice on a dead prompt. muster adds
+only what Hermes lacks (upstream asks: jasonrr/hermes-muster#20):
+- a narrower authorization: only the notify user, in the notify chat, may answer a muster prompt (a guard in
+  front of Hermes's handlers); Hermes's allowlist (who may talk to its agent) is not enough to approve;
+- the outcome on the message: it is edited to what happened (Delivered ✓, Denied ✓, Answered in the pane...),
+  so the human knows whether an answer reached the agent;
 - prompts that survive a gateway restart: Hermes keeps them in memory, so each boot presents open requests again;
 - a reply routed to the message it answers: Hermes routes typed text by chat session, oldest prompt first;
 - a ForceReply after "Other": in a group with privacy mode Telegram delivers only replies to the bot;
@@ -41,6 +44,9 @@ class State:
         self.approvals = set()  # permission request ids whose Hermes approval wait runs in this process
         self.partial = {}  # id -> {question index: answer}: lost on restart, the request is re-presented
         self.messages = {}  # message id -> (request id, question index), including superseded ones
+        self.watch = set()  # ids presented or seen open: edited to their outcome when they end
+        self.edit_failed = set()
+        self.swept = False
 
 
 S = State()
@@ -77,20 +83,58 @@ def telegram_factory(app, adapter):
     config.load(CTX)
     S.configured = True
     core.prepare_env()
-    app.add_handler(CallbackQueryHandler(ask_for_text, pattern=r"^cl:mu[0-9a-f]+q\d+:other$", block=False), -1)
+    app.add_handler(CallbackQueryHandler(guard, pattern=r"^cl:mu"), -1)
+    app.add_handler(CallbackQueryHandler(approval_guard, pattern=r"^ea:"), -1)
     S.adapter, S.loop = adapter, asyncio.get_running_loop()
     S.bot = getattr(app, "bot", None)  # Telegram's own bot, for the ForceReply after Other
     if S.task is None or S.task.done() or S.task.get_loop() is not S.loop:
         S.task = CTX.spawn_task(scan_loop(), name="muster:scan")  # Hermes cancels it on plugin unload
 
 
-async def ask_for_text(update, context):
+def authorized(user, chat):
+    """Only the notify user, in the notify chat. A group with no notify_user_id authorizes nobody."""
+    ensure_config()
+    s, target = config.settings, core.notify_target()
+    return (not (s["notify_chat_id"] and not s["notify_user_id"])
+            and str(user) == target["user_id"] and str(chat) == target["chat_id"])
+
+
+async def refuse_unless_authorized(query):
+    """Group -1, ahead of Hermes's handler (group 0): refuse anyone but the notify user in the notify chat."""
+    from telegram.ext import ApplicationHandlerStop
+
+    try:
+        if authorized(query.from_user.id, query.message.chat.id):
+            return
+    except Exception as caught:  # noqa: BLE001 - fail closed
+        log(f"guard error, refused: {caught}")
+    log(f"refused a tap from user {getattr(query.from_user, 'id', '?')} in chat "
+        f"{getattr(getattr(query.message, 'chat', None), 'id', '?')}")
+    await query.answer("Not authorized")
+    raise ApplicationHandlerStop
+
+
+async def guard(update, context):
+    """A tap on a muster clarify prompt: authorize it, and after Other send the reply prompt."""
+    query = update.callback_query
+    await refuse_unless_authorized(query)
+    if str(query.data).endswith(":other"):
+        await ask_for_text(query)
+
+
+async def approval_guard(update, context):
+    """A tap on a Hermes approval card: a muster card (session muster:...) takes only the notify user's tap;
+    Hermes's own cards pass untouched."""
+    query = update.callback_query
+    if str(hermes_private.approval_session(S.adapter, query.data) or "").startswith("muster:"):
+        await refuse_unless_authorized(query)
+
+
+async def ask_for_text(query):
     """After Other: a ForceReply naming the human, bound to the same question. In a group Telegram delivers a
-    message to the bot only when it replies to the bot (privacy mode), and the Other button opens no reply box.
-    Hermes's own handler (group 0) still authorizes and records the tap."""
+    message to the bot only when it replies to the bot (privacy mode), and the Other button opens no reply box."""
     from telegram import ForceReply
 
-    query = update.callback_query
     found = re.fullmatch(r"cl:mu([0-9a-f]+)q(\d+):other", str(query.data))
     if not found or S.bot is None:
         return
@@ -146,6 +190,8 @@ async def scan():
         for n, ids in [*(presented.get("messages") or {}).items(), *(presented.get("replies") or {}).items()]:
             for mid in ids:
                 S.messages[str(mid)] = (req["id"], int(n))
+        if presented.get("messages"):
+            S.watch.add(req["id"])
         try:
             await handle(req)
         except Exception as caught:  # noqa: BLE001 - one poisoned request must not stop the others
@@ -156,6 +202,47 @@ async def scan():
     for rid in [*S.shown, *S.approvals]:  # a request that left `open`: let its waiter threads exit
         if live.get(rid) != "open":
             release(rid)
+    if not S.swept:  # requests that ended while the gateway was down
+        S.swept = True
+        for req in await asyncio.to_thread(decisions.read_all, True):
+            if (req.get("presented") or {}).get("messages") and not req.get("edited"):
+                S.watch.add(req["id"])
+    for rid in list(S.watch):
+        if rid not in live:
+            try:
+                await settle_edit(rid)
+            except Exception as caught:  # noqa: BLE001
+                log(f"request {rid}: edit: {caught}")
+
+
+async def edit(chat, mid, text):
+    try:
+        res = await S.adapter.edit_message(chat, mid, text)
+    except Exception as caught:  # noqa: BLE001
+        log(f"edit {mid}: {caught}")
+        return False
+    if not res.success:
+        log(f"edit {mid}: {getattr(res, 'error', 'failed')}")
+    return bool(res.success)
+
+
+async def settle_edit(rid):
+    """Edit a finished request's newest messages (and reply prompts) to its outcome; one retry on a later scan."""
+    req = await asyncio.to_thread(decisions.load, rid)
+    if req.get("edited"):
+        S.watch.discard(rid)
+        return
+    chat = core.notify_target()["chat_id"]
+    presented = req.get("presented") or {}
+    newest = [ids[-1] for ids in (presented.get("messages") or {}).values() if ids]
+    newest += [mid for ids in (presented.get("replies") or {}).values() for mid in ids]
+    ok = all([await edit(chat, mid, req.get("outcome") or req["status"]) for mid in newest])
+    if ok or rid in S.edit_failed:
+        S.watch.discard(rid)
+        S.edit_failed.discard(rid)
+        await asyncio.to_thread(decisions.update, rid, edited=True)
+    else:
+        S.edit_failed.add(rid)
 
 
 def release(rid):
@@ -257,17 +344,23 @@ async def present(req):
 
 
 async def presented(rid, messages, failure):
-    """Record a presentation: on failure, cancel what was sent and back off; else mark it this boot's.
-    A message from an earlier boot is dead; Hermes answers a tap on it with its own "expired" notice."""
+    """Record a presentation: on failure, cancel what was sent and back off; else mark it this boot's. Every
+    earlier message of the request is dead (a tap gets Hermes's "expired" notice) and is edited to say so."""
+    S.watch.add(rid)
+    earlier = [mid for ids in messages.values() for mid in ids[:-1]]
     if failure:
         release(rid)
         delay = min((S.retry.get(rid, (0, 1))[1]) * 2, BACKOFF_MAX)
         S.retry[rid] = (time.monotonic() + delay, delay)
         log(f"request {rid}: not presented, retry in {delay}s: {failure}")
         await asyncio.to_thread(decisions.update, rid, presented={"messages": messages})
-        return
-    S.retry.pop(rid, None)
-    await asyncio.to_thread(decisions.update, rid, presented={"boot": BOOT, "messages": messages})
+        earlier = [mid for ids in messages.values() for mid in ids]  # this boot's partial send is dead too
+    else:
+        S.retry.pop(rid, None)
+        await asyncio.to_thread(decisions.update, rid, presented={"boot": BOOT, "messages": messages})
+    chat = core.notify_target()["chat_id"]
+    for mid in earlier:
+        await edit(chat, mid, "Superseded: see the newer message")
 
 
 async def present_approval(req):
@@ -424,9 +517,7 @@ async def _dispatch(event, gateway):
     if getattr(src.platform, "value", src.platform) != "telegram" or not (event.text or "").strip():
         return None
     ensure_config()
-    if not S.messages or str(src.chat_id) != core.notify_target()["chat_id"]:
-        return None
-    if not hermes_private.user_authorized(gateway, src):  # this hook runs before Hermes authorizes
+    if not S.messages or not authorized(src.user_id, src.chat_id):  # this hook runs before Hermes authorizes
         return None
     from tools import approval, clarify_gateway
 
@@ -441,7 +532,7 @@ async def _dispatch(event, gateway):
             ok = (entry is not None and clarify_gateway.mark_awaiting_text(entry.clarify_id)
                   and clarify_gateway.resolve_text_response_for_session(session(rid, n), text))
         if ok:
-            await S.adapter.edit_message(src.chat_id, str(reply), f"Received ✓: {text[:200]}")
+            await edit(src.chat_id, str(reply), f"Received ✓: {text[:200]}")
             return {"action": "skip"}
         return None  # not (or no longer) waiting in this process: leave it to Hermes
     # after "Other", the next message is the answer whatever it replies to (as Hermes's own clarify)

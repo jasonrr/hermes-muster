@@ -89,7 +89,7 @@ def status(req):
 
 # -- the factory ------------------------------------------------------------------------------------
 
-def test_factory_registers_ask_for_text_and_one_scan_task(monkeypatch):
+def test_factory_registers_both_guards_and_one_scan_task(monkeypatch):
     monkeypatch.setattr(gateway, "SCAN_EVERY", 0.01)
     prepared = []
     monkeypatch.setattr(core, "prepare_env", lambda: prepared.append(1))
@@ -104,17 +104,9 @@ def test_factory_registers_ask_for_text_and_one_scan_task(monkeypatch):
         first.cancel()
 
     run(go())
-    ((handler, group),) = app.handlers
-    assert (group, handler.pattern, handler.callback, handler.block) == (
-        -1, r"^cl:mu[0-9a-f]+q\d+:other$", gateway.ask_for_text, False)
+    assert [(g, h.pattern, h.callback) for h, g in app.handlers] == [
+        (-1, r"^cl:mu", gateway.guard), (-1, r"^ea:", gateway.approval_guard)]
     assert other.handlers and prepared == [1, 1]
-
-
-def test_the_pattern_matches_only_muster_other_taps():
-    import re
-    pattern = r"^cl:mu[0-9a-f]+q\d+:other$"
-    assert re.match(pattern, "cl:mu0a1b2q0:other") and re.match(pattern, "cl:mu0a1bq12:other")
-    assert not re.match(pattern, "cl:mu0a1bq0:1") and not re.match(pattern, "cl:abc123q0:other")
 
 
 def test_a_poisoned_request_does_not_stop_the_others():
@@ -237,7 +229,7 @@ def test_other_sends_a_force_reply_bound_to_the_question(hermes):
     gateway.S.bot = app.bot
 
     async def go():
-        await gateway.ask_for_text(fh.update(4242, 4242, data=f"cl:mu{req['id']}q0:other"), None)
+        await gateway.guard(fh.update(4242, 4242, data=f"cl:mu{req['id']}q0:other"), None)
         (prompt,) = app.bot.sent
         assert isinstance(prompt["markup"], fh.ForceReply) and prompt["markup"].selective
         assert "reply to this message" in prompt["text"] and "tg://user?id=4242" in prompt["text"]
@@ -256,9 +248,9 @@ def test_other_sends_a_force_reply_bound_to_the_question(hermes):
 
 def test_ask_for_text_without_a_bot_or_on_foreign_data_sends_nothing():
     app = fh.Application()
-    run(gateway.ask_for_text(fh.update(4242, 4242, data="cl:mu00q0:other"), None))  # no bot yet
+    run(gateway.ask_for_text(fh.Query(4242, 4242, "cl:mu00q0:other")))  # no bot yet
     gateway.S.bot = app.bot
-    run(gateway.ask_for_text(fh.update(4242, 4242, data="cl:other"), None))
+    run(gateway.ask_for_text(fh.Query(4242, 4242, "cl:other")))
     assert app.bot.sent == []
 
 
@@ -428,7 +420,6 @@ def test_dispatch_refuses_another_platform_chat_or_unauthorized_user(hermes):
     assert dispatch("words", user=999, reply=mid) is None
     assert dispatch("words", chat=999, reply=mid) is None
     assert dispatch("   ") is None
-    assert dispatch("words", gw=object()) is None  # no authorization check available: fail closed
     assert hermes._entries[f"mu{req['id']}q0"].response is None and gateway.S.adapter.edits == []
 
 
@@ -444,13 +435,143 @@ def test_dispatch_errors_pass_through(monkeypatch):
     assert dispatch("words") is None
 
 
+# -- the guards -------------------------------------------------------------------------------------
+
+def tap(user, chat, data="cl:mu0q0:0", fn=None):
+    update = fh.update(user, chat, data=data)
+    try:
+        run((fn or gateway.guard)(update, None))
+    except fh.ApplicationHandlerStop:
+        return "stopped", update.callback_query.answers
+    return "passed", update.callback_query.answers
+
+
+def test_the_guard_in_a_dm_by_default():
+    assert tap(4242, 4242) == ("passed", [])  # ints from Telegram compare as strings
+    assert tap(999, 4242) == ("stopped", ["Not authorized"])
+    assert tap(4242, 999) == ("stopped", ["Not authorized"])
+
+
+def test_the_guard_in_a_group_needs_both_ids(monkeypatch):
+    monkeypatch.setitem(config.settings, "notify_chat_id", -100123)
+    monkeypatch.setitem(config.settings, "notify_user_id", "55")
+    assert tap(55, -100123) == ("passed", [])
+    assert tap(56, -100123)[0] == "stopped"  # another group member
+    assert tap(55, 4242)[0] == "stopped"     # the right user, the wrong chat
+    assert "refused a tap" in core.log_path("gateway").read_text()
+
+
+def test_a_group_without_a_user_id_authorizes_nobody(monkeypatch):
+    monkeypatch.setitem(config.settings, "notify_chat_id", -100123)
+    monkeypatch.setitem(config.settings, "notify_user_id", "")
+    assert tap(55, -100123)[0] == "stopped"
+    assert tap(-100123, -100123)[0] == "stopped"
+    assert gateway.authorized(55, -100123) is False
+
+
+def test_a_guard_error_fails_closed(monkeypatch):
+    monkeypatch.setattr(gateway, "authorized", lambda u, c: 1 / 0)
+    assert tap(4242, 4242) == ("stopped", ["Not authorized"])
+    assert "guard error" in core.log_path("gateway").read_text()
+
+
+def test_a_refused_tap_on_other_sends_no_reply_prompt():
+    app = fh.Application()
+    gateway.S.bot = app.bot
+    assert tap(999, 4242, data="cl:mu0aq0:other")[0] == "stopped"
+    assert app.bot.sent == []
+
+
+def test_the_approval_guard_covers_muster_cards_and_leaves_hermess_own():
+    gateway.S.adapter._approval_state[1] = f"muster:abc"
+    gateway.S.adapter._approval_state[2] = "agent:main:telegram"
+    assert tap(999, 4242, "ea:once:1", gateway.approval_guard) == ("stopped", ["Not authorized"])
+    assert tap(4242, 4242, "ea:once:1", gateway.approval_guard) == ("passed", [])
+    assert tap(999, 4242, "ea:once:2", gateway.approval_guard) == ("passed", [])  # Hermes's own card
+    assert tap(999, 4242, "ea:once:77", gateway.approval_guard) == ("passed", [])  # unknown id
+    assert tap(999, 4242, "ea:junk", gateway.approval_guard) == ("passed", [])
+
+
+# -- settling the messages --------------------------------------------------------------------------
+
+def test_a_finished_request_edits_its_newest_message_to_the_outcome():
+    req = ask()
+    run(gateway.scan())
+    decisions.transition(req["id"], ("open",), "done", outcome="Delivered ✓")
+    run(gateway.scan())
+    assert (DM, sent()[0]["mid"], "Delivered ✓") in gateway.S.adapter.edits
+    assert decisions.load(req["id"])["edited"] is True
+    n = len(gateway.S.adapter.edits)
+    run(gateway.scan())
+    assert len(gateway.S.adapter.edits) == n
+
+
+def test_reply_prompts_are_edited_to_the_outcome_too(hermes):
+    req, mid = presented(hermes)
+    decisions.update(req["id"], presented={**decisions.load(req["id"])["presented"], "replies": {"0": ["901"]}})
+    decisions.transition(req["id"], ("open",), "done", outcome="Delivered ✓")
+    run(gateway.scan())
+    assert sorted(m for _, m, _ in gateway.S.adapter.edits) == sorted([mid, "901"])
+    assert {t for _, _, t in gateway.S.adapter.edits} == {"Delivered ✓"}
+
+
+def test_a_failed_edit_is_retried_once_then_dropped():
+    req = ask()
+    run(gateway.scan())
+    decisions.transition(req["id"], ("open",), "done", outcome="Delivered ✓")
+    gateway.S.adapter.fail_edits = 2
+    run(gateway.scan())
+    assert not decisions.load(req["id"]).get("edited") and req["id"] in gateway.S.watch
+    run(gateway.scan())  # the retry also fails: dropped
+    assert decisions.load(req["id"])["edited"] is True and req["id"] not in gateway.S.watch
+    assert gateway.S.adapter.edits == []
+
+
+def test_a_request_that_ended_while_the_gateway_was_down_is_edited_on_the_first_scan(hermes):
+    req = ask()
+    run(gateway.scan())
+    gateway.release(req["id"])
+    decisions.transition(req["id"], ("open",), "stale", outcome="The agent session ended")
+    old = gateway.S
+    gateway.S = gateway.State()  # a restarted gateway
+    gateway.S.adapter, gateway.S.configured = fh.Adapter(), True
+    run(gateway.scan())
+    assert gateway.S.adapter.edits == [(DM, old.adapter.sent[0]["mid"], "The agent session ended")]
+    assert decisions.load(req["id"])["edited"] is True
+
+
+def test_representing_edits_the_earlier_messages_to_superseded(hermes):
+    req = ask(presented={"boot": "old", "messages": {"0": ["7", "8"]}})
+    run(gateway.scan())
+    (msg,) = sent()
+    assert gateway.S.adapter.edits == [(DM, "7", "Superseded: see the newer message"),
+                                       (DM, "8", "Superseded: see the newer message")]
+    assert decisions.load(req["id"])["presented"]["messages"] == {"0": ["7", "8", msg["mid"]]}
+
+
+def test_a_failed_partial_send_supersedes_what_this_boot_sent():
+    two = [question(f"Q{i}") for i in range(2)]
+    ask(questions=two, choices=[["Alpha", "Beta"]] * 2)
+    adapter, real = gateway.S.adapter, gateway.S.adapter.send_clarify
+
+    async def second_fails(*args, **kw):
+        if adapter.sent:
+            adapter.fail_sends = 1
+        return await real(*args, **kw)
+
+    adapter.send_clarify = second_fails
+    run(gateway.scan())
+    (first,) = sent()
+    assert (DM, first["mid"], "Superseded: see the newer message") in adapter.edits
+
+
 # -- restart ----------------------------------------------------------------------------------------
 
 def test_a_request_from_an_earlier_boot_is_represented(hermes):
     req = ask(presented={"boot": "old", "messages": {"0": ["7"]}})
     run(gateway.scan())
     (msg,) = sent()
-    assert gateway.S.adapter.edits == []  # the old message is left for Hermes to answer as expired
+    assert gateway.S.adapter.edits == [(DM, "7", "Superseded: see the newer message")]
     assert decisions.load(req["id"])["presented"] == {"boot": gateway.BOOT, "messages": {"0": ["7", msg["mid"]]}}
 
 
