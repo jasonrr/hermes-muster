@@ -53,7 +53,7 @@ def board(tmp_path, monkeypatch):
         if verb == "notify-subscribe":
             return ""
         assert verb in ("block", "archive", "complete"), argv  # never unblock: see the contract test
-        card = argv[7] if verb == "block" else argv[5]
+        card = argv[-2] if verb == "block" else argv[5]  # block ... [--] <card> <reason>
         allowed = {"block": ("ready",), "archive": ("ready", "blocked", "done"), "complete": ("ready", "blocked")}
         if cards[card] not in allowed[verb]:
             raise core.CommandError(f"hermes kanban --board: exit 1\ncannot {verb} {card}")
@@ -89,8 +89,8 @@ def test_a_wait_opens_a_subscribed_blocked_wait_card_and_leaves_the_ledger_alone
     assert verbs(board) == ["create", "notify-subscribe", "block"]
     assert board["cards"] == {"t_abc123": "ready", "t_wait1": "blocked"}
     block = next(c for c in board["calls"] if c[4:5] == ["block"])
-    assert block[5:8] == ["--kind", "needs_input", "t_wait1"]
-    assert block[8] == "Claude is waiting for your input\nReply in Herdr pane p_agent."
+    assert block[5:9] == ["--kind", "needs_input", "--", "t_wait1"]
+    assert block[9] == "Claude is waiting for your input\nReply in Herdr pane p_agent."
     create = next(c for c in board["calls"] if c[4:5] == ["create"])
     assert create[create.index("--idempotency-key") + 1].startswith("t_abc123:wait:")
     assert "ledger t_abc123" in create[create.index("--body") + 1]
@@ -102,13 +102,19 @@ def test_a_long_question_is_kept_whole(board, monkeypatch):
     """The gateway shows the whole reason (human_notices); a cut here would end a question mid-sentence."""
     question = "The brief says no PR, but the tracker closes only on a PR. " * 8 + "Which do you want?"
     hook(monkeypatch, "notification", message=question)
-    assert next(c for c in board["calls"] if c[4:5] == ["block"])[8] == f"{question}\nReply in Herdr pane p_agent."
+    assert next(c for c in board["calls"] if c[4:5] == ["block"])[-1] == f"{question}\nReply in Herdr pane p_agent."
 
 
 def test_an_empty_message_still_says_what_to_do(board, monkeypatch):
     hook(monkeypatch, "notification", message="")
-    assert next(c for c in board["calls"] if c[4:5] == ["block"])[8] == (
+    assert next(c for c in board["calls"] if c[4:5] == ["block"])[-1] == (
         "The agent is waiting for you.\nReply in Herdr pane p_agent.")
+
+
+def test_a_question_that_starts_like_a_flag_is_passed_as_the_reason(board, monkeypatch):
+    hook(monkeypatch, "notification", message="--kind=capability please")
+    block = next(c for c in board["calls"] if c[4:5] == ["block"])
+    assert block[-3:] == ["--", "t_wait1", "--kind=capability please\nReply in Herdr pane p_agent."]
 
 
 def test_a_second_wait_while_one_is_open_makes_no_card(board, monkeypatch):
@@ -154,7 +160,7 @@ def test_clear_ends_a_session_but_does_not_block(board, monkeypatch):
 def test_session_end_blocks_a_ready_ledger_only(board, monkeypatch):
     assert hook(monkeypatch, "session-end", reason="prompt_input_exit") == 0
     assert board["cards"]["t_abc123"] == "blocked"
-    assert next(c for c in board["calls"] if c[4:5] == ["block"])[8] == (
+    assert next(c for c in board["calls"] if c[4:5] == ["block"])[-1] == (
         "The agent's session ended before it opened a pull request.\nCheck Herdr pane p_agent.")
     board["cards"]["t_abc123"], board["calls"] = "done", []
     assert hook(monkeypatch, "session-end") == 0
@@ -305,7 +311,7 @@ def test_an_askuserquestion_wait_names_the_question(board, monkeypatch):
     hook(monkeypatch, "notification", message=None, hook_event_name="PreToolUse", tool_name="AskUserQuestion",
          tool_input={"questions": [{"question": "Which repo?"}]})
     block = next(c for c in board["calls"] if c[4:5] == ["block"])
-    assert block[8] == "Which repo?\nReply in Herdr pane p_agent."
+    assert block[-1] == "Which repo?\nReply in Herdr pane p_agent."
 
 
 def test_a_rejected_question_closes_its_wait_so_the_corrected_one_pages(board, monkeypatch):
@@ -315,7 +321,7 @@ def test_a_rejected_question_closes_its_wait_so_the_corrected_one_pages(board, m
     assert hook(monkeypatch, "prompt") == 0
     hook(monkeypatch, "notification", message=None, tool_input={"questions": [{"question": "Which repo?"}]})
     assert board["cards"]["t_wait1"] == "archived" and board["cards"]["t_wait2"] == "blocked"
-    assert [c[8] for c in board["calls"] if c[4:5] == ["block"]][-1] == "Which repo?\nReply in Herdr pane p_agent."
+    assert [c[-1] for c in board["calls"] if c[4:5] == ["block"]][-1] == "Which repo?\nReply in Herdr pane p_agent."
 
 
 def test_a_full_session_pages_once_per_real_wait(board, monkeypatch):

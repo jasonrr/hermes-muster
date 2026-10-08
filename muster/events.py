@@ -115,7 +115,8 @@ def open_wait(git_dir, link, detail, key):
             os.close(claim)
     if status(card) == "ready":
         core.subscribe(card)
-        core.kanban("block", "--kind", "needs_input", card,
+        # "--": the agent's question may start with "--" (e.g. "--kind=..."); argparse would read it as a flag.
+        core.kanban("block", "--kind", "needs_input", "--", card,
                     f"{detail or 'The agent is waiting for you.'}\nReply in Herdr pane {link['pane']}.")
     expect(card, "blocked", "notification")
     return f"notification: wait card {card} blocked"

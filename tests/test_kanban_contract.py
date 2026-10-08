@@ -66,6 +66,14 @@ def test_a_second_same_kind_block_routes_to_triage_and_triage_is_a_dead_end(k):
     k("complete", card, "--summary", "s", ok=False)
 
 
+def test_a_reason_after_double_dash_that_looks_like_a_flag_is_kept_whole(k):
+    """events.open_wait passes `--` before the card: a question may start with `--kind=`."""
+    card = new(k)["id"]
+    k("block", "--kind", "needs_input", "--", card, "--kind=capability boom")
+    assert status(k, card) == "blocked"
+    assert "--kind=capability boom" in k("show", card)
+
+
 def test_a_launch_failure_blocks_with_kind_capability(k):
     """core.setup_trouble's kind: a ready card blocks for a human, and the event carries the kind."""
     card = new(k)["id"]

@@ -77,7 +77,7 @@ def board(tmp_path, monkeypatch):
             return ""
         # unblock: only a recover, once, of a launch-failure block (see the contract test)
         assert verb in ("block", "archive", "complete", "unblock"), argv
-        card = argv[7] if verb == "block" else argv[5]
+        card = argv[-2] if verb == "block" else argv[5]  # block ... [--] <card> <reason>
         allowed = {"block": ("ready",), "archive": ("ready", "blocked", "done"), "complete": ("ready", "blocked"),
                    "unblock": ("blocked",)}
         if cards[card] not in allowed[verb]:
@@ -115,7 +115,7 @@ def calls(state, verb):
 
 
 def block_text(state, card):
-    return next(c[8] for c in calls(state, "block") if c[7] == card)
+    return next(c[-1] for c in calls(state, "block") if c[-2] == card)
 
 
 def files(run_dir, box):
