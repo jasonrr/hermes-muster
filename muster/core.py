@@ -1,4 +1,5 @@
 """core: an open issue labeled with the approving label BY THE APPROVER gets one ledger card and one herdr pane.
+So does a bot's own issue that an auto_approvers entry approves (automatic()).
 
 Cron runs `hermes muster tick` every minute. GitHub is read through the operator's own `gh` login.
 The card lives on the configured kanban board with NO assignee, so no dispatcher ever runs it: it
@@ -205,13 +206,23 @@ def production_note(repo):
     return "No production note for this repository: treat production as unknown and ask."
 
 
-def brief(repo, number, bug, base="main"):
+def approved_by(repo, number, auto=None):
+    """Who approved, for the brief and the card. An automatic approval never says the approver labeled it."""
+    s = config.settings
+    if auto:
+        return (f"Issue {repo}#{number} was approved automatically. {auto['login']} (id {auto['id']}) opened it "
+                f"with labels `{s['label']}` and `{auto['label']}`, under {s['approver_login']}'s standing rule. "
+                f"{s['approver_login']} did not label it.")
+    return f"{s['approver_login']} approved issue {repo}#{number} for work by labeling it `{s['label']}`."
+
+
+def brief(repo, number, bug, base="main", auto=None):
     """What the pane agent reads first. Fixed text and numbers only: issue text never enters it."""
     s = config.settings
     bot = (f" `gh` and `git push` act as the login configured in `{gh_config_dir()}`." if s["gh_config_dir"] else "")
     return f"""# muster: {repo}#{number}
 
-{s['approver_login']} approved issue {repo}#{number} for work by labeling it `{s['label']}`. You are an
+{approved_by(repo, number, auto)} You are an
 interactive agent in a visible herdr pane on this machine.{bot} Nothing isolates you: these rules
 govern you, so follow them.
 
@@ -251,11 +262,13 @@ def startup_prompt(text):
     )
 
 
-def card_argv(repo, issue, event):
+def card_argv(repo, issue, event, auto=None):
     number = issue["number"]
     return [
         "hermes", "kanban", "--board", config.settings["board"], "create",
-        "--body", f"{repo}#{number}: https://github.com/{repo}/issues/{number}\n" + PROVENANCE,
+        "--body", f"{repo}#{number}: https://github.com/{repo}/issues/{number}\n"
+                  + (f"{approved_by(repo, number, auto)} Label event {event['id']}.\n" if auto else "")
+                  + PROVENANCE,
         "--idempotency-key", f"{repo}#{number}@{event['id']}",
         "--created-by", CREATED_BY,
         "--json",
@@ -849,7 +862,7 @@ def relaunch(record, directory, at):
                                        f"nothing to relaunch")
 
     def prepare(rec, git_dir):
-        text = brief(repo, number, record["bug"], rec["base"])
+        text = brief(repo, number, record["bug"], rec["base"], record.get("auto"))  # no "auto" before #2
         (git_dir / BRIEF_FILE).write_text(text)  # the audit copy of what the agent was told
         Path(rec["settings"]).write_text(json.dumps(agent_settings(), indent=2))
         (git_dir / CARD_FILE).write_text(json.dumps(links(record, rec)))
@@ -866,7 +879,7 @@ def step_of(at, record):
     return (record["launch"].get("phase") or "launch") if at["step"] == "launch" and record else at["step"]
 
 
-def launch(repo, issue, card, event=None):
+def launch(repo, issue, card, event=None, auto=None):
     """Open the pane for a card made this tick. Returns (prompt state, pane), or None after blocking the card."""
     number = issue["number"]
     clone, short, configured = config.repos()[repo]
@@ -876,7 +889,7 @@ def launch(repo, issue, card, event=None):
         with launch_lock(directory):
             base, why = base_of(clone, configured)
             record = {"card": card, "repo": repo, "issue": number, "title": issue["title"],
-                      "event": (event or {}).get("id"), "bug": is_bug(issue),
+                      "event": (event or {}).get("id"), "auto": auto, "bug": bool(auto) or is_bug(issue),
                       "launch": plan(card, repo, clone, f"{config.settings['branch_prefix']}{number}", base,
                                      f"{short}#{number}", agent_name("muster", f"{short}-{number}"),
                                      config.settings["agent_model"], directory / SETTINGS_FILE, "muster", pane_env())}
@@ -952,11 +965,12 @@ def recover_card(card, resend=False, adopt=False):
             issue = json.loads(run(["gh", "api", f"repos/{repo}/issues/{number}"]))
             if issue.get("state") != "open" or not any(lb.get("name") == label for lb in issue.get("labels", [])):
                 raise LaunchFailure("refused", f"{repo}#{number} is {issue.get('state')} or no longer labeled {label}")
-            current = approval(timeline(repo, number))
+            current, auto = approve(repo, issue, timeline(repo, number))
             if current is None or current.get("id") != record["event"]:
                 raise LaunchFailure("refused", f"the approval of {repo}#{number} changed: this card's label event is "
                                                f"{record['event']}, the current approving one is "
                                                f"{(current or {}).get('id', 'none (revoked)')}")
+            record["auto"] = auto
             # The recorded env pairs were fixed at launch; the hermes homes may have moved since.
             record["launch"]["env"] = pane_env()
             if resend:
@@ -1000,16 +1014,17 @@ def intake(repo, dry=False):
     for issue in sorted(issues, key=lambda item: item["number"]):
         number = issue["number"]
         try:
-            event = approval(timeline(repo, number))
+            event, auto = approve(repo, issue, timeline(repo, number))
             if event is None:
-                print(f"{repo}#{number} skipped: newest {label} label is not {config.settings['approver_login']}'s")
+                print(f"{repo}#{number} skipped: newest {label} label is not {config.settings['approver_login']}'s "
+                      f"and no auto_approvers entry approves it")
                 continue
             if dry:
-                print(f"{repo}#{number} would launch: {repo}#{number}@{event['id']} "
-                      f"({'bug' if is_bug(issue) else 'feature'})")
+                print(f"{repo}#{number} would launch{' automatically' if auto else ''}: {repo}#{number}@{event['id']} "
+                      f"({'bug' if auto or is_bug(issue) else 'feature'})")
                 continue
             before = int(time.time())
-            task = json.loads(run(card_argv(repo, issue, event)))
+            task = json.loads(run(card_argv(repo, issue, event, auto)))
             # The create is idempotent: an existing card comes back with its old created_at,
             # and only a card made just now gets a pane.
             # ...unless a tick was killed between that create and launch()'s first save.
@@ -1017,7 +1032,7 @@ def intake(repo, dry=False):
                                                 or (intake_dir() / task["id"] / "launch.json").is_file()):
                 print(f"{repo}#{number} task {task['id']} ({task.get('status')}) card exists")
                 continue
-            launched = launch(repo, issue, task["id"], event)
+            launched = launch(repo, issue, task["id"], event, auto)
             if launched is None:
                 failed = True
                 continue
