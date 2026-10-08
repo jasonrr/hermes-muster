@@ -1,4 +1,5 @@
 import asyncio
+import os
 import fcntl
 import importlib.util
 import sys
@@ -173,6 +174,25 @@ def test_a_send_failure_leaves_it_unpresented_then_succeeds_later(hermes):
     assert gateway.S.retry == {}
 
 
+def test_the_heartbeat_stops_while_sends_keep_failing(hermes):
+    ask()
+    beat = decisions.root() / ".gateway"
+    gateway.S.adapter.fail_sends = 99
+    run(gateway.scan())
+    first = beat.stat().st_mtime
+    gateway.S.failing_since -= gateway.HEALTHY_FOR + 1
+    os.utime(beat, (0, 0))
+    run(gateway.scan())
+    assert beat.stat().st_mtime == 0 and first  # wait cards fall back to Hermes's own ping
+    gateway.S.adapter.fail_sends = 0
+    for rid in list(gateway.S.retry):
+        gateway.S.retry[rid] = (0, 2)
+    run(gateway.scan())  # a send works again
+    assert gateway.S.failing_since is None
+    run(gateway.scan())
+    assert beat.stat().st_mtime > 0
+
+
 def test_the_backoff_doubles_up_to_a_minute():
     req = ask()
     delays = []
@@ -212,6 +232,15 @@ def test_typed_text_maps_back_by_index(text, multi, expect):
     req = ask(multi=multi)
     req["questions"][0]["multi"] = multi
     assert gateway.shape(req, 0, text)[0] == expect
+
+
+@pytest.mark.parametrize("tapped", ["2", "3", "5"])
+def test_a_tapped_numeric_label_is_that_option_not_an_index(tapped):
+    # Hermes resolves a tap with the label itself: "3" is the option labelled 3, not the third option
+    req = ask(labels=("2", "3", "5"))
+    assert gateway.shape(req, 0, tapped)[0] == tapped
+
+
 
 
 def test_a_tap_answers_the_request_and_marks_it_received(hermes, monkeypatch):
@@ -535,11 +564,21 @@ def test_herdr_is_looked_at_most_every_ten_seconds(monkeypatch):
     assert len(looks) == 2
 
 
-def test_a_working_pane_keeps_a_permission_request(monkeypatch):
+def test_a_pane_working_again_means_the_dialog_was_answered_there(monkeypatch):
+    # a deny in the pane fires no PostToolUse: the pane leaving `blocked` is the only sign
     req = permission()
     monkeypatch.setattr(core, "agent_at", lambda pane: {"agent_status": "working"})
     run(gateway.scan())
-    assert decisions.load(req["id"])["status"] == "open"
+    got = decisions.load(req["id"])
+    assert (got["status"], got["outcome"]) == ("stale", "Answered in the pane")
+
+
+def test_an_answered_permission_is_not_staled_while_the_hook_picks_it_up(monkeypatch):
+    req = permission()
+    decisions.transition(req["id"], ("open",), "answered", answer={"decision": "allow"})
+    monkeypatch.setattr(core, "agent_at", lambda pane: {"agent_status": "working"})
+    run(gateway.scan())
+    assert decisions.load(req["id"])["status"] == "answered"
 
 
 def test_a_herdr_error_is_not_an_answer(monkeypatch):

@@ -172,7 +172,7 @@ def rereview(ledger, run=None):
         return None, why
     head = pr["headRefOid"]
     if head == sent.get("head"):
-        return None, None
+        return None, f"no new commits since the reviewed head {head[:7]}"
     cycle = sent.get("cycle", 0) + 1
     card = json.loads(core.kanban(
         "create", "--body",
@@ -183,7 +183,9 @@ def rereview(ledger, run=None):
         core.subscribe(card["id"])
         core.kanban("complete", card["id"], "--summary", f"Revised, ready for re-review: {pr['url']} at {head[:7]}")
         events.expect(card["id"], "done", "rereview")
-    stale_others(ledger, ("build",), keep=None, why=f"stale: PR moved to {head[:7]}")
+    for old in for_ledger(ledger, "build"):  # a recommendation for this head is the current one: keep it
+        if old["status"] == "open" and old.get("head") != head:
+            transition(old["id"], ("open",), "stale", outcome=f"stale: PR moved to {head[:7]}")
     return card["id"], None
 
 

@@ -954,9 +954,10 @@ def test_done_without_a_send_back_neither_verifies_nor_makes_a_card(board, monke
     assert answer["calls"] == [] and verbs(board).count("create") == 0
 
 
-def test_the_reviewed_head_again_is_nothing(board, monkeypatch, tmp_path):
+def test_the_reviewed_head_again_tells_the_agent_there_are_no_new_commits(board, monkeypatch, tmp_path, capsys):
     verified(monkeypatch, tmp_path, board, pr={"url": PR, "headRefOid": REVIEWED})
-    assert done(PR) == 0 and verbs(board).count("create") == 0
+    assert done(PR) == 1 and verbs(board).count("create") == 0
+    assert "no new commits since the reviewed head" in capsys.readouterr().err
 
 
 def test_a_revision_that_does_not_verify_fails_done_with_the_reason_and_leaves_the_queue_clear(

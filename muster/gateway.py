@@ -25,6 +25,7 @@ PANE_EVERY = 10  # s between herdr looks at one permission request's pane
 SETTLE_MAX = 3600  # s after the hook delivered an answer before the request is closed without Claude's confirmation
 CAP = 3500  # characters per message (Telegram allows 4096)
 BACKOFF_MAX = 60
+HEALTHY_FOR = 30  # s of failing sends before the heartbeat stops
 STALE = "\x00stale"  # resolves a leftover clarify so its waiter thread exits
 BOOT = secrets.token_hex(4)
 
@@ -42,6 +43,7 @@ class State:
         self.edit_failed = set()
         self.pane_checked = {}
         self.tasks = set()
+        self.failing_since = None  # monotonic time sends started failing
 
 
 S = State()
@@ -137,7 +139,8 @@ def _touch():
 async def scan():
     """One pass: heartbeat, then each request in its own try block, then the ones that ended."""
     S.loop = asyncio.get_running_loop()
-    await blocking(_touch)
+    if not S.failing_since or time.monotonic() - S.failing_since < HEALTHY_FOR:
+        await blocking(_touch)  # wait cards go wake-only on this; a gateway that cannot send must let Hermes ping
     reqs = await blocking(decisions.open_requests)
     live = {r["id"]: r["status"] for r in reqs}
     if not S.recovered:  # once per boot: what an earlier boot left half done
@@ -190,7 +193,7 @@ async def handle(req):
         if time.time() - req.get("alive", req.get("created_at", 0)) > ALIVE_MAX:
             await end(rid, "The agent is no longer waiting")
             return
-        if kind == "permission" and await pane_gone(req):
+        if kind == "permission" and req["status"] == "open" and await pane_gone(req):
             await end(rid, "Answered in the pane")
             return
     if req.get("delivered_by_hook") and time.time() - req.get("alive", req.get("created_at", 0)) > SETTLE_MAX:
@@ -213,7 +216,8 @@ async def end(rid, why):
 
 
 async def pane_gone(req):
-    """True when herdr shows the permission request's pane neither blocked nor working (checked every PANE_EVERY s)."""
+    """True when herdr no longer shows the permission request's pane blocked on a dialog (checked every PANE_EVERY s):
+    a deny in the pane fires no PostToolUse, so this is the only sign it was answered there."""
     pane = (req.get("run") or {}).get("pane")
     now = time.monotonic()
     if not pane or now - S.pane_checked.get(req["id"], -PANE_EVERY) < PANE_EVERY:
@@ -224,7 +228,7 @@ async def pane_gone(req):
     except Exception as caught:  # noqa: BLE001 - herdr failing is not an answer
         log(f"request {req['id']}: herdr: {caught}")
         return False
-    return not agent or agent.get("agent_status") not in ("blocked", "working")
+    return not agent or agent.get("agent_status") != "blocked"
 
 
 # -- presenting -----------------------------------------------------------------------------------
@@ -288,6 +292,7 @@ async def present(req):
             messages.setdefault(str(n), []).append(mid)
             S.messages[mid] = (rid, n)
         if failure:
+            S.failing_since = S.failing_since or time.monotonic()
             release(rid)
             delay = min((S.retry.get(rid, (0, 1))[1]) * 2, BACKOFF_MAX)
             S.retry[rid] = (time.monotonic() + delay, delay)
@@ -298,6 +303,7 @@ async def present(req):
                     await edit(chat, mid, "Superseded: see the newer message")
             return
         S.retry.pop(rid, None)
+        S.failing_since = None
         S.watch.add(rid)
         await blocking(decisions.update, rid, presented={"boot": BOOT, "messages": messages})
         for n, ids in (old.get("messages") or {}).items():  # earlier boots' messages
@@ -365,6 +371,9 @@ def _keep(task):
 def pick(text, choices, multi):
     """Indexes the text chooses (typed number, 'n,m' when multi, or a label, case-insensitive), or None for free text."""
     text = text.strip()
+    for i, label in enumerate(choices):  # a tap returns the label itself, which may be a number ("2", "3", "5")
+        if label == text:
+            return [i]
     if re.fullmatch(r"\d+", text):
         i = int(text) - 1
         return [i] if 0 <= i < len(choices) else None
@@ -409,7 +418,8 @@ async def answered(rid, n, text):
         return
     got = S.partial.pop(rid)
     parts = [got[i] for i in range(len(req["questions"]))]
-    req, ok = await blocking(decisions.transition, rid, ("open",), "answered", answer=compose(req, parts))
+    req, ok = await blocking(decisions.transition, rid, ("open",), "answered", answer=compose(req, parts),
+                                   by=core.notify_target()["user_id"])  # the guard and dispatch admit no one else
     if not ok:
         return
     chat = core.notify_target()["chat_id"]

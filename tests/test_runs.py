@@ -920,6 +920,14 @@ def test_the_same_head_never_notifies_twice(revised, monkeypatch):
     assert review_cards(revised) == {"t_wait1": "done"}
 
 
+def test_a_repeated_stop_keeps_the_recommendation_for_the_current_head(revised, monkeypatch):
+    fire(monkeypatch, "stop")
+    current = decisions.create("build", CARD, head="abc")["id"]  # the coordinator recommends on the new head
+    fire(monkeypatch, "stop")
+    runs.flush()
+    assert decisions.load(current)["status"] == "open"
+
+
 def test_a_card_left_ready_by_a_killed_hook_is_finished_once(revised, monkeypatch):
     revised["fail"]["complete"] = 1
     fire(monkeypatch, "stop")
