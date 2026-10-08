@@ -38,7 +38,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import claude, config, core, events
+from . import bridge, claude, config, core, decisions, events
 
 UNACKED_AFTER = 15 * 60
 IDLE_AFTER = 10 * 60
@@ -160,10 +160,18 @@ def deliver(run, entry):
         return None
     clear_dead_claim(directory)
     if event == "notification":
-        events.open_wait(directory, run, entry["detail"], entry["key"], entry.get("ask"), entry.get("proposal"))
-        return wait_card(directory)
+        events.open_wait(directory, run, entry["detail"], entry["key"], entry.get("ask"),
+                          entry.get("proposal"), entry.get("bridged", False))
+        card = wait_card(directory)
+        # A wait muster pages itself has no subscription, so no notifier event to ack.
+        return card if card and json.loads(core.kanban("notify-list", card, "--json")) else None
     if ledger == "done":
-        return card  # a late hook, or a redelivery after a kill: its completion still needs its ack
+        # A late hook, or a redelivery after a kill: its completion still needs its ack. After a delivered
+        # send-back a verified revision is a new review card, and that card is the one to ack.
+        review, why = decisions.rereview(card, run)
+        if why:
+            log(f"{card} {event}: no re-review yet: {why}")  # a Stop with a dirty tree is normal mid-work
+        return review or card
     pr, why = verify(run)
     if pr:
         return complete(run, pr)
@@ -248,12 +256,20 @@ def drain(card, wait=False):
             entry = read_entry(card, path)
             if entry is None:
                 continue
+            if entry.get("unfinished"):  # the agent was told why once; it reruns done after fixing it
+                path.unlink()
+                log(f"{card} {entry['event']}: dropped after reporting: {entry.get('error')}")
+                continue
             try:
                 ack = deliver(run, entry) if run else events.replay(entry)
                 if ack:
                     core.save_json(directory / "sent" / path.name,
                                    {**entry, "ack": ack, "moved_at": int(time.time()), "error": None})
                 path.unlink()
+            except events.Unfinished as error:
+                note(card, path, entry, error)
+                core.save_json(path, {**entry, "error": " ".join(str(error).split()), "unfinished": True})
+                return True
             except ERRORS as error:
                 note(card, path, entry, error)
                 if entry["event"] == "stop":
@@ -566,6 +582,9 @@ def hook(args):
             payload = {}
         if claude.ignore(event, payload):
             return 0  # /clear ends a session, but the agent keeps working in the same pane
+        if event == "permission":  # before the gate and the outbox: it waits, and prints only a decision
+            core.prepare_env()
+            return bridge.wait(run_dir(card), load(card), payload)
         if event == "prompt":
             core.prompt_seen(run_dir(card), payload)  # the launch's evidence that its brief arrived
         if event == "prompt" and not (run_dir(card) / core.WAIT_KIND).exists() and not pending(card):
@@ -579,6 +598,9 @@ def hook(args):
         if why:
             log(f"{card} hook {event}: approval request denied: {why}")
             return events.deny(why)
+        if event == "notification" and claude.ask(payload) is not None:
+            with contextlib.suppress(OSError):
+                bridge.write_pin(run_dir(card), pin)  # the bridge's request for this question carries it
         queued = pending(card)
         if not (event == "prompt" and queued and queued[-1].name.endswith("-prompt.json")):
             try:

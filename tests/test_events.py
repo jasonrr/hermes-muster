@@ -9,7 +9,9 @@ import time
 
 import pytest
 
+import muster.config as config
 import muster.core as core
+import muster.decisions as decisions
 import muster.events as events
 import muster.runs as runs
 
@@ -25,7 +27,7 @@ def board(tmp_path, monkeypatch):
     git_dir.mkdir()
     (git_dir / core.CARD_FILE).write_text(json.dumps(LINKS))
     state = {"cards": {"t_abc123": "ready"}, "blocks": {}, "keys": {}, "calls": [], "flaky": 0, "git_dir": git_dir,
-             "fail": {}, "on_create": None, "head": "muster/397", "comments": {}, "bodies": {}}
+             "fail": {}, "mode": "notify+wake", "on_create": None, "head": "muster/397", "comments": {}, "bodies": {}}
 
     def fake_run(argv):
         state["calls"].append(argv)
@@ -41,7 +43,7 @@ def board(tmp_path, monkeypatch):
             return json.dumps({"task": {"id": argv[5], "status": cards[argv[5]], "body": state["bodies"].get(argv[5])},
                                "comments": [{"author": "default", "body": b} for b in state["comments"].get(argv[5], [])]})
         if verb == "notify-list":
-            return json.dumps([{"chat_id": "4242", "user_id": "4242", "chat_type": "dm", "notifier_profile": "default", "delivery_mode": "notify+wake"}])
+            return json.dumps([{"chat_id": "4242", "user_id": "4242", "chat_type": "dm", "notifier_profile": "default", "delivery_mode": state["mode"]}])
         if state["flaky"]:
             state["flaky"] -= 1
             raise core.CommandError("hermes kanban --board: exit 1\ndatabase is locked")
@@ -58,6 +60,7 @@ def board(tmp_path, monkeypatch):
             state["bodies"].setdefault(card, argv[argv.index("--body") + 1])
             return json.dumps({"id": card, "status": cards[card]})
         if verb == "notify-subscribe":
+            state["mode"] = argv[argv.index("--delivery-mode") + 1]
             return ""
         if verb == "comment":
             assert argv[5] == "--", argv  # the text is the agent's: it may start with "--"
@@ -768,3 +771,209 @@ def test_a_plain_question_whose_outbox_save_fails_is_still_never_denied(board, m
     monkeypatch.setattr(runs, "enqueue", lambda *a, **k: (_ for _ in ()).throw(OSError("disk full")))
     assert ask(monkeypatch, dict(QUESTION, header="Path")) == 0
     assert capsys.readouterr().out == ""  # only an approval request is gated; a hook never blocks other asks
+
+
+# -- the PermissionRequest bridge -------------------------------------------------------------------
+
+ASK = {"tool_name": "AskUserQuestion", "tool_input": {"questions": [{"question": "Which?", "options": []}]}}
+
+
+def test_permission_goes_to_the_bridge_before_any_board_call(board, monkeypatch):
+    import muster.bridge as bridge
+    seen = []
+    monkeypatch.setattr(bridge, "wait", lambda directory, link, payload: seen.append((directory, link, payload)) or 0)
+    assert hook(monkeypatch, "permission", hook_event_name="PermissionRequest", **ASK) == 0
+    assert seen[0][0] == board["git_dir"] and seen[0][1] == LINKS and seen[0][2]["tool_name"] == "AskUserQuestion"
+    assert verbs(board) == []
+
+
+def test_permission_outside_a_muster_worktree_prints_nothing(board, monkeypatch, capsys):
+    monkeypatch.setattr(core, "run", lambda argv: (_ for _ in ()).throw(core.CommandError("not a repo")))
+    assert hook(monkeypatch, "permission", **ASK) == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_an_ask_leaves_its_pin_for_the_bridge_and_another_notification_does_not(board, monkeypatch):
+    git_dir = board["git_dir"]
+    core.save_json(events.proposals("t_abc123") / "armed", {"version": 1, "sha": "aaa"})
+    hook(monkeypatch, "notification", **ASK)  # not an approval: no pin
+    assert not (git_dir / core.PIN_FILE).exists()
+    core.save_json(git_dir / core.PIN_FILE, {"version": 9, "sha": "old"})
+    hook(monkeypatch, "notification", message="x")  # not an ask: the file is left alone
+    assert json.loads((git_dir / core.PIN_FILE).read_text())["version"] == 9
+    hook(monkeypatch, "notification", **ASK)  # an ask that is no approval request pins nothing: the old pin goes
+    assert not (git_dir / core.PIN_FILE).exists()
+
+
+def test_an_approval_ask_writes_the_armed_pin(board, monkeypatch):
+    core.save_json(events.proposals("t_abc123") / "armed", {"version": 3, "sha": "bbb"})
+    approval = {"tool_name": "AskUserQuestion", "tool_input": {"questions": [{"question": "Ok?", "header": "Approval", "options": []}]}}
+    hook(monkeypatch, "notification", **approval)
+    assert json.loads((board["git_dir"] / core.PIN_FILE).read_text()) == {"version": 3, "sha": "bbb"}
+
+
+# --- wait mode: wake only when muster itself can deliver the page (#17 task 4) ---
+
+GATEWAY = {"up": False}
+
+
+@pytest.fixture(autouse=True)
+def hermes_gateway(monkeypatch):
+    """decisions.gateway_up reads Hermes's gateway.status, which tests do not have: a switch stands in."""
+    GATEWAY["up"] = False
+    monkeypatch.setattr(decisions, "gateway_up", lambda: GATEWAY["up"])
+
+
+def bridge_ready(board, link=LINKS, gateway_up=True, hook_key="PermissionRequest"):
+    """Everything wake mode needs: the pane's settings carry the hook, Hermes reports its gateway up."""
+    if "issue" in link:
+        settings = core.intake_dir() / link["card"] / core.SETTINGS_FILE
+    else:
+        settings = board["git_dir"] / "settings.json"
+    settings.parent.mkdir(parents=True, exist_ok=True)
+    settings.write_text(json.dumps({"hooks": {hook_key: []}}))
+    GATEWAY["up"] = gateway_up
+
+
+def wait_mode(board):
+    """The wait card's subscription: "none" when muster pages the human itself."""
+    return board["mode"] if any(c[4] == "notify-subscribe" for c in board["calls"] if len(c) > 4) else "none"
+
+
+@pytest.mark.parametrize("ad_hoc", [False, True])
+def test_a_bridged_wait_with_everything_in_place_takes_no_subscription(board, ad_hoc):
+    link = {k: v for k, v in LINKS.items() if k != "issue"} | {"branch": "fix/x"} if ad_hoc else LINKS
+    bridge_ready(board, link)
+    events.open_wait(board["git_dir"], link, "why", "k1", bridged=True)
+    assert wait_mode(board) == "none"
+
+
+def test_an_ask_is_paged_by_muster_without_the_bridged_flag(board):
+    bridge_ready(board)
+    events.open_wait(board["git_dir"], LINKS, "why", "k1", [QUESTION])
+    assert wait_mode(board) == "none"
+
+
+@pytest.mark.parametrize("spoil", ["not bridged", "platform", "no hook", "no settings", "gateway down"])
+def test_each_missing_condition_keeps_notify_wake(board, monkeypatch, spoil):
+    bridge_ready(board, gateway_up=spoil != "gateway down",
+                 hook_key="Notification" if spoil == "no hook" else "PermissionRequest")
+    if spoil == "platform":
+        monkeypatch.setitem(config.settings, "notify_platform", "slack")
+    if spoil == "no settings":
+        (core.intake_dir() / LINKS["card"] / core.SETTINGS_FILE).unlink()
+    events.open_wait(board["git_dir"], LINKS, "why", "k1", bridged=spoil != "not bridged")
+    assert wait_mode(board) == "notify+wake"
+
+
+def test_a_wait_without_a_bridged_question_stays_notify_wake_with_everything_in_place(board):
+    """idle, reconcile and every other wait call open_wait without bridged."""
+    bridge_ready(board)
+    events.open_wait(board["git_dir"], LINKS, "idle", "k1")
+    assert wait_mode(board) == "notify+wake"
+
+
+def test_a_permission_prompt_hook_reaches_open_wait_as_bridged(board, monkeypatch):
+    bridge_ready(board)
+    assert hook(monkeypatch, "notification", notification_type="permission_prompt") == 0
+    assert wait_mode(board) == "none"
+
+
+def test_only_a_question_or_a_permission_prompt_is_bridged():
+    assert events.is_bridged("notification", {"notification_type": "elicitation_dialog"}) is False
+    assert events.is_bridged("notification", {"tool_name": "AskUserQuestion"}) is True
+    assert events.is_bridged("idle", {"tool_name": "AskUserQuestion"}) is False
+
+
+# -- re-review after a send-back (#17 task 7) ------------------------------------------------------
+
+REVIEWED, REVISED = "a" * 40, "b" * 40
+
+
+def verified(monkeypatch, tmp_path, board, pr=None, why=None):
+    """An issue run that is `done`, sent back once at REVIEWED; runs.verify answers from `answer`."""
+    board["cards"]["t_abc123"] = "done"
+    board["comments"]["t_abc123"] = [core.LINKS_PREFIX + json.dumps({
+        "repo": "acme/app", "issue": 397, "branch": "muster/397", "base": "main", "worktree": str(tmp_path),
+        "pane": "p_agent", "title": "Fix it"})]
+    rid = decisions.create("feedback", "t_abc123", head=REVIEWED, cycle=1)["id"]
+    decisions.transition(rid, ("open",), "done", outcome="Sent ✓")
+    answer = {"pr": pr or {"url": PR, "headRefOid": REVISED}, "why": why, "calls": []}
+
+    def verify(run):
+        answer["calls"].append(run)
+        return (None, answer["why"]) if answer["why"] else (answer["pr"], None)
+    monkeypatch.setattr(runs, "verify", verify)
+    return answer
+
+
+def test_an_issue_run_done_after_a_send_back_makes_one_review_card(board, monkeypatch, tmp_path, capsys):
+    answer = verified(monkeypatch, tmp_path, board)
+    open_build = decisions.create("build", "t_abc123", head=REVIEWED)["id"]
+    for _ in range(3):  # a repeated done
+        assert done(PR) == 0
+    runs.drain("t_abc123")
+    assert board["cards"] == {"t_abc123": "done", "t_wait1": "done"}
+    assert len(board["keys"]) == 1 and verbs(board).count("complete") == 1 and verbs(board).count("notify-subscribe") == 1
+    create = next(c for c in board["calls"] if c[4:5] == ["create"])
+    assert create[create.index("--idempotency-key") + 1] == f"review:t_abc123:{REVISED}"
+    assert create[-1] == "Fix it: revised, ready for re-review"
+    assert answer["calls"][0]["worktree"] == str(tmp_path) and answer["calls"][0]["branch"] == "muster/397"
+    assert decisions.load(open_build)["status"] == "stale"
+    assert board["comments"]["t_abc123"][0].startswith(core.LINKS_PREFIX) and len(board["comments"]["t_abc123"]) == 1
+    assert capsys.readouterr().out.count("done: card t_abc123 -> done") == 3
+
+
+def test_a_second_cycle_makes_a_second_card(board, monkeypatch, tmp_path):
+    answer = verified(monkeypatch, tmp_path, board)
+    assert done(PR) == 0
+    rid = decisions.create("feedback", "t_abc123", head=REVISED, cycle=2)["id"]
+    decisions.transition(rid, ("open",), "done", outcome="Sent ✓")
+    answer["pr"] = {"url": PR, "headRefOid": "c" * 40}
+    assert done(PR) == 0
+    assert board["cards"] == {"t_abc123": "done", "t_wait1": "done", "t_wait2": "done"}
+
+
+def test_a_replayed_done_entry_makes_no_second_card(board, monkeypatch, tmp_path):
+    verified(monkeypatch, tmp_path, board)
+    entry = {"event": "done", "detail": PR, "key": "k", "git_dir": str(board["git_dir"]), "link": LINKS}
+    events.replay(entry)
+    events.replay(entry)
+    assert len(board["keys"]) == 1 and verbs(board).count("complete") == 1 and verbs(board).count("notify-subscribe") == 1
+
+
+def test_done_without_a_send_back_neither_verifies_nor_makes_a_card(board, monkeypatch, tmp_path):
+    answer = verified(monkeypatch, tmp_path, board)
+    for req in decisions.for_ledger("t_abc123"):
+        decisions.update(req["id"], outcome="Not sent")
+    assert done(PR) == 0
+    assert answer["calls"] == [] and verbs(board).count("create") == 0
+
+
+def test_the_reviewed_head_again_tells_the_agent_there_are_no_new_commits(board, monkeypatch, tmp_path, capsys):
+    verified(monkeypatch, tmp_path, board, pr={"url": PR, "headRefOid": REVIEWED})
+    assert done(PR) == 1 and verbs(board).count("create") == 0
+    assert "no new commits since the reviewed head" in capsys.readouterr().err
+
+
+def test_a_revision_that_does_not_verify_fails_done_with_the_reason_and_leaves_the_queue_clear(
+        board, monkeypatch, tmp_path, capsys):
+    answer = verified(monkeypatch, tmp_path, board, why="some changes are not committed")
+    assert done(PR) == 1
+    err = capsys.readouterr().err
+    assert "some changes are not committed" in err and "queued for the flush" not in err
+    assert board["cards"] == {"t_abc123": "done"}
+    # the flush after the report drops the entry instead of retrying it for ever
+    runs.drain("t_abc123")
+    assert runs.pending("t_abc123") == []
+    # the agent fixes it and reruns done
+    answer["why"] = None
+    assert done(PR) == 0
+    assert board["cards"] == {"t_abc123": "done", "t_wait1": "done"} and runs.pending("t_abc123") == []
+
+
+def test_an_unreported_failure_does_not_hold_a_later_wait(board, monkeypatch, tmp_path):
+    verified(monkeypatch, tmp_path, board, why="some changes are not committed")
+    assert done(PR) == 1
+    assert hook(monkeypatch, "notification") == 0  # drains the flagged entry first, then opens the wait
+    assert board["cards"]["t_wait1"] == "blocked" and runs.pending("t_abc123") == []

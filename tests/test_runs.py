@@ -25,7 +25,7 @@ PR = {"url": "https://github.com/o/r/pull/7", "state": "OPEN", "headRefOid": "ab
 @pytest.fixture
 def board(tmp_path, monkeypatch):
     """hermes, git, gh and herdr as the run sees them; hermes moves follow tests/test_kanban_contract.py."""
-    state = {"cards": {}, "blocks": {}, "keys": {}, "calls": [], "fail": {}, "down": False, "events": {},
+    state = {"cards": {}, "blocks": {}, "keys": {}, "calls": [], "fail": {}, "down": False, "mode": "notify+wake", "events": {},
              "seq": 0, "cursor": 0, "head": "abc", "dirty": "", "prs": [], "gh_fail": 0, "agent": "working", "agent_seq": 1,
              "created_at": {}, "kinds": {}, "comments": {}, "bodies": {}}
     monkeypatch.setattr(runs, "last_event", lambda card: state["events"].get(card, 0))
@@ -67,7 +67,7 @@ def board(tmp_path, monkeypatch):
         if verb == "notify-list":
             if cards[argv[5]] == "archived" or state.get("no_subs"):
                 return "[]"  # the notifier drops a card's subscriptions on archive
-            return json.dumps([{"chat_id": "4242", "user_id": "4242", "chat_type": "dm", "notifier_profile": "default", "delivery_mode": "notify+wake",
+            return json.dumps([{"chat_id": "4242", "user_id": "4242", "chat_type": "dm", "notifier_profile": "default", "delivery_mode": state["mode"],
                                 "last_event_id": state["cursor"], "last_ping_event_id": state["cursor"]}])
         if verb == "create":
             key = argv[argv.index("--idempotency-key") + 1]
@@ -81,6 +81,7 @@ def board(tmp_path, monkeypatch):
             state["comments"].setdefault(argv[-2], []).append(text)
             return ""
         if verb == "notify-subscribe":
+            state["mode"] = argv[argv.index("--delivery-mode") + 1]
             return ""
         # unblock: only a recover, once, of a launch-failure block (see the contract test)
         assert verb in ("block", "archive", "complete", "unblock"), argv
@@ -455,7 +456,9 @@ def test_launch_settings_hook_the_run_card_including_stop_and_session_end(board,
     assert command["PostToolUse"].endswith(f"hook --card {card} prompt")
     assert hooks["Notification"][0]["matcher"] == claude.ASK_NOTIFICATIONS
     assert hooks["PreToolUse"][0]["matcher"] == "AskUserQuestion"
-    assert {entry[0]["hooks"][0]["timeout"] for entry in hooks.values()} == {30}
+    assert command["PermissionRequest"].endswith(f"hook --card {card} permission || exit 0")
+    assert {name: entry[0]["hooks"][0]["timeout"] for name, entry in hooks.items()} == {
+        **{name: 30 for name in hooks}, "PermissionRequest": 86400}
     start = next(c for c in board["calls"] if c[:3] == ["herdr", "agent", "start"])
     assert start[start.index("--settings") + 1] == str(runs.run_dir(card) / "settings.json")
 
@@ -849,3 +852,125 @@ def test_an_ad_hoc_approval_request_whose_outbox_save_fails_is_denied_and_keeps_
     assert "stays saved" in decision["permissionDecisionReason"]
     assert "t_wait1" not in board["cards"] and files(run1, "outbox") == []
     assert (runs.run_dir(CARD) / "proposals" / "armed").is_file()
+
+
+# -- re-review after a send-back (#17 task 7) ------------------------------------------------------
+
+import muster.decisions as decisions  # noqa: E402
+
+
+def sent_back(ledger, head, cycle=1, build=None):
+    """A delivered send-back (a feedback request done with "Sent ✓") that reviewed `head`."""
+    rid = decisions.create("feedback", ledger, head=head, cycle=cycle)["id"]
+    decisions.transition(rid, ("open",), "done", outcome="Sent ✓")
+    return rid
+
+
+@pytest.fixture
+def revised(board, tmp_path):
+    """A done ad-hoc run whose worktree exists, its first review at head 'old', and its PR pushed at 'abc'."""
+    core.save_json(runs.run_dir(CARD) / "run.json", {**RUN, "worktree": str(tmp_path)})
+    board["cards"][CARD] = "done"
+    board["prs"] = [PR]
+    sent_back(CARD, "old")
+    return board
+
+
+def review_cards(board):
+    return {c: s for c, s in board["cards"].items() if c != CARD}
+
+
+def test_a_revised_pull_request_after_a_send_back_makes_a_ready_for_re_review_card(revised, monkeypatch):
+    open_build = decisions.create("build", CARD, head="old")["id"]
+    fire(monkeypatch, "stop")
+    assert review_cards(revised) == {"t_wait1": "done"}
+    create = calls(revised, "create")[0]
+    assert create[create.index("--idempotency-key") + 1] == f"review:{CARD}:abc"
+    assert create[-1] == "T: revised, ready for re-review" and create[create.index("--created-by") + 1] == "muster"
+    body = create[create.index("--body") + 1]
+    assert CARD in body and PR["url"] in body and "abc" in body and "cycle 2" in body and core.PROVENANCE in body
+    assert [c[5:] for c in calls(revised, "complete")] == [["t_wait1", "--summary",
+                                                           f"Revised, ready for re-review: {PR['url']} at abc"]]
+    assert revised["mode"] == "notify+wake"
+    assert revised["cards"][CARD] == "done" and calls(revised, "block") == [] and revised["comments"] == {}
+    assert decisions.load(open_build)["status"] == "stale"
+    assert [json.loads(p.read_text())["ack"] for p in runs.sent(CARD)] == ["t_wait1"]
+
+
+def test_the_same_head_never_notifies_twice(revised, monkeypatch):
+    for _ in range(3):
+        fire(monkeypatch, "stop")
+        runs.flush()
+    assert len(calls(revised, "create")) == 3 and len(calls(revised, "complete")) == 1
+    assert review_cards(revised) == {"t_wait1": "done"}
+
+
+def test_a_repeated_stop_keeps_the_recommendation_for_the_current_head(revised, monkeypatch):
+    fire(monkeypatch, "stop")
+    current = decisions.create("build", CARD, head="abc")["id"]  # the coordinator recommends on the new head
+    fire(monkeypatch, "stop")
+    runs.flush()
+    assert decisions.load(current)["status"] == "open"
+
+
+def test_a_card_left_ready_by_a_killed_hook_is_finished_once(revised, monkeypatch):
+    revised["fail"]["complete"] = 1
+    fire(monkeypatch, "stop")
+    assert review_cards(revised) == {"t_wait1": "ready"}
+    runs.drain(CARD)
+    runs.drain(CARD)
+    assert review_cards(revised) == {"t_wait1": "done"} and len(calls(revised, "complete")) == 2
+
+
+def test_two_send_back_cycles_make_two_cards_with_two_keys(revised, monkeypatch):
+    fire(monkeypatch, "stop")
+    sent_back(CARD, "abc", cycle=2)
+    for prs in ({**PR, "headRefOid": "def"},):
+        revised["prs"], revised["head"] = [prs], "def"
+    fire(monkeypatch, "stop")
+    keys = [c[c.index("--idempotency-key") + 1] for c in calls(revised, "create")]
+    assert keys == [f"review:{CARD}:abc", f"review:{CARD}:def"]
+    assert review_cards(revised) == {"t_wait1": "done", "t_wait2": "done"}
+    assert "cycle 3" in calls(revised, "create")[1][calls(revised, "create")[1].index("--body") + 1]
+
+
+def test_no_send_back_means_no_review_card_and_no_git_or_gh_call(board, run1, monkeypatch):
+    board["cards"][CARD] = "done"
+    board["prs"] = [PR]
+    decisions.create("feedback", CARD, head="old")  # offered, never sent
+    fire(monkeypatch, "stop")
+    assert [c[0] for c in board["calls"] if c[0] in ("git", "gh")] == []
+    assert calls(board, "create") == []
+
+
+def test_the_head_that_was_reviewed_is_not_a_revision(revised, monkeypatch):
+    sent_back(CARD, "abc")
+    fire(monkeypatch, "stop")
+    assert calls(revised, "create") == []
+
+
+@pytest.mark.parametrize("fault", ["dirty", "unpushed", "draft"])
+def test_unfinished_work_is_not_ready_and_a_stop_only_logs_it(revised, monkeypatch, fault):
+    if fault == "dirty":
+        revised["dirty"] = " M x.py"
+    elif fault == "unpushed":
+        revised["head"] = "newer"
+    else:
+        revised["prs"] = [{**PR, "isDraft": True}]
+    assert fire(monkeypatch, "stop") == 0
+    assert calls(revised, "create") == [] and revised["cards"][CARD] == "done"
+    assert "no re-review yet" in runs.log_path().read_text()
+
+
+def test_a_missing_worktree_is_logged_and_nothing_is_made(revised, monkeypatch, tmp_path):
+    core.save_json(runs.run_dir(CARD) / "run.json", {**RUN, "worktree": str(tmp_path / "gone")})
+    fire(monkeypatch, "stop")
+    assert calls(revised, "create") == [] and "worktree gone" in runs.log_path().read_text()
+
+
+def test_a_stale_build_request_cannot_merge(revised, monkeypatch):
+    stale = decisions.create("build", CARD, head="old", status="open")["id"]
+    fire(monkeypatch, "stop")
+    decisions.execute(stale)
+    assert decisions.load(stale)["status"] == "stale"
+    assert not [c for c in revised["calls"] if c[:3] == ["gh", "pr", "merge"]]

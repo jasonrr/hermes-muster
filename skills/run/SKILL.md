@@ -1,6 +1,6 @@
 ---
 name: run
-description: When the human asks you to send coding work to a herdr pane (not a labeled issue), launch it with `hermes muster launch` so the run reports itself; open analysis workspaces with `hermes muster open`; and when an ad-hoc run card wakes you, tell the human what happened.
+description: When the human asks you to send coding work to a herdr pane (not a labeled issue), launch it with `hermes muster launch` so the run reports itself; open analysis workspaces with `hermes muster open`; and when an ad-hoc run card wakes you, tell the human what happened and, on a finished build, recommend one action.
 ---
 
 # muster run
@@ -48,16 +48,21 @@ A card whose body says "ad-hoc run", or a wait card whose body names one as its 
    its ledger).
 2. The ping already gave the title, the whole reason and the pane, or the pull request link. Do not repeat
    it. Add, in one or two sentences, only what it lacks:
-   - Completed: what to review first, if anything. Never say merged, deployed or live unless `gh` shows it.
-   - Wait card blocked: what the agent asks, or that it has been idle 10 minutes without a finished pull
-     request and why (the reason is in the block text). The human answers in the pane.
+   - Completed (ledger or a review card): review the build and record one recommendation with
+     `hermes muster recommend`, exactly as the `muster:escalation` skill says. Never say merged, deployed
+     or live unless `gh` shows it.
+   - Wait card blocked by a question or permission prompt: it already went out with its options; add only
+     new context, else reply `[SILENT]`. Idle 10 minutes without a finished pull request: say so and why (the reason is in the
+     block text). The human answers by replying to the question's message, or in the pane.
    - Ledger blocked "session ended": the agent's session ended without a finished pull request.
    - Ledger blocked by a failed launch ("The coding agent did not start", "did not become ready", "its
      first prompt may not have arrived", "The launch was refused"): the human fixes the cause, then runs
      `hermes muster recover <card>`. For "may not have arrived", they look at the pane first and add
      `--resend` only if it shows no brief.
    - A card titled "Unsaved work in <repo>": see the `muster:escalation` skill.
-3. One message per wake.
+3. At most one message per wake. Nothing new to say, or a muster decision is waiting on the human: reply
+   exactly `[SILENT]` (Hermes sends nothing), and after `hermes muster recommend` always.
 
 You must not type into or mirror the pane, start, stop or prompt any agent, move any card, comment on,
-merge, approve or deploy anything. Only the human decides.
+merge, approve or deploy anything, or send revision instructions yourself: merge and send-back happen only
+when the human taps a button on your recommendation. Only the human decides.

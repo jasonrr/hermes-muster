@@ -11,7 +11,7 @@ ASK_NOTIFICATIONS = "permission_prompt|elicitation_dialog|elicitation_url_dialog
 
 
 def hook_settings(hook_cmd: list[str]) -> dict:
-    """Claude Code settings.json: every hook runs `<hook_cmd> <event>`. Same seven hooks for issue and ad-hoc runs."""
+    """Claude Code settings.json: every hook runs `<hook_cmd> <event>`. Same eight hooks for issue and ad-hoc runs."""
     def hook(event, matcher=None):
         # A short timeout: a hook waits on hermes, git and gh, and a killed one's saved event is delivered by the flush.
         h = {"hooks": [{"type": "command", "command": " ".join(shlex.quote(a) for a in [*hook_cmd, event]), "timeout": 30}]}
@@ -25,6 +25,10 @@ def hook_settings(hook_cmd: list[str]) -> dict:
         "PreToolUse": hook("notification", "AskUserQuestion"),
         "UserPromptSubmit": hook("prompt"), "PostToolUse": hook("prompt"), "PostToolUseFailure": hook("prompt"),
         "SessionEnd": hook("session-end"), "Stop": hook("stop"),
+        # Waits for the channel's answer to a dialog, up to a day (bridge.wait). Claude Code reads exit 2 as a
+        # deny, and argparse exits 2 on a usage error, so any failure exits 0 and leaves the dialog to decide.
+        "PermissionRequest": [{"hooks": [{"type": "command", "timeout": 86400, "command":
+            " ".join(shlex.quote(a) for a in [*hook_cmd, "permission"]) + " || exit 0"}]}],
     }}
 
 

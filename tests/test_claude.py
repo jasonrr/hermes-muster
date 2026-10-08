@@ -6,10 +6,19 @@ import pytest
 from muster import claude, config
 
 
-def test_seven_hooks():
+def test_eight_hooks():
     h = claude.hook_settings(["hermes", "muster", "hook"])["hooks"]
     assert set(h) == {"Notification", "PreToolUse", "UserPromptSubmit", "PostToolUse",
-                      "PostToolUseFailure", "SessionEnd", "Stop"}
+                      "PostToolUseFailure", "SessionEnd", "Stop", "PermissionRequest"}
+
+
+def test_permission_request_has_no_matcher_a_day_timeout_and_never_exits_2():
+    entry = claude.hook_settings(["/opt/my dir/hermes", "muster", "hook"])["hooks"]["PermissionRequest"][0]
+    assert "matcher" not in entry
+    cmd = entry["hooks"][0]
+    assert cmd["timeout"] == 86400
+    # argparse exits 2 on a usage error, and exit 2 from this hook is a deny
+    assert cmd["command"] == "'/opt/my dir/hermes' muster hook permission || exit 0"
 
 
 def test_notification_matcher_excludes_idle_prompt():

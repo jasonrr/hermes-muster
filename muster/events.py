@@ -4,7 +4,7 @@ Registered only by the pane's own --settings file (core.agent_settings); a no-op
 without <git dir>/muster-card.json. The gateway notifier turns each block or completion into a
 Telegram ping for the human and a queued agent turn.
 
-  notification   open a WAIT card (subscribed notify+wake, blocked "<message>\\nReply in Herdr pane P.")
+  notification   open a WAIT card (subscribed notify+wake, or none when muster pages it itself; blocked "<message>\\nReply in Herdr pane P.")
                  for a permission prompt or an AskUserQuestion (hook matchers in claude.hook_settings)
                  unless one is open or the ledger is archived (after done the pull request is in
                  review, so questions still page); its id is kept in <git dir>/muster-wait
@@ -45,7 +45,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import claude, config, core
+from . import bridge, claude, config, core, decisions
 
 STALE_CLAIM = 120  # s: an empty wait marker this old is from a hook killed at its 30 s timeout
 PR_URL = re.compile(r"https://github\.com/([\w.-]+/[\w.-]+)/pull/\d+")
@@ -79,6 +79,10 @@ def expect(card, want, event):
         raise core.CommandError(f"{event}: card {card} read back {got}, wanted {want}")
 
 
+class Unfinished(core.CommandError):
+    """A revised build that is not a finished pull request yet: told to the agent once, never retried."""
+
+
 def where(link):
     """(title prefix, body reference) of a wait card: a muster pane's issue, an ad-hoc run's branch."""
     if "issue" in link:
@@ -87,7 +91,38 @@ def where(link):
     return f"{link['repo']} {link['branch']}", f"branch {link['branch']}"
 
 
-def open_wait(git_dir, link, detail, key, ask=None, proposal=None):
+
+
+def is_bridged(event, payload):
+    """True when this hook event is a dialog the bridge can answer from the channel: an AskUserQuestion, or a
+    permission prompt. Saved on the outbox entry so a redelivery decides the same way."""
+    return event == "notification" and (payload.get("tool_name") == "AskUserQuestion"
+                                        or payload.get("notification_type") == "permission_prompt")
+
+
+def muster_pages(directory, link, bridged):
+    """True when muster pages the human itself (its gateway sends the question with buttons), so the wait card takes
+    no subscription: a Hermes ping, or a woken agent's own message, would be a second message for one decision
+    (seen live: the human replied to the agent's message instead of the question's).
+
+    Without a subscription nothing else pings, so every condition guards against a page nobody sends:
+    - bridged: only a question or permission prompt gets a decision request (and its Telegram message);
+      idle, reconcile and other waits have none, so Hermes must ping them.
+    - telegram: the gateway's buttons and replies exist only there.
+    - the pane carries the PermissionRequest hook: an older pane never creates the request.
+    - Hermes reports its gateway up with the platform connected: else nothing would deliver the request.
+    """
+    if not bridged or config.settings["notify_platform"] != "telegram":
+        return False
+    settings = (core.intake_dir() / link["card"] / core.SETTINGS_FILE if "issue" in link
+                else directory / "settings.json")
+    try:
+        return '"PermissionRequest"' in settings.read_text() and decisions.gateway_up()
+    except OSError:
+        return False
+
+
+def open_wait(git_dir, link, detail, key, ask=None, proposal=None, bridged=False):
     ledger = status(link["card"])
     if ledger not in ("ready", "blocked", "done"):  # done: its pull request is in review, questions still page
         return f"notification: ledger {link['card']} is {ledger}, no wait card"
@@ -100,13 +135,13 @@ def open_wait(git_dir, link, detail, key, ask=None, proposal=None):
             card = path.read_text().strip()
             stale = not card and time.time() - path.stat().st_mtime > STALE_CLAIM
         except FileNotFoundError:  # another hook just reclaimed it
-            return open_wait(git_dir, link, detail, key, ask, proposal)
+            return open_wait(git_dir, link, detail, key, ask, proposal, bridged)
         if stale:
             # The hook that claimed it was killed (hook timeout) before recording a card.
             # ponytail: two hooks reclaiming the same stale marker within milliseconds can open two wait cards;
             # rename-to-unique and re-check if that is ever seen.
             path.unlink(missing_ok=True)
-            return open_wait(git_dir, link, detail, key, ask, proposal)
+            return open_wait(git_dir, link, detail, key, ask, proposal, bridged)
         # An empty marker is another hook mid-create. A recorded card still ready is one whose
         # subscribe or block failed: finish it rather than open a second.
         if not card or status(card) != "ready":
@@ -131,7 +166,8 @@ def open_wait(git_dir, link, detail, key, ask=None, proposal=None):
         finally:
             os.close(claim)
     if status(card) == "ready":
-        core.subscribe(card)
+        if not muster_pages(git_dir, link, bridged or bool(ask)):
+            core.subscribe(card)
         # "--": the agent's question may start with "--" (e.g. "--kind=..."); argparse would read it as a flag.
         seen = (f"\n{heading(proposal)}: full text on this card and ledger {link['card']}." if proposal else "")
         core.kanban("block", "--kind", "needs_input", "--", card,
@@ -211,7 +247,7 @@ def enqueue(card, event, detail, payload, pin=None, **issue):
     request its pin (gate), so a revision made later never changes what this question was asked about."""
     from . import runs  # lazy: runs imports events at module level
     questions = claude.ask(payload) if event == "notification" else None
-    return runs.enqueue(card, event, detail, ask=questions, proposal=pin, **issue)
+    return runs.enqueue(card, event, detail, ask=questions, proposal=pin, bridged=is_bridged(event, payload), **issue)
 
 
 def gate(card, directory, event, payload, command):
@@ -322,12 +358,12 @@ def propose(card, file, **issue):
     return 0
 
 
-def move(event, git_dir, link, detail, key, ask=None, proposal=None):
+def move(event, git_dir, link, detail, key, ask=None, proposal=None, bridged=False):
     """This event's moves, each read back. Returns a report line; raises when a move did not land."""
     if event == "proposal":
         return post_proposal(link["card"], proposal)
     if event == "notification":
-        return open_wait(git_dir, link, detail, key, ask, proposal)
+        return open_wait(git_dir, link, detail, key, ask, proposal, bridged)
     if event == "prompt":
         return close_wait(git_dir, event)
     card = link["card"]
@@ -347,6 +383,10 @@ def move(event, git_dir, link, detail, key, ask=None, proposal=None):
             expect(card, "done", event)
         elif now != "done":
             raise core.CommandError(f"done: card {card} is {now}; complete it by hand")
+        else:  # already done: a revision after a send-back goes back to review
+            why = decisions.rereview(card)[1]
+            if why:
+                raise Unfinished(f"done: {why}")
         close_wait(git_dir, event)
         return f"{event}: card {card} {now} -> done"
     return f"{event}: card {card} is {now}, nothing to do"
@@ -362,8 +402,11 @@ def replay(entry):
         return  # the worktree is gone: no agent is left waiting
     for attempt in range(2):
         try:
-            move(event, git_dir, link, entry["detail"], entry["key"], entry.get("ask"), entry.get("proposal"))
+            move(event, git_dir, link, entry["detail"], entry["key"], entry.get("ask"), entry.get("proposal"),
+                 entry.get("bridged", False))
             return
+        except Unfinished:
+            raise
         except (core.CommandError, core.LaunchError, OSError, ValueError, KeyError):
             if attempt:
                 raise
@@ -413,6 +456,8 @@ def hook(args):
     git_dir, link = found
     if event == "propose":
         return propose(link["card"], args.url, git_dir=str(git_dir), link=link)
+    if event == "permission":  # before the gate and the outbox: it waits, and prints only a decision
+        return bridge.wait(git_dir, link, payload)
     if event == "prompt" and link.get("launch_dir"):
         with contextlib.suppress(OSError, ValueError):  # the launch's evidence that its brief arrived
             core.prompt_seen(link["launch_dir"], payload)
@@ -444,6 +489,9 @@ def hook(args):
     if why:
         log(f"{event} card {card}: approval request denied: {why}")
         return deny(why)
+    if event == "notification" and claude.ask(payload) is not None:
+        with contextlib.suppress(OSError):
+            bridge.write_pin(git_dir, pin)  # the bridge's request for this question carries it
     queued = runs.pending(card)
     if event == "prompt" and (queued[-1].name.endswith("-prompt.json") if queued
                               else not (git_dir / core.WAIT_KIND).exists()):
@@ -470,8 +518,9 @@ def hook(args):
         if not drained:
             return 0  # another hook or the flush holds the queue and delivers it
         # The queue stops at its oldest failure, which may be an earlier event's.
-        error = json.loads(runs.pending(card)[0].read_text()).get("error") or "not delivered"
-        raise core.CommandError(f"{error} (queued for the flush)")
+        first = json.loads(runs.pending(card)[0].read_text())
+        error = first.get("error") or "not delivered"
+        raise core.CommandError(error if first.get("unfinished") else f"{error} (queued for the flush)")
     except Exception as caught:  # a hook must never crash the agent
         line = f"{event} card {card}: {' '.join(str(caught).split())}"
         log(line)
