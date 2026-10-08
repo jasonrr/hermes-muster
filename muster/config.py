@@ -24,6 +24,10 @@ DEFAULTS = {
     "notes_dir": "",  # "" → data_dir()/"repos"
     "workflow_prompt_file": "",  # "" → <plugin>/prompts/workflow.md
     "worktrees": "~/.herdr/worktrees",
+    "project_owner": "",  # "" → no GitHub Project move; else with project_number: `gh project view <number> --owner <owner>`
+    "project_number": 0,
+    "project_status_field": "Status",  # the single-select field set on launch
+    "project_status_value": "In Progress",  # the option it is set to
 }
 settings = dict(DEFAULTS)  # module-level; cli.main fills it; tests assign into it
 AUTO_LABEL = "automatic-approval"  # an auto_approvers entry's label when it names none
@@ -46,6 +50,12 @@ def require():
         missing.append("approver_id")
     missing += [k for k in ("label", "board", "branch_prefix")
                 if not isinstance(settings[k], str) or not settings[k].strip()]
+    number = settings["project_number"]
+    if settings["project_owner"] or number:  # half a Project would print a gh error on every card
+        if not isinstance(number, int) or isinstance(number, bool) or number <= 0:
+            missing.append("project_number")
+        missing += [k for k in ("project_owner", "project_status_field", "project_status_value")
+                    if not isinstance(settings[k], str) or not settings[k].strip()]
     if missing:
         raise ConfigError(f"muster: set plugins.entries.muster.settings.{{{', '.join(missing)}}} in config.yaml")
     from . import claude

@@ -24,3 +24,7 @@ config_schema:
   notes_dir: {type: str, default: "", description: Per-repo production notes; empty = plugin-data/muster/repos}
   workflow_prompt_file: {type: str, default: "", description: Overrides prompts/workflow.md in the brief}
   worktrees: {type: str, default: "~/.herdr/worktrees"}
+  project_owner: {type: str, default: "", description: "Optional GitHub Project (v2) owner; with project_number, its status moves on launch. Empty = off"}
+  project_number: {type: int, default: 0, description: "That Project's number (gh project view <number> --owner <owner>); set both or neither"}
+  project_status_field: {type: str, default: Status, description: Single-select field set on launch}
+  project_status_value: {type: str, default: In Progress, description: Option the field is set to}

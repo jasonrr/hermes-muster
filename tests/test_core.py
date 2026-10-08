@@ -182,7 +182,7 @@ def test_the_brief_carries_the_production_note_or_says_there_is_none(tmp_path, m
 
 
 def fake_world(tmp_path, calls, failing_repo=None, card_age=0, fail_on=None, branches=(),
-               subs=None, card=None, world=None, boards=("muster",)):
+               subs=None, card=None, world=None, boards=("muster",), project=None):
     """Stubs gh and hermes; herdr, git and `gh pr list` are fake_herdr's World.
     `fail_on(argv)` true → that call raises. `branches` are checkouts made earlier by nobody we know."""
     world = world or World(tmp_path)
@@ -230,6 +230,11 @@ def fake_world(tmp_path, calls, failing_repo=None, card_age=0, fail_on=None, bra
                 return json.dumps(subs if subs is not None else [{"chat_id": "4242", "user_id": "4242", "chat_type": "dm", "notifier_profile": "default", "delivery_mode": "notify+wake"}])
             if verb in ("notify-subscribe", "comment", "block"):
                 return ""
+        if argv[:2] == ["gh", "project"] and project is not None:
+            if argv[2] == "item-edit":
+                return ""
+            assert argv[3:6] == ["5", "--owner", "jasonrr"] and argv[-2:] == ["--format", "json"]
+            return json.dumps(project[argv[2]])
         raise AssertionError(argv)
     fake_run.world = world
     return fake_run, worktree, git_dir
@@ -888,3 +893,93 @@ def test_recover_refuses_an_automatic_launch_a_human_relabeled(tmp_path, monkeyp
     failed = Recovery(tmp_path, monkeypatch, issue=bot_issue(), events=bot_events())
     failed.events.append(labeled(JASON, 999, "2026-09-17T10:00:00Z", name="automatic-approval"))
     assert recover("t_abc123") == 1 and failed.world.submitted == []
+
+
+# --- the GitHub Project status move ----------------------------------------------------------------
+
+PROJECT = {
+    "view": {"id": "PVT_1", "number": 5},
+    "field-list": {"fields": [{"id": "F_title", "name": "Title"},
+                              {"id": "F_status", "name": "Status", "options": [{"id": "o_todo", "name": "Todo"},
+                                                                               {"id": "o_prog", "name": "In Progress"}]}]},
+    "item-list": {"items": [{"id": "I_draft", "content": {"type": "DraftIssue", "title": "x"}},
+                            {"id": "I_none", "content": None},
+                            {"id": "I_397", "content": {"url": f"https://github.com/{REPO.lower()}/issues/397"}}]},
+}
+
+
+def project_comments(calls):
+    return [c[6] for c in calls if c[:2] == ["hermes", "kanban"] and c[4] == "comment" and c[6].startswith("project:")]
+
+
+@pytest.fixture
+def project_on(monkeypatch):
+    monkeypatch.setitem(config.settings, "project_owner", "jasonrr")
+    monkeypatch.setitem(config.settings, "project_number", 5)
+
+
+def test_a_launch_moves_the_issue_to_in_progress_with_the_resolved_ids(tmp_path, monkeypatch, capsys, project_on):
+    calls = []
+    monkeypatch.setattr(core, "run", fake_world(tmp_path, calls, project=PROJECT)[0])
+    assert tick() == 0
+    [edit] = [c for c in calls if c[:3] == ["gh", "project", "item-edit"]]
+    assert edit[3:] == ["--project-id", "PVT_1", "--id", "I_397", "--field-id", "F_status",
+                        "--single-select-option-id", "o_prog"]
+    item_list = next(c for c in calls if c[:3] == ["gh", "project", "item-list"])
+    assert item_list[item_list.index("-L") + 1] == "300"
+    assert project_comments(calls) == ["project: In Progress"]
+    assert f"{REPO}#397 project: In Progress" in capsys.readouterr().out
+
+
+def test_an_issue_not_in_the_project_is_noted_and_the_launch_goes_on(tmp_path, monkeypatch, project_on):
+    calls = []
+    absent = {**PROJECT, "item-list": {"items": PROJECT["item-list"]["items"][:2]}}
+    monkeypatch.setattr(core, "run", fake_world(tmp_path, calls, project=absent)[0])
+    assert tick() == 0
+    assert not [c for c in calls if c[:3] == ["gh", "project", "item-edit"]]
+    assert project_comments(calls) == ["project: not in Project #5"]
+    assert [c for c in calls if c[:3] == ["herdr", "agent", "prompt"]] and not blocks(calls)
+
+
+@pytest.mark.parametrize("key,value", [("project_status_field", "Stage"), ("project_status_value", "Shipping")])
+def test_an_unknown_field_or_option_is_noted_never_a_crash(tmp_path, monkeypatch, project_on, key, value):
+    monkeypatch.setitem(config.settings, key, value)
+    calls = []
+    monkeypatch.setattr(core, "run", fake_world(tmp_path, calls, project=PROJECT)[0])
+    assert tick() == 0
+    assert not [c for c in calls if c[:3] == ["gh", "project", "item-edit"]]
+    assert project_comments(calls) == ["project: field/option not found"]
+
+
+def test_a_failing_gh_project_is_one_card_line_and_never_blocks(tmp_path, monkeypatch, project_on):
+    calls = []
+    fake = fake_world(tmp_path, calls, project=PROJECT, fail_on=lambda a: a[:3] == ["gh", "project", "item-list"])[0]
+    monkeypatch.setattr(core, "run", fake)
+    assert tick() == 0
+    [line] = project_comments(calls)
+    assert line.startswith("project: failed: gh project item-list: exit 1") and not blocks(calls)
+
+
+def test_a_failed_comment_does_not_undo_a_done_move(tmp_path, monkeypatch, capsys, project_on):
+    calls = []
+    fake = fake_world(tmp_path, calls, project=PROJECT,
+                      fail_on=lambda a: a[:2] == ["hermes", "kanban"] and a[4] == "comment" and a[6].startswith("project:"))[0]
+    monkeypatch.setattr(core, "run", fake)
+    assert tick() == 0
+    assert [c for c in calls if c[:3] == ["gh", "project", "item-edit"]] and not blocks(calls)
+    assert f"{REPO}#397 project: In Progress" in capsys.readouterr().out
+
+
+def test_with_no_project_configured_no_gh_project_call_is_made(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(core, "run", fake_world(tmp_path, calls, project=PROJECT)[0])
+    assert tick() == 0
+    assert not [c for c in calls if c[:2] == ["gh", "project"]] and not project_comments(calls)
+
+
+def test_an_issue_past_the_300_item_cap_is_not_called_absent(tmp_path, monkeypatch, project_on):
+    calls = []
+    full = {**PROJECT, "item-list": {"items": [{"id": f"I{n}", "content": {"url": f"u{n}"}} for n in range(300)]}}
+    monkeypatch.setattr(core, "run", fake_world(tmp_path, calls, project=full)[0])
+    assert tick() == 0
+    assert project_comments(calls) == ["project: not in the first 300 items of Project #5"]

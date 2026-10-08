@@ -168,3 +168,24 @@ def test_require_rejects_a_malformed_auto_approver(auto):
     config.settings.update(approver_login="me", repos=["o/a"], approver_id=7, auto_approvers=auto)
     with pytest.raises(config.ConfigError, match="auto_approvers"):
         config.require()
+
+
+@pytest.mark.parametrize("change,key", [
+    ({"project_owner": "o", "project_number": 0}, "project_number"),
+    ({"project_owner": "o", "project_number": "5"}, "project_number"),
+    ({"project_owner": "o", "project_number": True}, "project_number"),
+    ({"project_owner": "", "project_number": 5}, "project_owner"),
+    ({"project_owner": " ", "project_number": 5}, "project_owner"),
+    ({"project_owner": "o", "project_number": 5, "project_status_field": ""}, "project_status_field"),
+    ({"project_owner": "o", "project_number": 5, "project_status_value": None}, "project_status_value"),
+])
+def test_require_rejects_a_half_set_project(change, key):
+    config.settings.update(approver_login="me", repos=["o/a"], approver_id=7, **change)
+    with pytest.raises(config.ConfigError, match=key):
+        config.require()
+
+
+@pytest.mark.parametrize("owner,number", [("", 0), ("o", 5)])
+def test_require_passes_with_no_project_or_a_whole_one(owner, number):
+    config.settings.update(approver_login="me", repos=["o/a"], approver_id=7, project_owner=owner, project_number=number)
+    config.require()
