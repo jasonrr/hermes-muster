@@ -158,6 +158,41 @@ def approval(events):
     return newest
 
 
+def same_account(user, entry):
+    return (user or {}).get("id") == entry["id"] and str((user or {}).get("login", "")).lower() == entry["login"].lower()
+
+
+def automatic(repo, issue, events):
+    """(the newest approving label event, who) if an auto_approvers entry approves the issue; otherwise None.
+
+    First entry wins; all must hold: the repo is the entry's, the entry's account opened the issue, the
+    issue still carries the entry's label, and that account made the newest event of both labels.
+    """
+    for entry in config.settings["auto_approvers"]:
+        who = {"login": entry["login"], "id": entry["id"], "label": entry.get("label", config.AUTO_LABEL)}
+        names = {config.settings["label"].lower(), who["label"].lower()}
+        if (repo.lower() not in {str(r).lower() for r in entry["repos"]}
+                or not same_account(issue.get("user"), who)
+                or not any((label.get("name") or "").lower() == who["label"].lower() for label in issue.get("labels", []))):
+            continue
+        newest = {}
+        for event in events:
+            name = ((event.get("label") or {}).get("name") or "").lower()
+            if event.get("event") == "labeled" and name in names:
+                newest[name] = event
+        if len(newest) == len(names) and all(same_account(e.get("actor"), who) for e in newest.values()):
+            return newest[config.settings["label"].lower()], who
+    return None
+
+
+def approve(repo, issue, events):
+    """(approving event, who) — who is None for the human approver; (None, None) when nothing approves."""
+    event = approval(events)
+    if event is not None:
+        return event, None
+    return automatic(repo, issue, events) or (None, None)
+
+
 def is_bug(issue):
     return any(label.get("name") == config.settings["bug_label"] for label in issue.get("labels", []))
 

@@ -65,6 +65,69 @@ def test_approver_login_case_insensitive():
     assert core.approval([labeled({"login": "JASONRR", "id": 2}, 17, "2026-09-16T10:00:00Z")]) is None
 
 
+SENTRY = {"login": "sentry[bot]", "id": 39604003}
+WHO = {**SENTRY, "label": "automatic-approval"}
+
+
+def bot_issue(user=SENTRY, labels=("agent-ready", "automatic-approval")):
+    return {"number": 397, "title": "Add a unit test", "state": "open", "user": user,
+            "labels": [{"name": name} for name in labels]}
+
+
+def bot_events(main=SENTRY, auto=SENTRY):
+    return [labeled(main, 407, "2026-09-16T10:00:00Z"),
+            labeled(auto, 408, "2026-09-16T10:00:01Z", name="automatic-approval")]
+
+
+@pytest.fixture
+def sentry_rule(monkeypatch):
+    monkeypatch.setitem(config.settings, "auto_approvers", [{**SENTRY, "repos": [REPO.lower()]}])
+
+
+def test_a_bot_opened_issue_with_both_labels_is_approved_by_its_main_label_event(sentry_rule):
+    event, who = core.automatic(REPO, bot_issue(), bot_events())
+    assert event["id"] == 407 and who == WHO  # the main label's event, which recover checks the card against
+
+
+@pytest.mark.parametrize("case", ["relabeled-by-human", "repo-not-listed", "opened-by-someone-else",
+                                  "entry-label-gone", "id-mismatch", "main-label-by-human"])
+def test_an_automatic_approval_is_refused(sentry_rule, monkeypatch, case):
+    issue, events, repo = bot_issue(), bot_events(), REPO
+    if case == "relabeled-by-human":
+        events.append(labeled(JASON, 409, "2026-09-17T10:00:00Z", name="automatic-approval"))
+    elif case == "repo-not-listed":
+        repo = "Radical-Candor-LLC/radicalcandorwebsite"
+    elif case == "opened-by-someone-else":
+        issue = bot_issue(user=OTHER)
+    elif case == "entry-label-gone":
+        issue = bot_issue(labels=("agent-ready",))
+    elif case == "id-mismatch":
+        issue, events = bot_issue(user={**SENTRY, "id": 1}), bot_events({**SENTRY, "id": 1}, {**SENTRY, "id": 1})
+    else:
+        events.append(labeled(OTHER, 409, "2026-09-17T10:00:00Z"))
+    assert core.automatic(repo, issue, events) is None
+    assert core.approve(repo, issue, events) == (None, None)
+
+
+def test_the_second_entry_that_matches_is_the_approver(monkeypatch):
+    other = {"login": "other[bot]", "id": 5, "repos": [REPO]}
+    monkeypatch.setitem(config.settings, "auto_approvers", [other, {**SENTRY, "label": "Sentry-OK", "repos": [REPO]}])
+    events = bot_events()[:1] + [labeled(SENTRY, 408, "2026-09-16T10:00:01Z", name="sentry-ok")]
+    assert core.automatic(REPO, bot_issue(labels=("agent-ready", "sentry-ok")), events)[1] == {**SENTRY, "label": "Sentry-OK"}
+
+
+def test_a_bot_relabel_after_the_human_is_an_automatic_approval(sentry_rule):
+    events = [labeled(JASON, 300, "2026-09-15T10:00:00Z")] + bot_events()
+    assert core.approve(REPO, bot_issue(), events) == (events[1], WHO)
+
+
+def test_no_auto_approvers_leaves_the_human_rule_alone():
+    assert config.settings["auto_approvers"] == []
+    assert core.approve(REPO, bot_issue(), bot_events()) == (None, None)
+    human = [labeled(JASON, 10, "2026-09-16T10:00:00Z")]
+    assert core.approve(REPO, {"number": 1, "labels": []}, human) == (human[0], None)
+
+
 def test_card_argv_is_an_unassigned_card_on_the_board_keyed_by_the_label_event():
     argv = core.card_argv(REPO, {"number": 397, "title": "-Add a unit test"}, {"id": 10})
     assert argv[:5] == ["hermes", "kanban", "--board", "muster", "create"]
