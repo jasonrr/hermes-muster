@@ -54,6 +54,9 @@ def detail(payload: dict) -> str:
     return " ".join(str(payload.get("message") or asked).split())
 
 
+APPROVAL = "Approval"  # the question header that marks a design-approval request
+
+
 def ask(payload: dict) -> list | None:
     """An AskUserQuestion's questions (each a dict: question, options, ...), as the agent wrote them."""
     if payload.get("tool_name") != "AskUserQuestion":
@@ -63,6 +66,11 @@ def ask(payload: dict) -> list | None:
     if not isinstance(questions, list):
         return None
     return [q for q in questions if isinstance(q, dict)] or None
+
+
+def approval(payload: dict) -> bool:
+    """An AskUserQuestion the agent marked as a design-approval request: a question headed `Approval`."""
+    return any(q.get("header") == APPROVAL for q in ask(payload) or [])
 
 
 def get_adapter(kind: str):

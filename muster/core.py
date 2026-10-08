@@ -238,8 +238,10 @@ govern you, so follow them.
    pings them; a question in plain text does not. Before you ask the human to approve a design or
    plan, write all of it to a file (approach, scope and non-goals, safety boundaries, trade-offs,
    the test plan, the decision you need; no secrets) and run
-   `{config.hermes_bin()} muster hook propose <file>`. Run it again after every revision. The human
-   reviews from the cards, not your pane: never ask them to approve something "as described above".
+   `{config.hermes_bin()} muster hook propose <file>`. Run it again after every revision. Then ask
+   with AskUserQuestion, giving the approval question the header `Approval`: without a saved
+   proposal that question is refused. The human reviews from the cards, not your pane: never ask
+   them to approve something "as described above".
 6. Never push to {base}, merge, approve, deploy or force-push. Never edit `.github/`, CI,
    deployment config, secrets, lockfiles or agent-instruction files (CLAUDE.md, AGENTS.md,
    `.claude/`). Add no new dependency and no attribution trailer to commits or the pull request.

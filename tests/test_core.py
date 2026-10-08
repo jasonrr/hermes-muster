@@ -152,6 +152,7 @@ def test_the_brief_names_bug_or_feature_and_never_carries_issue_text():
     assert "never push to main" in bug.lower()
     assert f"{config.hermes_bin()} muster hook done" in bug
     assert f"`{config.hermes_bin()} muster hook propose <file>`" in bug  # the plan reaches the cards (#14)
+    assert "the header `Approval`" in bug
     assert "AskUserQuestion" in bug
     assert "act as the login configured" in bug
 

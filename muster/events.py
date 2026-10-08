@@ -14,8 +14,12 @@ Telegram ping for the human and a queued agent turn.
   done <PR url>  complete the ledger card (from ready or blocked), archive any open wait card;
                  refused unless gh names the run's branch as the pull request's head
   propose <file> save the agent's plan or design as the next version, Proposal v<n> <sha256[:12]>,
-                 in <data dir>/runs/<card>/proposals/ and as one ledger comment; the next
-                 AskUserQuestion's wait card carries that version, its full text and every option
+                 in <data dir>/runs/<card>/proposals/ and as one ledger comment; once it reads back
+                 there it is armed for the next approval request (an AskUserQuestion headed
+                 `Approval`), whose wait card carries that version, its full text and every option.
+                 The approval request is denied before its dialog shows (PreToolUse) while nothing
+                 is armed or another wait card is open; the armed version is consumed only once a
+                 wait card carries it
 
 Every block reason and completion summary is written for the human to read whole: the board's
 "human_notices" setting makes the gateway's Telegram ping lead with the card's title and show the
@@ -28,7 +32,7 @@ kanban call and delivered from there in order (runs.drain, then replay here); on
 in two tries stays queued, and the flush (runs.flush, every minute) delivers it. A hook never fails
 the agent: the error goes to <data dir>/logs/events.log and it exits 0. Only `done` and `propose`
 (run by the agent, not by a hook) print or exit non-zero, because a UserPromptSubmit hook's stdout
-reaches the agent's context.
+reaches the agent's context; the one other print is a denied approval request's PreToolUse decision.
 """
 
 import contextlib
@@ -133,6 +137,8 @@ def open_wait(git_dir, link, detail, key, ask=None, proposal=None):
         core.kanban("block", "--kind", "needs_input", "--", card,
                     f"{detail or 'The agent is waiting for you.'}{seen}\nReply in Herdr pane {link['pane']}.")
     expect(card, "blocked", "notification")
+    if proposal:
+        disarm(link["card"], card, proposal)
     return f"notification: wait card {card} blocked"
 
 
@@ -200,20 +206,62 @@ def post_proposal(ledger, proposal):
     return f"proposal: {head} on ledger {ledger}"
 
 
-def enqueue(card, event, detail, payload, **issue):
-    """Save one hook event. An AskUserQuestion also saves its questions and pins the armed proposal,
-    so a revision made later never changes what this question was asked about."""
+def enqueue(card, event, detail, payload, pin=None, **issue):
+    """Save one hook event. An AskUserQuestion also saves its questions, and an allowed approval
+    request its pin (gate), so a revision made later never changes what this question was asked about."""
     from . import runs  # lazy: runs imports events at module level
     questions = claude.ask(payload) if event == "notification" else None
-    armed = proposals(card) / "armed"
-    pinned = None
-    if questions and armed.is_file():
-        with contextlib.suppress(OSError, ValueError):
-            pinned = json.loads(armed.read_text())
-    path = runs.enqueue(card, event, detail, ask=questions, proposal=pinned, **issue)
-    if pinned:
-        armed.unlink(missing_ok=True)  # after the save: a kill in between pins it twice, not never
-    return path
+    return runs.enqueue(card, event, detail, ask=questions, proposal=pin, **issue)
+
+
+def gate(card, directory, payload, command):
+    """(pin, None) to let an approval request ask, (None, why) to deny it; (None, None) for any other event.
+
+    An approval request needs an armed proposal (propose read it back on the ledger) and no other open
+    wait card, which would otherwise swallow it. Queued events are delivered first, so a close already
+    on its way lands before the check. A denial leaves the proposal armed for the next request.
+    """
+    from . import runs  # lazy: runs imports events at module level
+    if not claude.approval(payload):
+        return None, None
+    if runs.pending(card):
+        runs.drain(card, wait=True)
+    try:
+        pin = json.loads((proposals(card) / "armed").read_text())
+    except (OSError, ValueError):
+        return None, (f"No proposal is saved on the ledger card for this approval request. Write the whole "
+                      f"plan or design to a file, run `{command}`, and ask again once it says the proposal is "
+                      f"on the ledger.")
+    marker = directory / core.WAIT_KIND
+    try:
+        open_card = marker.read_text().strip()
+        dead = not open_card and time.time() - marker.stat().st_mtime > STALE_CLAIM  # open_wait reclaims it
+    except FileNotFoundError:
+        open_card, dead = None, True
+    if not dead:
+        open_card = open_card or "(being opened)"
+        return None, (f"Wait card {open_card} for an earlier question is still open, so this approval request "
+                      f"would not reach the human. {heading(pin)} stays saved; tell the human in plain text "
+                      f"and ask again once that wait is answered.")
+    return pin, None
+
+
+def deny(why):
+    """A PreToolUse decision: Claude Code cancels the tool call and shows the agent the reason."""
+    print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
+                                             "permissionDecisionReason": why}}))
+    return 0
+
+
+def disarm(ledger, wait, proposal):
+    """Consume the armed version once a wait card carries it, read back; a newer one armed since stays."""
+    shown = json.loads(core.kanban("show", wait, "--json"))
+    if heading(proposal) not in str(shown["task"].get("body") or ""):
+        return  # a card this request did not open (finished after a failed subscribe): keep it armed
+    path = proposals(ledger) / "armed"
+    with contextlib.suppress(OSError, ValueError):
+        if json.loads(path.read_text()) == proposal:
+            path.unlink()
 
 
 def propose(card, file, **issue):
@@ -244,7 +292,6 @@ def propose(card, file, **issue):
                 version += 1
                 (directory / f"v{version}.md").write_text(text)
             proposal = {"version": version, "sha": sha}
-            core.save_json(directory / "armed", proposal)
             path = runs.enqueue(card, "proposal", heading(proposal), proposal=proposal, **issue)
         runs.drain(card, wait=True)
         if path.exists():
@@ -252,6 +299,7 @@ def propose(card, file, **issue):
             raise core.CommandError(f"{error} (queued for the flush)")
         if status(card) == "archived":
             raise core.CommandError(f"ledger {card} is archived: not posted")
+        core.save_json(directory / "armed", proposal)  # only now: an approval request needs it on the ledger
     except Exception as caught:  # noqa: BLE001 - the agent reads the reason; nothing may crash it
         line = f"propose card {card}: {' '.join(str(caught).split())}"
         log(line)
@@ -376,13 +424,20 @@ def hook(args):
         detail = claude.detail(payload)
     from . import runs  # lazy: runs imports events at module level
     card = link["card"]
+    try:
+        pin, why = gate(card, git_dir, payload, f"{config.hermes_bin()} muster hook propose <file>")
+    except Exception as caught:  # noqa: BLE001 - fail closed, and say why
+        pin, why = None, f"muster could not check this approval request: {' '.join(str(caught).split())}"
+    if why:
+        log(f"{event} card {card}: approval request denied: {why}")
+        return deny(why)
     queued = runs.pending(card)
     if event == "prompt" and (queued[-1].name.endswith("-prompt.json") if queued
                               else not (git_dir / core.WAIT_KIND).exists()):
         return 0  # every PostToolUse lands here: nothing open, or one queued prompt is enough
     try:
         # Saved before any move, so a hook killed mid-move leaves its event for the flush.
-        path = enqueue(card, event, detail, payload, git_dir=str(git_dir), link=link)
+        path = enqueue(card, event, detail, payload, pin, git_dir=str(git_dir), link=link)
         drained = runs.drain(card, wait=event == "done")  # only done waits: the agent reads its answer
         if not path.exists():
             if event != "done":

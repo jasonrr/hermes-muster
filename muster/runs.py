@@ -367,8 +367,9 @@ When you need a decision or a fact you cannot read, ask the human with the AskUs
 wait: that pings them. A question in plain text does not. Before you ask the human to approve a design
 or plan, write all of it to a file (approach, scope and non-goals, safety boundaries, trade-offs, the
 test plan, the decision you need; no secrets) and run
-`{config.hermes_bin()} muster hook --card {run['card']} propose <file>`, again after every revision:
-the human reviews from the cards, not your pane. Never push to {run['base']}, merge, deploy
+`{config.hermes_bin()} muster hook --card {run['card']} propose <file>`, again after every revision.
+Then ask with AskUserQuestion, giving the approval question the header `Approval`: without a saved
+proposal that question is refused. The human reviews from the cards, not your pane. Never push to {run['base']}, merge, deploy
 or force-push.
 """
 
@@ -545,7 +546,7 @@ def recover(card, resend=False, adopt=False):
 
 
 def hook(args):
-    """A hook of the run's pane. Never fails the agent, never prints."""
+    """A hook of the run's pane. Never fails the agent; prints only a denied approval request's decision."""
     card, event = args.card, args.event
     if event == "done":  # an ad-hoc run finishes by its pull request; reading stdin here would hang
         print("done: an ad-hoc run is finished by its pull request, nothing to report", file=sys.stderr)
@@ -570,9 +571,17 @@ def hook(args):
         if event == "prompt" and not (run_dir(card) / core.WAIT_KIND).exists() and not pending(card):
             return 0  # every PostToolUse lands here: nothing open, nothing queued, nothing to do
         core.prepare_env()
+        try:
+            pin, why = events.gate(card, run_dir(card), payload,
+                                   f"{config.hermes_bin()} muster hook --card {card} propose <file>")
+        except Exception as error:  # noqa: BLE001 - fail closed, and say why
+            pin, why = None, f"muster could not check this approval request: {' '.join(str(error).split())}"
+        if why:
+            log(f"{card} hook {event}: approval request denied: {why}")
+            return events.deny(why)
         queued = pending(card)
         if not (event == "prompt" and queued and queued[-1].name.endswith("-prompt.json")):
-            events.enqueue(card, event, claude.detail(payload), payload)  # one queued prompt is enough
+            events.enqueue(card, event, claude.detail(payload), payload, pin)  # one queued prompt is enough
         drain(card)
     except Exception as error:  # a hook must never crash the agent; the flush retries what was saved
         with contextlib.suppress(Exception):

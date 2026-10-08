@@ -465,7 +465,7 @@ def test_launch_brief_is_the_callers_text_plus_the_run_footer(board, clone):
     brief = (runs.run_dir(card) / "brief.md").read_text()
     assert brief.startswith("Fix the thing.\n")
     assert f"## This run: {card}" in brief and "`fix/x`" in brief and "You never report it yourself" in brief
-    assert f"`{config.hermes_bin()} muster hook --card {card} propose <file>`" in brief
+    assert f"`{config.hermes_bin()} muster hook --card {card} propose <file>`" in brief and "the header `Approval`" in brief
 
 
 def test_launch_opens_a_trusted_worktree_and_starts_claude_in_auto_mode(board, clone):
@@ -794,7 +794,8 @@ def test_an_ad_hoc_proposal_is_a_ledger_comment_and_the_next_ask_carries_it(boar
     assert board["comments"][CARD] == [f"{head}\n\n## Approach\nOne propose hook."]
     assert files(run1, "outbox") == [] and files(run1, "sent") == []  # a comment pings no one: no ack to wait on
     fire(monkeypatch, "notification", message="", tool_name="AskUserQuestion",
-         tool_input={"questions": [{"question": "Approve?", "options": [{"label": "Yes", "description": "build"}]}]})
+         tool_input={"questions": [{"question": "Approve?", "header": "Approval",
+                                 "options": [{"label": "Yes", "description": "build"}]}]})
     body = board["bodies"]["t_wait1"]
     assert "| branch fix/x |" in body and f"# {head}" in body and "- Yes: build" in body
     assert block_text(board, "t_wait1") == f"Approve?\n{head}: full text on this card and ledger {CARD}.\nReply in Herdr pane w_1:p2."
@@ -805,3 +806,11 @@ def test_an_ad_hoc_propose_without_a_run_fails_loudly(board, tmp_path, capsys):
     design.write_text("plan")
     assert runs.hook(argparse.Namespace(card="t_nope", event="propose", url=str(design))) == 1
     assert "no run t_nope" in capsys.readouterr().err and not runs.run_dir("t_nope").exists()
+
+
+def test_an_ad_hoc_approval_request_without_a_saved_proposal_is_denied(board, run1, monkeypatch, capsys):
+    fire(monkeypatch, "notification", message="", tool_name="AskUserQuestion",
+         tool_input={"questions": [{"question": "Approve?", "header": "Approval", "options": []}]})
+    why = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["permissionDecisionReason"]
+    assert why.startswith("No proposal is saved") and f"muster hook --card {CARD} propose <file>" in why
+    assert "t_wait1" not in board["cards"] and files(run1, "outbox") == []

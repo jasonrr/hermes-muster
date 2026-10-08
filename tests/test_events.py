@@ -542,7 +542,7 @@ def test_done_behind_a_failing_event_names_that_failure(board, monkeypatch, caps
     assert "block failed (queued for the flush)" in capsys.readouterr().err
 
 
-QUESTION = {"question": "Approve this design, as described above?", "header": "Design", "multiSelect": False,
+QUESTION = {"question": "Approve this design, as described above?", "header": "Approval", "multiSelect": False,
             "options": [{"label": "Approve (Recommended)", "description": "Build it as proposed."},
                         {"label": "Change something", "description": "Say what to change.", "preview": "a\nb"}]}
 
@@ -596,32 +596,6 @@ def test_a_revision_is_a_new_version_the_old_one_stays_and_the_next_ask_names_th
     assert sorted(p.name for p in events.proposals("t_abc123").glob("v*.md")) == ["v1.md", "v2.md", "v3.md"]
 
 
-def test_an_ask_without_a_new_proposal_and_a_permission_prompt_claim_no_proposal(board, monkeypatch, tmp_path):
-    ask(monkeypatch)
-    hook(monkeypatch, "prompt")
-    propose(tmp_path, "the plan")
-    hook(monkeypatch, "notification", message="Claude needs your permission to use Bash")
-    hook(monkeypatch, "prompt")
-    ask(monkeypatch)  # the permission prompt left the proposal for this question
-    hook(monkeypatch, "prompt")
-    ask(monkeypatch)  # nothing new was proposed since
-    assert ["Proposal" in board["bodies"][f"t_wait{n}"] for n in (1, 2, 3, 4)] == [False, False, True, False]
-    reasons = [c[-1] for c in board["calls"] if c[4:5] == ["block"]]
-    assert ["Proposal" in r for r in reasons] == [False, False, True, False]
-
-
-def test_a_failed_post_fails_loudly_and_holds_the_ask_until_the_flush_posts_it_once(board, monkeypatch, tmp_path, capsys):
-    board["fail"]["comment"] = 4  # two tries by propose's drain, two by the ask hook's
-    assert propose(tmp_path, "the plan") == 1
-    assert "comment failed (queued for the flush)" in capsys.readouterr().err
-    ask(monkeypatch)
-    assert "t_wait1" not in board["cards"]  # no approval request before its context is on the ledger
-    assert [p.name.split("-", 1)[1] for p in runs.pending("t_abc123")] == ["proposal.json", "notification.json"]
-    runs.flush()
-    assert len(board["comments"]["t_abc123"]) == 1
-    assert board["cards"]["t_wait1"] == "blocked" and "Proposal v1" in board["bodies"]["t_wait1"]
-
-
 def test_a_redelivered_proposal_posts_no_second_comment(board, tmp_path):
     propose(tmp_path, "the plan")
     entry = {"version": 1, "sha": sha("the plan")}
@@ -663,7 +637,7 @@ def test_a_wait_reopened_past_a_stale_claim_still_carries_the_question_and_propo
 
 
 def test_a_long_preview_is_cut_and_says_so(board, monkeypatch):
-    big = dict(QUESTION, options=[{"label": "A", "description": "d", "preview": "p" * (events.PREVIEW_MAX + 50)}])
+    big = dict(QUESTION, header="Pick", options=[{"label": "A", "description": "d", "preview": "p" * (events.PREVIEW_MAX + 50)}])
     ask(monkeypatch, big)
     assert "p" * (events.PREVIEW_MAX + 1) not in board["bodies"]["t_wait1"]
     assert "[preview cut at 2 KB; the whole of it is in the pane]" in board["bodies"]["t_wait1"]
@@ -672,3 +646,77 @@ def test_a_long_preview_is_cut_and_says_so(board, monkeypatch):
 def test_propose_without_a_file_prints_its_usage(board, capsys):
     assert events.hook(ns("propose")) == 1
     assert "usage: hermes muster hook propose <file>" in capsys.readouterr().err
+
+
+def denied(capsys):
+    """The PreToolUse decision a denied approval request prints, or None when the ask was let through."""
+    out = capsys.readouterr().out
+    if not out:
+        return None
+    decision = json.loads(out)["hookSpecificOutput"]
+    assert decision["hookEventName"] == "PreToolUse" and decision["permissionDecision"] == "deny"
+    return decision["permissionDecisionReason"]
+
+
+def test_an_approval_request_without_a_saved_proposal_is_denied_before_its_dialog(board, monkeypatch, capsys):
+    assert ask(monkeypatch) == 0
+    why = denied(capsys)
+    assert why.startswith("No proposal is saved on the ledger card") and "muster hook propose <file>" in why
+    assert "t_wait1" not in board["cards"] and not runs.pending("t_abc123")  # nothing queued, nothing pinged
+
+
+def test_only_a_question_headed_approval_takes_the_proposal_and_it_is_used_once(board, monkeypatch, tmp_path, capsys):
+    propose(tmp_path, "the plan")
+    ask(monkeypatch, dict(QUESTION, header="Path", question="Which file?"))
+    hook(monkeypatch, "prompt")
+    hook(monkeypatch, "notification", message="Claude needs your permission to use Bash")
+    hook(monkeypatch, "prompt")
+    capsys.readouterr()
+    ask(monkeypatch)  # the approval request: the question and the permission prompt left it armed
+    assert denied(capsys) is None
+    hook(monkeypatch, "prompt")
+    assert ["Proposal" in board["bodies"][f"t_wait{n}"] for n in (1, 2, 3)] == [False, False, True]
+    assert ["Proposal" in c[-1] for c in board["calls"] if c[4:5] == ["block"]] == [False, False, True]
+    ask(monkeypatch)  # carried once: approving again needs a proposal saved again
+    assert denied(capsys).startswith("No proposal is saved") and "t_wait4" not in board["cards"]
+
+
+def test_an_approval_request_while_another_wait_is_open_is_denied_and_its_proposal_kept(board, monkeypatch, tmp_path, capsys):
+    hook(monkeypatch, "notification", message="Claude needs your permission to use Bash")  # t_wait1, unanswered
+    propose(tmp_path, "the plan")
+    capsys.readouterr()
+    ask(monkeypatch)
+    why = denied(capsys)
+    assert why.startswith("Wait card t_wait1 for an earlier question is still open")
+    assert f"Proposal v1 {sha('the plan')} stays saved" in why
+    assert "t_wait2" not in board["cards"] and events.proposals("t_abc123").joinpath("armed").is_file()
+    hook(monkeypatch, "prompt")  # the human answers the open wait
+    ask(monkeypatch)
+    assert denied(capsys) is None and board["bodies"]["t_wait2"].endswith("the plan")
+    assert not events.proposals("t_abc123").joinpath("armed").exists()  # consumed: a card carries it
+
+
+def test_a_pinned_request_that_finds_a_wait_open_at_delivery_keeps_its_proposal_armed(board, tmp_path):
+    """Past the gate, a wait opened in between: open_wait does not open a second card, and the pin is not lost."""
+    propose(tmp_path, "the plan")
+    pin = {"version": 1, "sha": sha("the plan")}
+    events.open_wait(board["git_dir"], LINKS, "Permission?", "k1")  # t_wait1 blocked
+    line = events.open_wait(board["git_dir"], LINKS, "Approve?", "k2", [QUESTION], pin)
+    assert line == "notification: wait card t_wait1 already open"
+    assert json.loads(events.proposals("t_abc123").joinpath("armed").read_text()) == pin
+
+
+def test_a_proposal_not_yet_on_the_ledger_is_not_armed_and_the_flush_posts_it_once(board, monkeypatch, tmp_path, capsys):
+    board["fail"]["comment"] = 2
+    assert propose(tmp_path, "the plan") == 1
+    assert "comment failed (queued for the flush)" in capsys.readouterr().err
+    board["fail"]["comment"] = 2  # the gate's drain tries twice more
+    ask(monkeypatch)
+    assert denied(capsys).startswith("No proposal is saved") and "t_wait1" not in board["cards"]
+    runs.flush()
+    assert len(board["comments"]["t_abc123"]) == 1
+    assert propose(tmp_path, "the plan") == 0  # finds its comment, posts nothing, arms it
+    capsys.readouterr()
+    ask(monkeypatch)
+    assert denied(capsys) is None and len(board["comments"]["t_abc123"]) == 1
+    assert board["cards"]["t_wait1"] == "blocked" and "Proposal v1" in board["bodies"]["t_wait1"]
