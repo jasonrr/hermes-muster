@@ -28,7 +28,7 @@ def setup(parser):
     p.add_argument("--model", default=None)
     sub.add_parser("flush", help="deliver hook events a pane could not")
     p = sub.add_parser("hook", help="agent hook entry point; reads the hook payload on stdin")
-    p.add_argument("event", choices=["notification", "prompt", "session-end", "stop", "done", "propose"])
+    p.add_argument("event", choices=["notification", "prompt", "session-end", "stop", "done", "propose", "permission"])
     p.add_argument("url", nargs="?", help="done: the pull request URL; propose: the plan or design file")
     p.add_argument("--card", default=None)
     sub.add_parser("cleanup", help="close finished workspaces").add_argument("--dry-run", action="store_true")

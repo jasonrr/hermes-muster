@@ -455,7 +455,9 @@ def test_launch_settings_hook_the_run_card_including_stop_and_session_end(board,
     assert command["PostToolUse"].endswith(f"hook --card {card} prompt")
     assert hooks["Notification"][0]["matcher"] == claude.ASK_NOTIFICATIONS
     assert hooks["PreToolUse"][0]["matcher"] == "AskUserQuestion"
-    assert {entry[0]["hooks"][0]["timeout"] for entry in hooks.values()} == {30}
+    assert command["PermissionRequest"].endswith(f"hook --card {card} permission || exit 0")
+    assert {name: entry[0]["hooks"][0]["timeout"] for name, entry in hooks.items()} == {
+        **{name: 30 for name in hooks}, "PermissionRequest": 86400}
     start = next(c for c in board["calls"] if c[:3] == ["herdr", "agent", "start"])
     assert start[start.index("--settings") + 1] == str(runs.run_dir(card) / "settings.json")
 

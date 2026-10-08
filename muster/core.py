@@ -33,6 +33,7 @@ BRIEF_FILE = "muster-brief.md"
 SETTINGS_FILE = "muster-settings.json"
 CREATED_BY = "muster"
 WAIT_KIND = "muster-wait"
+PIN_FILE = "muster-pin"  # the proposal an approval request carried, for the bridge (bridge.write_pin)
 LINKS_PREFIX = "muster links:"
 PROVENANCE = "Made by muster (hermes muster). The card id and pane are the provenance; see the card comments."
 

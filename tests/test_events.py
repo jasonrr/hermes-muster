@@ -768,3 +768,52 @@ def test_a_plain_question_whose_outbox_save_fails_is_still_never_denied(board, m
     monkeypatch.setattr(runs, "enqueue", lambda *a, **k: (_ for _ in ()).throw(OSError("disk full")))
     assert ask(monkeypatch, dict(QUESTION, header="Path")) == 0
     assert capsys.readouterr().out == ""  # only an approval request is gated; a hook never blocks other asks
+
+
+# -- the PermissionRequest bridge -------------------------------------------------------------------
+
+ASK = {"tool_name": "AskUserQuestion", "tool_input": {"questions": [{"question": "Which?", "options": []}]}}
+
+
+def test_permission_goes_to_the_bridge_before_any_board_call(board, monkeypatch):
+    import muster.bridge as bridge
+    seen = []
+    monkeypatch.setattr(bridge, "wait", lambda directory, link, payload: seen.append((directory, link, payload)) or 0)
+    assert hook(monkeypatch, "permission", hook_event_name="PermissionRequest", **ASK) == 0
+    assert seen[0][0] == board["git_dir"] and seen[0][1] == LINKS and seen[0][2]["tool_name"] == "AskUserQuestion"
+    assert verbs(board) == []
+
+
+def test_permission_outside_a_muster_worktree_prints_nothing(board, monkeypatch, capsys):
+    monkeypatch.setattr(core, "run", lambda argv: (_ for _ in ()).throw(core.CommandError("not a repo")))
+    assert hook(monkeypatch, "permission", **ASK) == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_prompt_settles_before_its_early_return_and_session_end_stales(board, monkeypatch):
+    import muster.bridge as bridge
+    calls = []
+    monkeypatch.setattr(bridge, "settle", lambda directory, payload: calls.append(("settle", directory, payload["x"])))
+    monkeypatch.setattr(bridge, "session_end", lambda directory: calls.append(("end", directory)))
+    hook(monkeypatch, "prompt", x=1)  # nothing open: the early return
+    hook(monkeypatch, "session-end")
+    assert calls == [("settle", board["git_dir"], 1), ("end", board["git_dir"])]
+
+
+def test_an_ask_leaves_its_pin_for_the_bridge_and_another_notification_does_not(board, monkeypatch):
+    git_dir = board["git_dir"]
+    core.save_json(events.proposals("t_abc123") / "armed", {"version": 1, "sha": "aaa"})
+    hook(monkeypatch, "notification", **ASK)  # not an approval: no pin
+    assert not (git_dir / core.PIN_FILE).exists()
+    core.save_json(git_dir / core.PIN_FILE, {"version": 9, "sha": "old"})
+    hook(monkeypatch, "notification", message="x")  # not an ask: the file is left alone
+    assert json.loads((git_dir / core.PIN_FILE).read_text())["version"] == 9
+    hook(monkeypatch, "notification", **ASK)  # an ask that is no approval request pins nothing: the old pin goes
+    assert not (git_dir / core.PIN_FILE).exists()
+
+
+def test_an_approval_ask_writes_the_armed_pin(board, monkeypatch):
+    core.save_json(events.proposals("t_abc123") / "armed", {"version": 3, "sha": "bbb"})
+    approval = {"tool_name": "AskUserQuestion", "tool_input": {"questions": [{"question": "Ok?", "header": "Approval", "options": []}]}}
+    hook(monkeypatch, "notification", **approval)
+    assert json.loads((board["git_dir"] / core.PIN_FILE).read_text()) == {"version": 3, "sha": "bbb"}

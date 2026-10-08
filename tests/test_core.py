@@ -296,7 +296,7 @@ def test_an_approved_issue_gets_one_card_one_subscription_and_one_agent_pane(tmp
     assert record["launch"]["prompt"]["state"] == "working" and record["launch"]["step"] == "done"
     hooks = json.loads(settings.read_text())["hooks"]
     assert set(hooks) == {"Notification", "UserPromptSubmit", "PostToolUse", "SessionEnd",
-                          "PreToolUse", "PostToolUseFailure", "Stop"}
+                          "PreToolUse", "PostToolUseFailure", "Stop", "PermissionRequest"}
     assert hooks["UserPromptSubmit"][0]["hooks"][0]["command"].endswith("muster hook prompt")
     assert hooks["PostToolUse"][0]["hooks"][0]["command"].endswith("muster hook prompt")
     assert hooks["Notification"][0]["matcher"] == "permission_prompt|elicitation_dialog|elicitation_url_dialog|worker_permission_prompt"

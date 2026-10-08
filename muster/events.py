@@ -45,7 +45,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import claude, config, core
+from . import bridge, claude, config, core
 
 STALE_CLAIM = 120  # s: an empty wait marker this old is from a hook killed at its 30 s timeout
 PR_URL = re.compile(r"https://github\.com/([\w.-]+/[\w.-]+)/pull/\d+")
@@ -413,6 +413,12 @@ def hook(args):
     git_dir, link = found
     if event == "propose":
         return propose(link["card"], args.url, git_dir=str(git_dir), link=link)
+    if event == "permission":  # before the gate and the outbox: it waits, and prints only a decision
+        return bridge.wait(git_dir, link, payload)
+    if event == "prompt":
+        bridge.settle(git_dir, payload)
+    elif event == "session-end":
+        bridge.session_end(git_dir)
     if event == "prompt" and link.get("launch_dir"):
         with contextlib.suppress(OSError, ValueError):  # the launch's evidence that its brief arrived
             core.prompt_seen(link["launch_dir"], payload)
@@ -444,6 +450,9 @@ def hook(args):
     if why:
         log(f"{event} card {card}: approval request denied: {why}")
         return deny(why)
+    if event == "notification" and claude.ask(payload) is not None:
+        with contextlib.suppress(OSError):
+            bridge.write_pin(git_dir, pin)  # the bridge's request for this question carries it
     queued = runs.pending(card)
     if event == "prompt" and (queued[-1].name.endswith("-prompt.json") if queued
                               else not (git_dir / core.WAIT_KIND).exists()):

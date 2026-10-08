@@ -38,7 +38,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import claude, config, core, events
+from . import bridge, claude, config, core, events
 
 UNACKED_AFTER = 15 * 60
 IDLE_AFTER = 10 * 60
@@ -566,8 +566,14 @@ def hook(args):
             payload = {}
         if claude.ignore(event, payload):
             return 0  # /clear ends a session, but the agent keeps working in the same pane
+        if event == "permission":  # before the gate and the outbox: it waits, and prints only a decision
+            core.prepare_env()
+            return bridge.wait(run_dir(card), load(card), payload)
         if event == "prompt":
+            bridge.settle(run_dir(card), payload)
             core.prompt_seen(run_dir(card), payload)  # the launch's evidence that its brief arrived
+        elif event == "session-end":
+            bridge.session_end(run_dir(card))
         if event == "prompt" and not (run_dir(card) / core.WAIT_KIND).exists() and not pending(card):
             return 0  # every PostToolUse lands here: nothing open, nothing queued, nothing to do
         core.prepare_env()
@@ -579,6 +585,9 @@ def hook(args):
         if why:
             log(f"{card} hook {event}: approval request denied: {why}")
             return events.deny(why)
+        if event == "notification" and claude.ask(payload) is not None:
+            with contextlib.suppress(OSError):
+                bridge.write_pin(run_dir(card), pin)  # the bridge's request for this question carries it
         queued = pending(card)
         if not (event == "prompt" and queued and queued[-1].name.endswith("-prompt.json")):
             try:
