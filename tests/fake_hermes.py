@@ -74,6 +74,59 @@ def clarify_module():
     return mod
 
 
+def approval_modules():
+    """tools.approval + tools.approval_gateway_wait as Hermes has them: a per-session queue of entries, each
+    with an event; the wait notifies, blocks until resolved, withdrawn or TIMEOUT (approvals.timeout)."""
+    approval = types.ModuleType("tools.approval")
+    wait = types.ModuleType("tools.approval_gateway_wait")
+    approval._lock, approval._gateway_queues = threading.Lock(), {}
+    wait.TIMEOUT = 5
+
+    def resolve_gateway_approval(session_key, choice, resolve_all=False, reason=None, request_id=None):
+        with approval._lock:
+            queue = approval._gateway_queues.get(session_key) or []
+            if not queue:
+                return 0
+            entry = queue.pop(0)
+            entry.result, entry.reason = choice, reason
+            entry.event.set()
+            return 1
+
+    def withdraw_gateway_approval(session_key, request_id, cause):
+        with approval._lock:
+            queue = approval._gateway_queues.get(session_key) or []
+            entry = next((e for e in queue if e.data.get("request_id") == request_id), None)
+            if entry is None:
+                return False
+            queue.remove(entry)
+            entry.cancelled = cause
+            entry.event.set()
+            return True
+
+    def _await_gateway_decision(session_key, notify_cb, approval_data, *, surface="gateway"):
+        entry = SimpleNamespace(event=threading.Event(), data=dict(approval_data), result=None, reason=None,
+                                cancelled=None)
+        with approval._lock:
+            approval._gateway_queues.setdefault(session_key, []).append(entry)
+        try:
+            notify_cb(dict(entry.data))
+        except Exception:
+            withdraw_gateway_approval(session_key, entry.data.get("request_id"), "notify_failed")
+            return {"resolved": False, "choice": None, "notify_failed": True}
+        fired = entry.event.wait(wait.TIMEOUT)
+        with approval._lock:
+            queue = approval._gateway_queues.get(session_key) or []
+            if entry in queue:
+                queue.remove(entry)
+        extra = {"cancelled": entry.cancelled} if entry.cancelled else {}
+        return {"resolved": fired and entry.result is not None, "choice": entry.result, "reason": entry.reason, **extra}
+
+    approval.resolve_gateway_approval = resolve_gateway_approval
+    approval.withdraw_gateway_approval = withdraw_gateway_approval
+    wait._await_gateway_decision = _await_gateway_decision
+    return approval, wait
+
+
 class ApplicationHandlerStop(Exception):
     pass
 
@@ -100,6 +153,18 @@ class Adapter:
         self.fail_sends = 0  # the next n sends fail
         self.fail_edits = 0
         self._n = 100
+        self._approval_state = {}  # approval id -> session key, as the Telegram adapter keeps it
+
+    async def send_exec_approval(self, chat_id, command, session_key, description=None, metadata=None,
+                                 allow_permanent=True, allow_session=True, smart_denied=False):
+        if self.fail_sends:
+            self.fail_sends -= 1
+            return SimpleNamespace(success=False, message_id=None, error="boom")
+        self._n += 1
+        self._approval_state[self._n] = session_key
+        self.sent.append({"chat": chat_id, "command": command, "text": description, "session": session_key,
+                          "mid": str(self._n), "permanent": allow_permanent, "session_button": allow_session})
+        return SimpleNamespace(success=True, message_id=str(self._n), error=None)
 
     async def send_clarify(self, chat_id, question, choices, clarify_id, session_key, metadata=None):
         if self.fail_sends:
@@ -159,13 +224,15 @@ def event(text, user, chat, reply=None, platform="telegram"):
 def install(monkeypatch):
     """Put the fakes in sys.modules; returns the fake clarify module."""
     clarify = clarify_module()
+    approval, wait = approval_modules()
     tools = types.ModuleType("tools")
-    tools.clarify_gateway = clarify
+    tools.clarify_gateway, tools.approval, tools.approval_gateway_wait = clarify, approval, wait
     ext = types.ModuleType("telegram.ext")
     ext.CallbackQueryHandler, ext.ApplicationHandlerStop = CallbackQueryHandler, ApplicationHandlerStop
     telegram = types.ModuleType("telegram")
     telegram.ext, telegram.ForceReply = ext, ForceReply
-    for name, mod in (("tools", tools), ("tools.clarify_gateway", clarify), ("telegram", telegram),
+    for name, mod in (("tools", tools), ("tools.clarify_gateway", clarify), ("tools.approval", approval),
+                      ("tools.approval_gateway_wait", wait), ("telegram", telegram),
                       ("telegram.ext", ext)):
         monkeypatch.setitem(sys.modules, name, mod)
     return clarify

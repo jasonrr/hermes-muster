@@ -6,9 +6,12 @@ answered it, and prints that answer as the hook's decision. Printing nothing lea
 so every failure path prints nothing: muster never allows on error. A permission prompt nobody answers in
 PERMISSION_DEADLINE gets an explicit deny.
 
+When the pane answers first, Claude sends the hook SIGTERM (seen live, 2.1.295): that, not herdr's
+screen-read pane status, is how the request learns it was answered there.
+
 A subagent's prompt (the payload names `agent_id`) differs: Claude shows its dialog only after this hook
-returns (seen live, 2.1.295), so herdr never shows the pane blocked and the pane cannot answer while we wait.
-It is sent only when the gateway is up; otherwise the hook returns at once and the dialog shows. `settle` (a PostToolUse hook) finishes
+returns (seen live), so the pane cannot answer it while we wait. It is sent only when the gateway is up;
+otherwise the hook returns at once and the dialog shows. `settle` (a PostToolUse hook) finishes
 the request from what Claude actually did, and `session_end` stales whatever is still waiting.
 
 Files under the run's directory (<git dir> for an issue run, runs/<card> for an ad-hoc run):
@@ -20,6 +23,7 @@ Files under the run's directory (<git dir> for an issue run, runs/<card> for an 
 import hashlib
 import json
 import os
+import signal
 import sys
 import time
 
@@ -29,7 +33,6 @@ POLL = 1  # s between looks at the request
 ALIVE_EVERY = 5  # s between `alive` writes
 DEADLINE = 86340  # s a question waits: just inside the hook's 86400 s timeout
 PERMISSION_DEADLINE = 600  # s a permission prompt waits for the channel; then muster denies it
-BLOCKED_WAIT = 5  # s to wait for herdr to show the pane blocked
 MARKERS = "muster-decisions"
 ASKED = "AskUserQuestion"
 SHOWN_MAX = 3000
@@ -80,6 +83,17 @@ def normalize(question):
             "options": options, "multi": bool(question.get("multiSelect"))}
 
 
+def approval_card(name, tool_input, sub=None):
+    """What Hermes's approval card shows: the command (a Bash command as is, any other tool's input as JSON,
+    secrets redacted), why, and whether "Allow session" is offered (Bash only: a session rule for that exact
+    command; any other tool's session rule would cover every call of the tool)."""
+    bash = name == "Bash" and isinstance(tool_input, dict) and isinstance(tool_input.get("command"), str)
+    command = tool_input["command"] if bash else json.dumps(tool_input, indent=2, sort_keys=True)
+    why = (tool_input.get("description") if bash else None) or f"Claude wants to use {name}"
+    who = f" (the {sub} subagent)" if sub else ""
+    return {"command": core.SECRET.sub("[redacted]", command), "why": f"{why}{who}", "session": bash}
+
+
 def permission_question(name, tool_input, sub=None):
     shown = core.SECRET.sub("[redacted]", json.dumps(tool_input, indent=2, sort_keys=True))
     options = [{"label": "Allow once", "description": ""}, {"label": "Deny", "description": ""}]
@@ -89,9 +103,13 @@ def permission_question(name, tool_input, sub=None):
     return {"text": f"Allow {name}{who}?\n{shown}", "header": "Permission", "options": options, "multi": False}
 
 
+TERMINATED = []  # set by SIGTERM: Claude closed the dialog (answered in the pane) or is stopping
+
+
 def wait(directory, link, payload):
     """Hold the PermissionRequest until the channel answers; print the decision. Always returns 0."""
     rid = None
+    signal.signal(signal.SIGTERM, lambda *_: TERMINATED.append(True))  # checked by poll within POLL s
     try:
         core.prepare_env()
         name, tool_input = payload.get("tool_name"), payload.get("tool_input")
@@ -123,16 +141,14 @@ def wait(directory, link, payload):
         rid = decisions.create(
             kind, link["card"], questions=questions, choices=[labels(q["options"]) for q in questions],
             tool={"name": name, "input_sha": fingerprint(name, tool_input)}, proposal=pin, wait=wait_card,
-            run=run, alive=time.time(), **({"subagent": sub} if sub else {}))["id"]
+            run=run, alive=time.time(), **({"subagent": sub} if sub else {}),
+            **({"card": approval_card(name, tool_input, sub)} if kind == "permission" else {}))["id"]
         markers = directory / MARKERS
         markers.mkdir(parents=True, exist_ok=True)
         (markers / rid).write_text("")
-        if not sub:
-            if not blocked(run["pane"]):
-                decisions.transition(rid, ("open",), "stale", outcome="answered before muster could ask")
-                return 0
-            decisions.update(rid, blocked_seen=True)  # from here on, the pane leaving `blocked` means it was answered there
         poll(rid, tool_input)
+        if decisions.load(rid)["status"] in decisions.TERMINAL:
+            (markers / rid).unlink(missing_ok=True)
     except Exception as caught:  # noqa: BLE001 - a hook never fails the agent, and never allows on error
         log(f"permission {link.get('card')}: {' '.join(str(caught).split())}")
         if rid:
@@ -143,24 +159,14 @@ def wait(directory, link, payload):
     return 0
 
 
-def blocked(pane):
-    """True once herdr shows the pane's agent blocked (a dialog is up), looking for up to BLOCKED_WAIT s."""
-    end = time.monotonic() + BLOCKED_WAIT
-    while pane:
-        agent = core.agent_at(pane)
-        if agent and agent.get("agent_status") == "blocked":
-            return True
-        if time.monotonic() >= end:
-            break
-        time.sleep(POLL)
-    return False
-
-
 def poll(rid, tool_input):
     parent, start, last_alive = os.getppid(), time.monotonic(), None
     while True:
         if os.getppid() != parent:
             return  # Claude is gone
+        if TERMINATED:
+            decisions.transition(rid, ("open",), "stale", outcome="Answered in the pane")
+            return
         try:
             req = decisions.load(rid)
         except FileNotFoundError:
@@ -194,6 +200,11 @@ def decision(req, tool_input):
             return None
         return {"behavior": "allow", "updatedInput": {**tool_input, "answers": answer}}
     if answer.get("decision") == "allow":
+        command = (tool_input or {}).get("command") if req["tool"]["name"] == "Bash" else None
+        if answer.get("scope") == "session" and isinstance(command, str):
+            return {"behavior": "allow", "updatedPermissions": [{
+                "type": "addRules", "rules": [{"toolName": "Bash", "ruleContent": command}],
+                "behavior": "allow", "destination": "session"}]}
         return {"behavior": "allow"}
     if answer.get("decision") == "deny":
         message = answer.get("message")
@@ -208,6 +219,10 @@ def deliver(req, tool_input):
         return
     emit(chosen)
     decisions.update(req["id"], delivered_by_hook=True)
+    if chosen["behavior"] == "deny" and req["kind"] == "permission":  # a deny runs no tool, so no PostToolUse settles it
+        said = (req["answer"].get("message") or "").strip()
+        outcome = "No answer in time: denied" if req["answer"].get("timeout") else "Denied ✓" + (f": {said}" if said else "")
+        decisions.transition(req["id"], ("answered",), "done", outcome=outcome)
 
 
 def emit(chosen):
@@ -241,7 +256,10 @@ def outcome(req, event, payload):
         return f"Answered in the pane: {'; '.join(seen.values())}"
     if event == "PostToolUseFailure":
         return "Finished; muster could not confirm the decision"
-    return "Allowed in the pane" if (req.get("answer") or {}).get("decision") == "deny" else "Allowed ✓"
+    answer = req.get("answer") or {}
+    if answer.get("decision") == "deny":
+        return "Allowed in the pane"
+    return "Allowed for this session ✓" if answer.get("scope") == "session" else "Allowed ✓"
 
 
 def settle(directory, payload):

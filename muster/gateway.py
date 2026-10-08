@@ -15,13 +15,13 @@ import secrets
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
 
 from . import config, core, decisions
 
 CTX = None  # the Hermes plugin context; set by register()
 SCAN_EVERY = 2  # s between scans
 ALIVE_MAX = 30  # s without a hook heartbeat before a question or permission request is stale
-PANE_EVERY = 10  # s between herdr looks at one permission request's pane
 SETTLE_MAX = 3600  # s after the hook delivered an answer before the request is closed without Claude's confirmation
 CAP = 3500  # characters per message (Telegram allows 4096)
 BACKOFF_MAX = 60
@@ -37,11 +37,11 @@ class State:
         self.presenting = set()  # request ids being presented right now
         self.retry = {}  # id -> (monotonic time not before, next delay)
         self.cids = {}  # id -> clarify ids registered in this process
+        self.approvals = set()  # permission request ids whose Hermes approval wait runs in this process
         self.partial = {}  # id -> {question index: answer}: lost on restart, the request is re-presented
         self.messages = {}  # message id -> (request id, question index), including superseded ones
         self.watch = set()  # ids presented or seen open: edited when they end
         self.edit_failed = set()
-        self.pane_checked = {}
         self.tasks = set()
         self.failing_since = None  # monotonic time sends started failing
 
@@ -73,6 +73,7 @@ def telegram_factory(app, adapter):
     S.configured = True
     core.prepare_env()
     app.add_handler(CallbackQueryHandler(guard, pattern=r"^cl:mu"), -1)
+    app.add_handler(CallbackQueryHandler(approval_guard, pattern=r"^ea:"), -1)
     S.adapter, S.loop = adapter, asyncio.get_running_loop()
     S.bot = getattr(app, "bot", None)  # Telegram's own bot, for the ForceReply after Other
     s = config.settings
@@ -118,6 +119,30 @@ async def guard(update, context):
         return  # Hermes's own clarify handler (group 0) records the tap
     log(f"refused a tap from user {getattr(query.from_user, 'id', '?')} in chat "
         f"{getattr(getattr(query.message, 'chat', None), 'id', '?')}")
+    await query.answer("Not authorized")
+    raise ApplicationHandlerStop
+
+
+async def approval_guard(update, context):
+    """Group -1, for Hermes's approval cards: a muster card (its session key starts with muster:) only takes the
+    notify user's tap in the notify chat. Hermes's own cards pass untouched."""
+    from telegram.ext import ApplicationHandlerStop
+
+    query = update.callback_query
+    try:
+        key = (getattr(S.adapter, "_approval_state", None) or {}).get(int(str(query.data).split(":", 2)[2]))
+    except (ValueError, IndexError):
+        return
+    if not str(key or "").startswith("muster:"):
+        return
+    try:
+        ok = authorized(query.from_user.id, query.message.chat.id)
+    except Exception as caught:  # noqa: BLE001 - fail closed
+        log(f"approval guard error, refused: {caught}")
+        ok = False
+    if ok:
+        return
+    log(f"refused an approval tap from user {getattr(query.from_user, 'id', '?')}")
     await query.answer("Not authorized")
     raise ApplicationHandlerStop
 
@@ -224,6 +249,11 @@ def release(rid):
     for cid in S.cids.pop(rid, []):
         clarify_gateway.resolve_gateway_clarify(cid, STALE)
     S.partial.pop(rid, None)
+    if rid in S.approvals:
+        from tools import approval
+
+        S.approvals.discard(rid)
+        approval.withdraw_gateway_approval(f"muster:{rid}", rid, "muster: the request ended")
 
 
 async def handle(req):
@@ -231,9 +261,6 @@ async def handle(req):
     if kind in ("question", "permission") and req["status"] in ("open", "answered") and not req.get("delivered_by_hook"):
         if time.time() - req.get("alive", req.get("created_at", 0)) > ALIVE_MAX:
             await end(rid, "The agent is no longer waiting")
-            return
-        if kind == "permission" and req["status"] == "open" and req.get("blocked_seen") and await pane_gone(req):
-            await end(rid, "Answered in the pane")
             return
     if req.get("delivered_by_hook") and time.time() - req.get("alive", req.get("created_at", 0)) > SETTLE_MAX:
         # The hook gave Claude the answer but no PostToolUse ever came (Claude died mid-tool): stop watching it.
@@ -252,22 +279,6 @@ async def handle(req):
 async def end(rid, why):
     await blocking(decisions.transition, rid, ("open", "answered"), "stale", outcome=why)
     release(rid)
-
-
-async def pane_gone(req):
-    """True when herdr no longer shows the permission request's pane blocked on a dialog (checked every PANE_EVERY s):
-    a deny in the pane fires no PostToolUse, so this is the only sign it was answered there."""
-    pane = (req.get("run") or {}).get("pane")
-    now = time.monotonic()
-    if not pane or now - S.pane_checked.get(req["id"], -PANE_EVERY) < PANE_EVERY:
-        return False
-    S.pane_checked[req["id"]] = now
-    try:
-        agent = await blocking(core.agent_at, pane)
-    except Exception as caught:  # noqa: BLE001 - herdr failing is not an answer
-        log(f"request {req['id']}: herdr: {caught}")
-        return False
-    return not agent or agent.get("agent_status") != "blocked"
 
 
 # -- presenting -----------------------------------------------------------------------------------
@@ -307,6 +318,8 @@ def render(req, n):
 
 
 async def present(req):
+    if req["kind"] == "permission" and req.get("card"):
+        return await present_approval(req)
     rid = req["id"]
     S.presenting.add(rid)
     sent, old = {}, (req.get("presented") or {})
@@ -335,26 +348,107 @@ async def present(req):
             sent[n] = mid
             messages.setdefault(str(n), []).append(mid)
             S.messages[mid] = (rid, n)
-        if failure:
-            S.failing_since = S.failing_since or time.monotonic()
-            release(rid)
-            delay = min((S.retry.get(rid, (0, 1))[1]) * 2, BACKOFF_MAX)
-            S.retry[rid] = (time.monotonic() + delay, delay)
-            log(f"request {rid}: not presented, retry in {delay}s: {failure}")
-            if sent:  # questions already sent get replaced on the retry
-                await blocking(decisions.update, rid, presented={"boot": old.get("boot"), "messages": messages})
-                for mid in sent.values():
-                    await edit(chat, mid, "Superseded: see the newer message")
-            return
-        S.retry.pop(rid, None)
-        S.failing_since = None
-        S.watch.add(rid)
-        await blocking(decisions.update, rid, presented={"boot": BOOT, "messages": messages})
-        for n, ids in (old.get("messages") or {}).items():  # earlier boots' messages
-            for mid in ids:
-                await edit(chat, mid, "Superseded: see the newer message")
+        await presented(rid, chat, old, messages, sent, failure)
     finally:
         S.presenting.discard(rid)
+
+
+async def presented(rid, chat, old, messages, sent, failure):
+    """Record a presentation: on failure, back off and supersede what was sent; else mark it this boot's."""
+    if failure:
+        S.failing_since = S.failing_since or time.monotonic()
+        release(rid)
+        delay = min((S.retry.get(rid, (0, 1))[1]) * 2, BACKOFF_MAX)
+        S.retry[rid] = (time.monotonic() + delay, delay)
+        log(f"request {rid}: not presented, retry in {delay}s: {failure}")
+        if sent:  # questions already sent get replaced on the retry
+            await blocking(decisions.update, rid, presented={"boot": old.get("boot"), "messages": messages})
+            for mid in sent.values():
+                await edit(chat, mid, "Superseded: see the newer message")
+        return
+    S.retry.pop(rid, None)
+    S.failing_since = None
+    S.watch.add(rid)
+    await blocking(decisions.update, rid, presented={"boot": BOOT, "messages": messages})
+    for n, ids in (old.get("messages") or {}).items():  # earlier boots' messages
+        for mid in ids:
+            await edit(chat, mid, "Superseded: see the newer message")
+
+
+async def present_approval(req):
+    """A permission prompt as Hermes's own approval card (formatted command; Allow once, Allow session for a
+    Bash command, Deny), queued and waited on by Hermes's approval wait, so its buttons, callback and
+    approvals.timeout apply unchanged. A reply to the card denies with that text."""
+    rid, card = req["id"], req["card"]
+    S.presenting.add(rid)
+    old, chat, loop = (req.get("presented") or {}), core.notify_target()["chat_id"], asyncio.get_running_loop()
+    sent = loop.create_future()
+    run = req.get("run") or {}
+    where = f"{run['repo']} #{run['issue']}" if run.get("repo") and run.get("issue") else run.get("branch") or req["ledger"]
+    why = f"{where}: {card['why']}. To deny with a message to the agent, reply to this message."
+
+    def notify(_data):  # runs in the wait thread, after Hermes queued the request
+        future = asyncio.run_coroutine_threadsafe(S.adapter.send_exec_approval(
+            chat, card["command"], f"muster:{rid}", why, allow_permanent=False, allow_session=card["session"]), loop)
+        try:
+            res = future.result(60)
+        except Exception as caught:  # noqa: BLE001
+            res = SimpleNamespace(success=False, error=str(caught), message_id=None)
+        loop.call_soon_threadsafe(lambda: sent.done() or sent.set_result(res))
+        if not res.success:
+            raise RuntimeError(res.error or "send failed")  # Hermes then returns notify_failed
+
+    try:
+        if (await blocking(decisions.load, rid))["status"] != "open":
+            return
+        S.approvals.add(rid)
+        threading.Thread(target=approval_waiter, args=(rid, card["command"], notify, loop), daemon=True).start()
+        res = await sent
+        messages = {k: list(v) for k, v in (old.get("messages") or {}).items()}
+        if res.success:
+            mid = str(res.message_id)
+            messages.setdefault("0", []).append(mid)
+            S.messages[mid] = (rid, 0)
+        await presented(rid, chat, old, messages, {}, None if res.success else (res.error or "send failed"))
+    finally:
+        S.presenting.discard(rid)
+
+
+def approval_waiter(rid, command, notify, loop):
+    """Block in Hermes's approval wait; hand the human's choice (or Hermes's timeout, a deny) to the loop."""
+    from tools import approval_gateway_wait
+
+    try:
+        decision = approval_gateway_wait._await_gateway_decision(  # the entry Hermes's MCP elicitation uses too
+            f"muster:{rid}", notify, {"command": command, "request_id": rid,
+                                       "pattern_key": "muster_permission", "pattern_keys": ["muster_permission"]},
+            surface="muster")
+    except Exception as caught:  # noqa: BLE001
+        log(f"approval {rid}: {caught}")
+        return
+    if decision.get("notify_failed") or decision.get("cancelled"):
+        return  # not sent (present retries), or withdrawn by release()
+    choice = decision.get("choice")
+    if choice in ("once", "session"):
+        answer = {"decision": "allow", **({"scope": "session"} if choice == "session" else {})}
+    elif choice == "deny":
+        reason = (decision.get("reason") or "").strip()
+        answer = {"decision": "deny", **({"message": reason} if reason else {})}
+    else:  # Hermes's approvals.timeout passed with no answer: fail closed
+        answer = {"decision": "deny", "timeout": True,
+                  "message": "No answer from the human in time, so muster denied this. Ask again if you still need it."}
+    try:
+        loop.call_soon_threadsafe(lambda: _keep(loop.create_task(approval_answered(rid, answer))))
+    except RuntimeError:
+        log(f"approval {rid}: loop closed, answer dropped")
+
+
+async def approval_answered(rid, answer):
+    S.approvals.discard(rid)
+    req, ok = await blocking(decisions.transition, rid, ("open",), "answered", answer=answer,
+                             by=None if answer.get("timeout") else core.notify_target()["user_id"])
+    if ok:
+        on_answered(req)
 
 
 async def edit(chat, mid, text):
@@ -526,6 +620,11 @@ async def _dispatch(event):
             return None
         rid, n = bound
         req = await blocking(decisions.load, rid)
+        if rid in S.approvals:
+            from tools import approval
+
+            if req["status"] == "open" and approval.resolve_gateway_approval(f"muster:{rid}", "deny", reason=text):
+                return {"action": "skip"}
         cid = f"mu{rid}q{n}"
         if req["status"] == "open" and cid not in S.cids.get(rid, []):
             return None  # not (yet) presented in this process: leave it to Hermes

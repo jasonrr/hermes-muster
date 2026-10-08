@@ -3,6 +3,7 @@
 import hashlib
 import json
 import os
+import signal
 import threading
 import time
 
@@ -22,8 +23,7 @@ LINK = {"card": "t_led", "repo": "o/r", "issue": 5, "pane": "w_1:p2", "branch": 
 def fast(monkeypatch):
     monkeypatch.setattr(bridge, "POLL", 0.01)
     monkeypatch.setattr(bridge, "ALIVE_EVERY", 0.02)
-    monkeypatch.setattr(bridge, "BLOCKED_WAIT", 0.1)
-    monkeypatch.setattr(core, "agent_at", lambda pane: {"agent_status": "blocked"})
+    bridge.TERMINATED.clear()
 
 
 def out(capsys):
@@ -69,7 +69,7 @@ def test_question_request_is_created_with_everything_the_plan_lists(tmp_path):
     assert req["tool"] == {"name": "AskUserQuestion", "input_sha": sha(ASK["tool_input"])}
     assert req["proposal"] == {"version": 2, "sha": "abc"} and not (tmp_path / core.PIN_FILE).exists()
     assert req["run"] == {"repo": "o/r", "branch": "muster/5", "pane": "w_1:p2", "issue": 5, "kind": "issue"}
-    assert req["alive"] > 0 and req["blocked_seen"] is True  # the gateway may now read `not blocked` as answered
+    assert req["alive"] > 0
 
 
 def test_answered_question_prints_the_updated_input_and_marks_delivery(tmp_path, capsys):
@@ -89,31 +89,27 @@ def test_a_marker_per_request_is_written_before_the_wait(tmp_path):
     assert [p.name for p in (tmp_path / "muster-decisions").iterdir()] == [only()["id"]]
 
 
-def test_a_pane_that_never_blocks_stales_the_request_with_no_output(tmp_path, capsys, monkeypatch):
-    monkeypatch.setattr(core, "agent_at", lambda pane: {"agent_status": "working"})
-    bridge.wait(tmp_path, LINK, ASK)
-    assert out(capsys) is None
-    req = only()
-    assert req["status"] == "stale" and "before muster could ask" in req["outcome"] and "blocked_seen" not in req
-
-
-def test_the_blocked_check_retries(tmp_path, monkeypatch):
-    seen = iter(["working", "working", "blocked"])
-    monkeypatch.setattr(core, "agent_at", lambda pane: {"agent_status": next(seen)})
-    thread = answer_when_open(answer={"Which db?": "pg"})
-    bridge.wait(tmp_path, LINK, ASK)
+def test_sigterm_from_claude_means_the_pane_answered(tmp_path, capsys):
+    # Claude sends the hook SIGTERM when the pane's dialog is answered first (seen live, 2.1.295)
+    def term():
+        while not decisions.open_requests():
+            time.sleep(0.01)
+        os.kill(os.getpid(), signal.SIGTERM)
+    thread = threading.Thread(target=term)
+    thread.start()
+    bridge.wait(tmp_path, LINK, BASH)
     thread.join()
-    assert only()["status"] == "answered"
+    req = only()
+    assert out(capsys) is None and req["status"] == "stale" and req["outcome"] == "Answered in the pane"
+    assert not list((tmp_path / "muster-decisions").iterdir())
 
 
-def test_the_pane_is_read_from_the_launch_for_an_adhoc_run(tmp_path, monkeypatch):
-    asked = []
-    monkeypatch.setattr(core, "agent_at", lambda pane: asked.append(pane) or {"agent_status": "blocked"})
+def test_the_pane_is_read_from_the_launch_for_an_adhoc_run(tmp_path):
     run = {"card": "t_led", "repo": "o/r", "branch": "fix/x", "launch": {"pane": "w_9:p1"}}
     thread = answer_when_open(answer={"Which db?": "pg"})
     bridge.wait(tmp_path, run, ASK)
     thread.join()
-    assert asked[0] == "w_9:p1" and only()["run"]["pane"] == "w_9:p1" and only()["run"]["kind"] == "adhoc"
+    assert only()["run"]["pane"] == "w_9:p1" and only()["run"]["kind"] == "adhoc"
 
 
 def test_a_permission_prompt_is_one_synthetic_question_with_redacted_input(tmp_path, capsys):
@@ -134,6 +130,9 @@ def test_deny_with_typed_text_carries_the_message(tmp_path, capsys):
     bridge.wait(tmp_path, LINK, BASH)
     thread.join()
     assert out(capsys)["hookSpecificOutput"]["decision"] == {"behavior": "deny", "message": "use make"}
+    # a deny runs no tool, so no PostToolUse will settle it: the hook finishes it and drops its marker
+    assert only()["status"] == "done" and only()["outcome"] == "Denied ✓: use make"
+    assert not list((tmp_path / "muster-decisions").iterdir())
 
 
 def test_plain_deny_has_no_message(tmp_path, capsys):
@@ -141,6 +140,7 @@ def test_plain_deny_has_no_message(tmp_path, capsys):
     bridge.wait(tmp_path, LINK, BASH)
     thread.join()
     assert out(capsys)["hookSpecificOutput"]["decision"] == {"behavior": "deny"}
+    assert only()["outcome"] == "Denied ✓"
 
 
 def test_a_long_input_offers_only_deny(tmp_path):
@@ -214,16 +214,14 @@ def gateway_heartbeat(age=0):
     os.utime(beat, (time.time() - age, time.time() - age))
 
 
-def test_a_subagent_prompt_is_sent_without_waiting_for_a_blocked_pane(tmp_path, capsys, monkeypatch):
-    # Claude shows a subagent's dialog only after the hook returns, so herdr shows the main agent idle meanwhile
-    monkeypatch.setattr(core, "agent_at", lambda pane: {"agent_status": "idle"})
+def test_a_subagent_prompt_is_sent_when_the_gateway_is_up(tmp_path, capsys):
     gateway_heartbeat()
     thread = answer_when_open(answer={"decision": "allow"})
     bridge.wait(tmp_path, LINK, {**BASH, "agent_id": "a1", "agent_type": "general-purpose"})
     thread.join()
     req = only()
     assert out(capsys)["hookSpecificOutput"]["decision"] == {"behavior": "allow"}
-    assert req["subagent"] == "general-purpose" and "blocked_seen" not in req  # the gateway never reads the pane for it
+    assert req["subagent"] == "general-purpose"
     assert req["questions"][0]["text"].startswith("Allow Bash (from the general-purpose subagent)?")
 
 
@@ -248,10 +246,10 @@ def test_an_answer_that_wins_the_deadline_race_is_used(tmp_path, capsys, monkeyp
 
 
 def test_any_error_prints_nothing_logs_and_stales(tmp_path, capsys, monkeypatch):
-    monkeypatch.setattr(core, "agent_at", lambda pane: (_ for _ in ()).throw(core.CommandError("herdr down")))
+    monkeypatch.setattr(bridge, "poll", lambda rid, tool_input: (_ for _ in ()).throw(core.CommandError("disk full")))
     assert bridge.wait(tmp_path, LINK, ASK) == 0
     assert out(capsys) is None and only()["status"] == "stale"
-    assert "herdr down" in core.log_path("bridge").read_text()
+    assert "disk full" in core.log_path("bridge").read_text()
 
 
 def test_an_error_before_the_request_exists_prints_nothing(tmp_path, capsys, monkeypatch):

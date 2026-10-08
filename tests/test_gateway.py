@@ -25,7 +25,6 @@ def hermes(monkeypatch):
     monkeypatch.setattr(gateway, "CTX", types.SimpleNamespace(get_config=lambda k, d: config.settings.get(k, d)))
     gateway.S.configured = True
     gateway.S.adapter = fh.Adapter()
-    monkeypatch.setattr(core, "agent_at", lambda pane: {"agent_status": "blocked"})
     return clarify
 
 
@@ -43,7 +42,8 @@ def permission(**fields):
          "options": [{"label": "Allow once", "description": ""}, {"label": "Deny", "description": ""}]}
     return decisions.create("permission", "led1", questions=[q], choices=[["Allow once", "Deny"]],
                             tool={"name": "Bash", "input_sha": "y"}, run={"branch": "b", "pane": "p1"},
-                            alive=time.time(), **{"blocked_seen": True, **fields})
+                            card={"command": "touch x", "why": "Create x", "session": True},
+                            alive=time.time(), **fields)
 
 
 def run(coro):
@@ -80,8 +80,8 @@ def test_factory_registers_the_guard_and_one_scan_task(monkeypatch):
         first.cancel()
 
     run(go())
-    (handler, group), = app.handlers
-    assert (group, handler.pattern, handler.block, handler.callback) == (-1, r"^cl:mu", True, gateway.guard)
+    assert [(g, h.pattern, h.callback) for h, g in app.handlers] == [
+        (-1, r"^cl:mu", gateway.guard), (-1, r"^ea:", gateway.approval_guard)]
     assert other.handlers and prepared == [1, 1]
 
 
@@ -599,74 +599,97 @@ def test_an_answered_request_with_a_silent_hook_is_stale_unless_the_hook_deliver
     assert decisions.load(b["id"])["status"] == "answered"  # settle will finish it
 
 
-def test_a_permission_request_whose_pane_is_not_blocked_is_answered_in_the_pane(monkeypatch):
-    req = permission()
-    monkeypatch.setattr(core, "agent_at", lambda pane: {"agent_status": "idle"})
-    run(gateway.scan())
-    got = decisions.load(req["id"])
-    assert (got["status"], got["outcome"]) == ("stale", "Answered in the pane")
-    assert not sent()
+def approve(rid, choice, reason=None):
+    from tools import approval
+    return approval.resolve_gateway_approval(f"muster:{rid}", choice, reason=reason)
 
 
-def test_a_missing_agent_also_stales_a_permission_request(monkeypatch):
-    req = permission()
-    monkeypatch.setattr(core, "agent_at", lambda pane: None)
-    run(gateway.scan())
-    assert decisions.load(req["id"])["status"] == "stale"
+async def card_for(req):
+    await gateway.scan()
+    await until(lambda: any(m.get("command") for m in gateway.S.adapter.sent))
+    return gateway.S.adapter.sent[-1]
 
 
-def test_herdr_is_looked_at_most_every_ten_seconds(monkeypatch):
-    req = permission()
-    looks = []
-    monkeypatch.setattr(core, "agent_at", lambda pane: looks.append(pane) or {"agent_status": "blocked"})
-    for _ in range(3):
-        run(gateway.scan())
-    assert looks == ["p1"] and decisions.load(req["id"])["status"] == "open"
-    gateway.S.pane_checked[req["id"]] -= 11
-    run(gateway.scan())
-    assert len(looks) == 2
+def test_a_permission_prompt_is_hermess_approval_card():
+    async def go():
+        req = permission()
+        card = await card_for(req)
+        assert card["command"] == "touch x" and card["session"] == f"muster:{req['id']}"
+        assert card["permanent"] is False and card["session_button"] is True
+        assert card["text"].startswith("b: Create x.") and "reply to this message" in card["text"]
+        assert decisions.load(req["id"])["presented"]["messages"] == {"0": [card["mid"]]}
+    run(go())
 
 
-def test_a_pane_working_again_means_the_dialog_was_answered_there(monkeypatch):
-    # a deny in the pane fires no PostToolUse: the pane leaving `blocked` is the only sign
-    req = permission()
-    monkeypatch.setattr(core, "agent_at", lambda pane: {"agent_status": "working"})
-    run(gateway.scan())
-    got = decisions.load(req["id"])
-    assert (got["status"], got["outcome"]) == ("stale", "Answered in the pane")
+def test_approval_choices_become_answers():
+    async def one(choice, reason=None):
+        req = permission()
+        await card_for(req)
+        approve(req["id"], choice, reason)
+        await until(lambda: decisions.load(req["id"])["status"] == "answered")
+        return decisions.load(req["id"])["answer"]
+
+    assert run(one("once")) == {"decision": "allow"}
+    assert run(one("session")) == {"decision": "allow", "scope": "session"}
+    assert run(one("deny")) == {"decision": "deny"}
+    assert run(one("deny", "use make")) == {"decision": "deny", "message": "use make"}
 
 
-def test_a_fresh_request_survives_herdr_not_showing_its_dialog_yet(monkeypatch):
-    # the bridge has not seen the pane blocked yet (up to 5 s): `working` then is not an answer
-    req = permission(blocked_seen=False)
-    monkeypatch.setattr(core, "agent_at", lambda pane: {"agent_status": "working"})
-    run(gateway.scan())
-    assert decisions.load(req["id"])["status"] == "open"
+def test_hermess_approval_timeout_denies(monkeypatch):
+    from tools import approval_gateway_wait
+    monkeypatch.setattr(approval_gateway_wait, "TIMEOUT", 0.05)
+
+    async def go():
+        req = permission()
+        await card_for(req)
+        await until(lambda: decisions.load(req["id"])["status"] == "answered")
+        got = decisions.load(req["id"])
+        assert got["answer"]["decision"] == "deny" and got["answer"]["timeout"] is True and got["by"] is None
+    run(go())
 
 
-def test_an_answered_permission_is_not_staled_while_the_hook_picks_it_up(monkeypatch):
-    req = permission()
-    decisions.transition(req["id"], ("open",), "answered", answer={"decision": "allow"})
-    monkeypatch.setattr(core, "agent_at", lambda pane: {"agent_status": "working"})
-    run(gateway.scan())
-    assert decisions.load(req["id"])["status"] == "answered"
+def test_a_reply_to_the_card_denies_with_its_text():
+    async def go():
+        req = permission()
+        card = await card_for(req)
+        got = await gateway.on_dispatch(event=fh.event("please use make", DM, DM, reply=card["mid"]))
+        assert got == {"action": "skip"}
+        await until(lambda: decisions.load(req["id"])["status"] == "answered")
+        assert decisions.load(req["id"])["answer"] == {"decision": "deny", "message": "please use make"}
+    run(go())
 
 
-def test_a_herdr_error_is_not_an_answer(monkeypatch):
-    req = permission()
+def test_a_failed_card_send_is_retried_with_backoff():
+    async def go():
+        req = permission()
+        gateway.S.adapter.fail_sends = 1
+        await gateway.scan()
+        await until(lambda: req["id"] in gateway.S.retry)
+        assert decisions.load(req["id"])["status"] == "open" and req["id"] not in gateway.S.approvals
+    run(go())
 
-    def boom(pane):
-        raise core.CommandError("herdr down")
 
-    monkeypatch.setattr(core, "agent_at", boom)
-    run(gateway.scan())
-    assert decisions.load(req["id"])["status"] == "open"
+def test_an_ended_request_withdraws_its_card():
+    async def go():
+        req = permission()
+        await card_for(req)
+        await gateway.end(req["id"], "The agent session ended")
+        await asyncio.sleep(0.1)
+        assert decisions.load(req["id"])["status"] == "stale"  # the withdrawn wait answers nothing
+    run(go())
 
 
-def test_a_question_request_is_not_checked_against_herdr(monkeypatch):
-    ask()
-    monkeypatch.setattr(core, "agent_at", lambda pane: pytest.fail("looked"))
-    run(gateway.scan())
+def test_only_the_notify_user_taps_a_muster_card():
+    async def go():
+        req = permission()
+        card = await card_for(req)
+        data = f"ea:once:{card['mid']}"
+        with pytest.raises(fh.ApplicationHandlerStop):
+            await gateway.approval_guard(fh.update(999, 4242, data=data), None)
+        assert await gateway.approval_guard(fh.update(4242, 4242, data=data), None) is None
+        gateway.S.adapter._approval_state[1] = "agent:main:telegram"
+        assert await gateway.approval_guard(fh.update(999, 4242, data="ea:once:1"), None) is None  # Hermes's own card
+    run(go())
 
 
 # -- 11. registration -------------------------------------------------------------------------------
