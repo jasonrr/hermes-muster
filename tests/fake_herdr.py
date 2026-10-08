@@ -89,7 +89,8 @@ class World:
         if verb == ["worktree", "create"]:
             clone, branch, path = (argv[argv.index(f) + 1] for f in ("--cwd", "--branch", "--path"))
             assert "--trust-repository" in argv and "--no-focus" in argv
-            assert path not in self.worktrees and not any(w["branch"] == branch for w in self.worktrees.values())
+            assert path not in self.worktrees and not any(w["branch"] == branch and w["clone"] == clone
+                                                        for w in self.worktrees.values())
             path, _ = self.worktree(clone, branch, path)
             return json.dumps({"result": {"workspace": {"workspace_id": self.worktrees[path]["workspace"]},
                                           "worktree": {"path": path}}})

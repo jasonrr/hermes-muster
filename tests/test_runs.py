@@ -394,7 +394,7 @@ def clone(board, tmp_path, monkeypatch):
     def fake_run(argv):
         if argv[:2] == ["git", "-C"] and argv[3:] == ["remote", "get-url", "origin"]:
             board["calls"].append(argv)
-            return "git@github.com:o/r.git\n"
+            return f"git@github.com:{board.get('origin', 'o/r')}.git\n"
         if argv[0] == "herdr" or (argv[0] == "git" and argv[3:] != ["rev-parse", "HEAD"]
                                   and "--untracked-files=no" not in argv):
             board["calls"].append(argv)
@@ -423,7 +423,7 @@ def test_launch_registers_and_subscribes_before_any_herdr_call(board, clone):
         "card": card, "repo": "o/r", "clone": str(clone["path"].resolve()), "branch": "fix/x", "base": "main",
         "title": "Fix the thing", "workspace": "w1", "worktree": worktree, "pane": "w1:p2", "launched": True,
         "state": "working"}
-    assert run["launch"]["name"] == "run-x" and run["launch"]["prompt"]["state"] == "working"
+    assert run["launch"]["name"] == "run-r-x" and run["launch"]["prompt"]["state"] == "working"
     [comment] = calls(board, "comment")
     assert comment[5] == card and comment[6].startswith(core.LINKS_PREFIX)
     assert board["cards"][card] == "ready"
@@ -686,6 +686,14 @@ def test_a_run_from_before_launch_records_needs_adopt_and_reuses_its_worktree(bo
     brief = json.loads(world.submitted[0].split("(JSON): ", 1)[1])
     assert brief.startswith("Old brief.\n") and "1 uncommitted or untracked files" in brief
     assert runs.load("t_old")["worktree"] == path and board["cards"]["t_old"] == "ready"
+
+
+def test_the_same_branch_in_two_repos_launches_two_agents(board, clone):
+    first = launch(clone, "feat/docs")
+    board["origin"] = "o/s"
+    second = runs.launch_run(clone["path"].parent / "other", "feat/docs", "Docs too", clone["brief"])
+    assert (first["launch"]["name"], second["launch"]["name"]) == ("run-r-docs", "run-s-docs")
+    assert second["state"] == "working"
 
 
 def test_a_long_or_dotted_branch_gets_a_valid_agent_name(board, clone):
