@@ -463,3 +463,19 @@ def test_a_queued_wait_is_delivered_before_the_prompt_that_closes_it(board, monk
 def test_a_tool_use_with_nothing_open_writes_nothing(board, monkeypatch):
     assert hook(monkeypatch, "prompt") == 0
     assert not runs.run_dir("t_abc123").exists()
+
+
+def test_tool_uses_behind_a_stuck_queue_add_one_prompt_at_most(board, monkeypatch, capsys):
+    board["cards"]["t_abc123"] = "triage"
+    assert done(PR) == 1  # the approved wedge: done on a triage ledger waits for a person
+    hook(monkeypatch, "notification")
+    for _ in range(5):
+        hook(monkeypatch, "prompt")
+    assert [p.name.split("-", 1)[1] for p in runs.pending("t_abc123")] == ["done.json", "notification.json", "prompt.json"]
+
+
+def test_done_behind_a_failing_event_names_that_failure(board, monkeypatch, capsys):
+    board["fail"]["block"] = 4
+    hook(monkeypatch, "session-end")
+    assert done(PR) == 1
+    assert "block failed (queued for the flush)" in capsys.readouterr().err

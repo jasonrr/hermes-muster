@@ -240,8 +240,10 @@ def hook(args):
         detail = claude.detail(payload)
     from . import runs  # lazy: runs imports events at module level
     card = link["card"]
-    if event == "prompt" and not (git_dir / core.WAIT_KIND).exists() and not runs.pending(card):
-        return 0  # every PostToolUse lands here: nothing open, nothing queued, nothing to do
+    queued = runs.pending(card)
+    if event == "prompt" and (queued[-1].name.endswith("-prompt.json") if queued
+                              else not (git_dir / core.WAIT_KIND).exists()):
+        return 0  # every PostToolUse lands here: nothing open, or one queued prompt is enough
     try:
         # Saved before any move, so a hook killed mid-move leaves its event for the flush.
         path = runs.enqueue(card, event, detail, git_dir=str(git_dir), link=link)
@@ -256,7 +258,8 @@ def hook(args):
             return 0
         if not drained:
             return 0  # another hook or the flush holds the queue and delivers it
-        error = json.loads(path.read_text()).get("error") or "not delivered"
+        # The queue stops at its oldest failure, which may be an earlier event's.
+        error = json.loads(runs.pending(card)[0].read_text()).get("error") or "not delivered"
         raise core.CommandError(f"{error} (queued for the flush)")
     except Exception as caught:  # a hook must never crash the agent
         line = f"{event} card {card}: {' '.join(str(caught).split())}"
