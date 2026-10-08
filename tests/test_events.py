@@ -740,3 +740,31 @@ def test_an_approval_request_behind_a_question_not_yet_on_the_board_is_denied(bo
     assert denied(capsys).startswith("An earlier question is not on the board yet")
     assert [p.name.split("-", 1)[1] for p in runs.pending("t_abc123")] == ["notification.json"]
     assert events.proposals("t_abc123").joinpath("armed").is_file()
+
+
+def test_an_approval_request_whose_outbox_save_fails_is_denied_and_keeps_its_proposal(board, monkeypatch, tmp_path, capsys):
+    """The gate passed, but the durable entry was not saved: no card would track the dialog, so deny it."""
+    propose(tmp_path, "the plan")
+    capsys.readouterr()
+    real = runs.enqueue
+
+    def full_disk(card, event, *a, **k):
+        if event == "notification":
+            raise OSError(28, "No space left on device")
+        return real(card, event, *a, **k)
+    monkeypatch.setattr(runs, "enqueue", full_disk)
+    assert ask(monkeypatch) == 0
+    why = denied(capsys)  # a deny decision, not a silent 0 that lets the dialog show
+    assert why.startswith("muster could not save this approval request ([Errno 28] No space left on device)")
+    assert f"Proposal v1 {sha('the plan')} stays saved" in why
+    assert "t_wait1" not in board["cards"] and not runs.pending("t_abc123")
+    assert json.loads(events.proposals("t_abc123").joinpath("armed").read_text()) == {"version": 1, "sha": sha("the plan")}
+    monkeypatch.setattr(runs, "enqueue", real)
+    ask(monkeypatch)  # the retry
+    assert denied(capsys) is None and board["bodies"]["t_wait1"].endswith("the plan")
+
+
+def test_a_plain_question_whose_outbox_save_fails_is_still_never_denied(board, monkeypatch, capsys):
+    monkeypatch.setattr(runs, "enqueue", lambda *a, **k: (_ for _ in ()).throw(OSError("disk full")))
+    assert ask(monkeypatch, dict(QUESTION, header="Path")) == 0
+    assert capsys.readouterr().out == ""  # only an approval request is gated; a hook never blocks other asks

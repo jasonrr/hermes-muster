@@ -581,7 +581,14 @@ def hook(args):
             return events.deny(why)
         queued = pending(card)
         if not (event == "prompt" and queued and queued[-1].name.endswith("-prompt.json")):
-            events.enqueue(card, event, claude.detail(payload), payload, pin)  # one queued prompt is enough
+            try:
+                events.enqueue(card, event, claude.detail(payload), payload, pin)  # one queued prompt is enough
+            except Exception as error:
+                if not pin:
+                    raise
+                why = events.unsaved(pin, error)  # an unsaved approval dialog would be one no card tracks
+                log(f"{card} hook {event}: approval request denied: {why}")
+                return events.deny(why)
         drain(card)
     except Exception as error:  # a hook must never crash the agent; the flush retries what was saved
         with contextlib.suppress(Exception):

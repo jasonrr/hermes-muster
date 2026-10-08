@@ -252,6 +252,13 @@ def gate(card, directory, event, payload, command):
     return pin, None
 
 
+def unsaved(pin, caught):
+    """Why an allowed approval request is denied after all: its outbox entry could not be saved, so no
+    wait card would ever show it. Nothing consumed the proposal: it stays armed for the retry."""
+    return (f"muster could not save this approval request ({' '.join(str(caught).split())}), so it would not "
+            f"reach the human. {heading(pin)} stays saved; ask again in a minute, or tell the human in plain text.")
+
+
 def deny(why):
     """A PreToolUse decision: Claude Code cancels the tool call and shows the agent the reason."""
     print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
@@ -443,7 +450,14 @@ def hook(args):
         return 0  # every PostToolUse lands here: nothing open, or one queued prompt is enough
     try:
         # Saved before any move, so a hook killed mid-move leaves its event for the flush.
-        path = enqueue(card, event, detail, payload, pin, git_dir=str(git_dir), link=link)
+        try:
+            path = enqueue(card, event, detail, payload, pin, git_dir=str(git_dir), link=link)
+        except Exception as caught:
+            if not pin:
+                raise
+            why = unsaved(pin, caught)  # an unsaved approval dialog would be one no card tracks
+            log(f"{event} card {card}: approval request denied: {why}")
+            return deny(why)
         drained = runs.drain(card, wait=event == "done")  # only done waits: the agent reads its answer
         if not path.exists():
             if event != "done":

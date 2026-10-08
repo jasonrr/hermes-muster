@@ -826,3 +826,26 @@ def test_an_ad_hoc_approval_requests_posttooluse_closes_its_wait(board, run1, mo
     capsys.readouterr()
     fire(monkeypatch, "prompt", **ask)  # PostToolUse: the same payload, the human answered
     assert capsys.readouterr().out == "" and board["cards"]["t_wait1"] == "archived"
+
+
+def test_an_ad_hoc_approval_request_whose_outbox_save_fails_is_denied_and_keeps_its_proposal(board, run1, monkeypatch, tmp_path, capsys):
+    design = tmp_path / "design.md"
+    design.write_text("plan")
+    monkeypatch.setattr("sys.stdin", io.StringIO(""))
+    runs.hook(argparse.Namespace(card=CARD, event="propose", url=str(design)))
+    capsys.readouterr()
+    real = runs.enqueue
+
+    def full_disk(card, event, *a, **k):
+        if event == "notification":
+            raise OSError(28, "No space left on device")
+        return real(card, event, *a, **k)
+    monkeypatch.setattr(runs, "enqueue", full_disk)
+    ask = {"tool_name": "AskUserQuestion", "tool_input": {"questions": [{"question": "Approve?", "header": "Approval"}]}}
+    assert fire(monkeypatch, "notification", message="", **ask) == 0
+    decision = json.loads(capsys.readouterr().out)["hookSpecificOutput"]
+    assert decision["permissionDecision"] == "deny"
+    assert decision["permissionDecisionReason"].startswith("muster could not save this approval request")
+    assert "stays saved" in decision["permissionDecisionReason"]
+    assert "t_wait1" not in board["cards"] and files(run1, "outbox") == []
+    assert (runs.run_dir(CARD) / "proposals" / "armed").is_file()
