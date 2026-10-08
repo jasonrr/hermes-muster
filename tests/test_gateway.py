@@ -458,6 +458,20 @@ def test_no_reply_goes_to_the_only_question_awaiting_text(hermes):
     assert decisions.load(req["id"])["answer"] == {"Which?": "my words"}
 
 
+def test_after_other_a_reply_to_some_other_message_is_still_the_answer(hermes):
+    # seen live: the human tapped Other, then replied to the Hermes agent's message, not the question's
+    req, _ = presented(hermes)
+    hermes.mark_awaiting_text(f"mu{req['id']}q0")
+
+    async def go():
+        got = await gateway.on_dispatch(event=fh.event("hello from Telegram", "4242", "4242", reply="228"))
+        await until(lambda: decisions.load(req["id"])["status"] == "answered")
+        return got
+
+    assert run(go()) == {"action": "skip"}
+    assert decisions.load(req["id"])["answer"] == {"Which?": "hello from Telegram"}
+
+
 def test_two_questions_awaiting_text_never_guess(hermes):
     a, _ = presented(hermes)
     b, _ = presented(hermes)

@@ -839,21 +839,22 @@ def bridge_ready(board, link=LINKS, gateway_age=0, hook_key="PermissionRequest")
 
 
 def wait_mode(board):
-    return board["mode"]
+    """The wait card's subscription: "none" when muster pages the human itself."""
+    return board["mode"] if any(c[4] == "notify-subscribe" for c in board["calls"] if len(c) > 4) else "none"
 
 
 @pytest.mark.parametrize("ad_hoc", [False, True])
-def test_a_bridged_wait_with_everything_in_place_subscribes_wake(board, ad_hoc):
+def test_a_bridged_wait_with_everything_in_place_takes_no_subscription(board, ad_hoc):
     link = {k: v for k, v in LINKS.items() if k != "issue"} | {"branch": "fix/x"} if ad_hoc else LINKS
     bridge_ready(board, link)
     events.open_wait(board["git_dir"], link, "why", "k1", bridged=True)
-    assert wait_mode(board) == "wake"
+    assert wait_mode(board) == "none"
 
 
-def test_an_ask_wakes_without_the_bridged_flag(board):
+def test_an_ask_is_paged_by_muster_without_the_bridged_flag(board):
     bridge_ready(board)
     events.open_wait(board["git_dir"], LINKS, "why", "k1", [QUESTION])
-    assert wait_mode(board) == "wake"
+    assert wait_mode(board) == "none"
 
 
 @pytest.mark.parametrize("spoil", ["not bridged", "platform", "no hook", "no settings", "stale gateway", "no gateway"])
@@ -880,7 +881,7 @@ def test_a_wait_without_a_bridged_question_stays_notify_wake_with_everything_in_
 def test_a_permission_prompt_hook_reaches_open_wait_as_bridged(board, monkeypatch):
     bridge_ready(board)
     assert hook(monkeypatch, "notification", notification_type="permission_prompt") == 0
-    assert wait_mode(board) == "wake"
+    assert wait_mode(board) == "none"
 
 
 def test_only_a_question_or_a_permission_prompt_is_bridged():

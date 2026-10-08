@@ -162,7 +162,9 @@ def deliver(run, entry):
     if event == "notification":
         events.open_wait(directory, run, entry["detail"], entry["key"], entry.get("ask"),
                           entry.get("proposal"), entry.get("bridged", False))
-        return wait_card(directory)
+        card = wait_card(directory)
+        # A wait muster pages itself has no subscription, so no notifier event to ack.
+        return card if card and json.loads(core.kanban("notify-list", card, "--json")) else None
     if ledger == "done":
         # A late hook, or a redelivery after a kill: its completion still needs its ack. After a delivered
         # send-back a verified revision is a new review card, and that card is the one to ack.
@@ -197,8 +199,7 @@ def last_event(card):
 
 
 def acked(card):
-    """True once every notify+wake subscription pinged the human and claimed the wake past the card's newest event,
-    and every wake subscription claimed the wake (it sends no ping, so last_ping_event_id never moves).
+    """True once every notify+wake subscription pinged the human and claimed the wake past the card's newest event.
 
     No event found is not acked: the move happened, so a missing event means we cannot tell. The
     notifier delivers an archived card's pending events, then drops its subscriptions, so an archived
@@ -206,12 +207,11 @@ def acked(card):
     """
     want = last_event(card)
     subs = [s for s in json.loads(core.kanban("notify-list", card, "--json"))
-            if s.get("delivery_mode") in ("notify+wake", "wake")]
+            if s.get("delivery_mode") == "notify+wake"]
     if not subs:
         return events.status(card) == "archived"
     return bool(want) and all(
-        s.get("last_event_id", 0) >= want
-        and (s["delivery_mode"] == "wake" or s.get("last_ping_event_id", 0) >= want) for s in subs)
+        s.get("last_event_id", 0) >= want and s.get("last_ping_event_id", 0) >= want for s in subs)
 
 
 def note(card, path, entry, error):

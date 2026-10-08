@@ -35,9 +35,10 @@ def log(line):
 
 
 def fingerprint(name, tool_input):
-    """sha256 of the tool input; an AskUserQuestion's `answers` (added once answered) is not part of what was asked."""
+    """sha256 of the tool input. For an AskUserQuestion only its `questions`: Claude adds `answers` and other
+    fields to the input PostToolUse reports (seen live), and the questions are what was asked."""
     if name == ASKED and isinstance(tool_input, dict):
-        tool_input = {k: v for k, v in tool_input.items() if k != "answers"}
+        tool_input = tool_input.get("questions")
     return hashlib.sha256(json.dumps(tool_input, sort_keys=True).encode()).hexdigest()
 
 
@@ -238,6 +239,7 @@ def settle(directory, payload):
                 marker.unlink(missing_ok=True)
                 continue
             if req.get("tool") != {"name": name, "input_sha": now}:
+                log(f"settle: {event} of {name} does not match request {req['id']} ({req.get('tool', {}).get('name')})")
                 continue
             marker.unlink(missing_ok=True)
             for _ in range(3):  # the outcome reads the state it then moves from; a change in between asks again

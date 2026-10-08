@@ -475,6 +475,10 @@ async def _dispatch(event):
     from tools import clarify_gateway
 
     text, reply = event.text, event.reply_to_message_id
+    waiting = [e for rid in S.cids
+               if (e := clarify_gateway.get_pending_for_session(f"muster:{rid}")) is not None]
+    if reply is not None and str(reply) not in S.messages and len(waiting) == 1:
+        reply = None  # after "Other", the next message is the answer whatever it replies to (as Hermes's own clarify)
     if reply is not None:
         bound = S.messages.get(str(reply))
         if not bound:
@@ -489,8 +493,6 @@ async def _dispatch(event):
         done = req.get("outcome") or req.get("answer") or "answer received"
         await edit(target["chat_id"], str(reply), f"already handled: {done}")
         return {"action": "skip"}
-    waiting = [e for rid in S.cids
-               if (e := clarify_gateway.get_pending_for_session(f"muster:{rid}")) is not None]
     if len(waiting) == 1 and clarify_gateway.resolve_gateway_clarify(waiting[0].clarify_id, text):
         return {"action": "skip"}
     return None

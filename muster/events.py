@@ -4,7 +4,7 @@ Registered only by the pane's own --settings file (core.agent_settings); a no-op
 without <git dir>/muster-card.json. The gateway notifier turns each block or completion into a
 Telegram ping for the human and a queued agent turn.
 
-  notification   open a WAIT card (subscribed notify+wake, or wake when muster pages it itself; blocked "<message>\\nReply in Herdr pane P.")
+  notification   open a WAIT card (subscribed notify+wake, or none when muster pages it itself; blocked "<message>\\nReply in Herdr pane P.")
                  for a permission prompt or an AskUserQuestion (hook matchers in claude.hook_settings)
                  unless one is open or the ledger is archived (after done the pull request is in
                  review, so questions still page); its id is kept in <git dir>/muster-wait
@@ -101,10 +101,12 @@ def is_bridged(event, payload):
                                         or payload.get("notification_type") == "permission_prompt")
 
 
-def wake_only(directory, link, bridged):
-    """True when a wait card may subscribe `wake` (no Hermes passive ping) because muster pages the human itself.
+def muster_pages(directory, link, bridged):
+    """True when muster pages the human itself (its gateway sends the question with buttons), so the wait card takes
+    no subscription: a Hermes ping, or a woken agent's own message, would be a second message for one decision
+    (seen live: the human replied to the agent's message instead of the question's).
 
-    A `wake` subscription is silent to the human, so every condition guards against a page nobody sends:
+    Without a subscription nothing else pings, so every condition guards against a page nobody sends:
     - bridged: only a question or permission prompt gets a decision request (and its Telegram message);
       idle, reconcile and other waits have none, so Hermes must ping them.
     - telegram: the gateway's buttons and replies exist only there.
@@ -166,7 +168,8 @@ def open_wait(git_dir, link, detail, key, ask=None, proposal=None, bridged=False
         finally:
             os.close(claim)
     if status(card) == "ready":
-        core.subscribe(card, "wake" if wake_only(git_dir, link, bridged or bool(ask)) else "notify+wake")
+        if not muster_pages(git_dir, link, bridged or bool(ask)):
+            core.subscribe(card)
         # "--": the agent's question may start with "--" (e.g. "--kind=..."); argparse would read it as a flag.
         seen = (f"\n{heading(proposal)}: full text on this card and ledger {link['card']}." if proposal else "")
         core.kanban("block", "--kind", "needs_input", "--", card,

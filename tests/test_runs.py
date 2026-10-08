@@ -854,21 +854,6 @@ def test_an_ad_hoc_approval_request_whose_outbox_save_fails_is_denied_and_keeps_
     assert (runs.run_dir(CARD) / "proposals" / "armed").is_file()
 
 
-def test_wake_subs_need_no_ping_but_notify_wake_subs_do(monkeypatch):
-    monkeypatch.setattr(runs, "last_event", lambda card: 5)
-    monkeypatch.setattr(runs.events, "status", lambda card: "blocked")
-
-    def acked(*subs):
-        monkeypatch.setattr(core, "kanban", lambda *a: json.dumps(list(subs)))
-        return runs.acked("t_x")
-    wake = {"delivery_mode": "wake", "last_event_id": 5, "last_ping_event_id": 0}
-    both = {"delivery_mode": "notify+wake", "last_event_id": 5, "last_ping_event_id": 5}
-    unpinged = {"delivery_mode": "notify+wake", "last_event_id": 5, "last_ping_event_id": 0}
-    assert acked(wake) and acked(both) and acked(wake, both)
-    assert not acked(unpinged) and not acked(wake, unpinged)
-    assert not acked({**wake, "last_event_id": 4})
-
-
 # -- re-review after a send-back (#17 task 7) ------------------------------------------------------
 
 import muster.decisions as decisions  # noqa: E402

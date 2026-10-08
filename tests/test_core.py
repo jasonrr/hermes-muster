@@ -985,22 +985,3 @@ def test_an_issue_past_the_300_item_cap_is_not_called_absent(tmp_path, monkeypat
     monkeypatch.setattr(core, "run", fake_world(tmp_path, calls, project=full)[0])
     assert tick() == 0
     assert project_comments(calls) == ["project: not in the first 300 items of Project #5"]
-
-
-def test_subscribe_asks_for_the_requested_mode_and_reads_it_back(monkeypatch):
-    sent = []
-    mode = {}
-
-    def fake(*args):
-        if args[0] == "notify-subscribe":
-            sent.append(args[args.index("--delivery-mode") + 1])
-            return ""
-        t = core.notify_target()
-        return json.dumps([{**t, "notifier_profile": "default", "delivery_mode": mode.get("read", sent[-1])}])
-    monkeypatch.setattr(core, "kanban", fake)
-    core.subscribe("t_x", "wake")
-    core.subscribe("t_x")
-    assert sent == ["wake", "notify+wake"]
-    mode["read"] = "notify+wake"
-    with pytest.raises(core.LaunchError, match="wake subscription did not read back"):
-        core.subscribe("t_x", "wake")

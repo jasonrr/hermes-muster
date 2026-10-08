@@ -25,8 +25,9 @@ only; never tell the human they must open a pane.
 On a wake:
 
 1. Read the card: `hermes kanban --board <the board setting> show <task id> --json`.
-2. Blocked wait card: the question and its options already went out. Send nothing unless you have
-   something new (for example, the issue's context that bears on the question).
+2. Blocked wait card (one muster could not page itself: an idle run, an older pane, the gateway side
+   down): the ping has the question. Add a sentence only if you have something new. A question muster
+   pages itself never wakes you.
    Blocked ledger: if the block reason says the launch failed ("The coding agent did not start", "did not
    become ready", "its first prompt may not have arrived", "The launch was refused"), tell the human the
    retry is theirs to run once the cause is fixed: `hermes muster recover <ledger card id>`. For "may not

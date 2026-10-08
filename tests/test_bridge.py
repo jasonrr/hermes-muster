@@ -50,7 +50,9 @@ def only():
 
 
 def sha(tool_input):
-    return hashlib.sha256(json.dumps(tool_input, sort_keys=True).encode()).hexdigest()
+    """The fingerprint: an AskUserQuestion's questions only (PostToolUse adds fields to its input), else all of it."""
+    asked = tool_input.get("questions") if "questions" in tool_input else tool_input
+    return hashlib.sha256(json.dumps(asked, sort_keys=True).encode()).hexdigest()
 
 
 def test_question_request_is_created_with_everything_the_plan_lists(tmp_path):
@@ -312,6 +314,15 @@ def test_settle_ignores_other_events(tmp_path):
 def test_settle_matches_an_ask_whose_input_gained_the_answers(tmp_path):
     rid = marked(tmp_path, ASK, answer={"Which db?": "pg"}, delivered_by_hook=True)
     shown = {**ASK, "tool_input": {**ASK["tool_input"], "answers": {"Which db?": "pg"}}}
+    bridge.settle(tmp_path, post(shown, tool_response={"answers": {"Which db?": "pg"}}))
+    assert finished(rid) == ("done", "Delivered ✓")
+
+
+def test_settle_matches_an_ask_whose_input_gained_other_fields(tmp_path):
+    # seen live: PostToolUse's tool_input carries more than the questions and answers
+    rid = marked(tmp_path, ASK, answer={"Which db?": "pg"}, delivered_by_hook=True)
+    shown = {**ASK, "tool_input": {**ASK["tool_input"], "answers": {"Which db?": "pg"}, "annotations": {"x": 1},
+                                   "metadata": {"source": "pane"}}}
     bridge.settle(tmp_path, post(shown, tool_response={"answers": {"Which db?": "pg"}}))
     assert finished(rid) == ("done", "Delivered ✓")
 
