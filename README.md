@@ -97,6 +97,12 @@ Set under `plugins.entries.muster.settings`. Required: `approver_login`, `approv
 | `notes_dir` | `""` | Per-repo production notes. Empty = `$HERMES_HOME/plugin-data/muster/repos`. |
 | `workflow_prompt_file` | `""` | Replaces `prompts/workflow.md` in the brief. |
 | `worktrees` | `~/.herdr/worktrees` | herdr's worktree directory. |
+| `project_owner` | `""` | Optional. With `project_number`, the GitHub Project (v2) whose Status moves when an issue's agent gets its brief (`gh project view <number> --owner <owner>`). Empty = off: no `gh project` call at all. |
+| `project_number` | `0` | That Project's number, an integer. Set both or neither. |
+| `project_status_field` | `Status` | The single-select field to set. |
+| `project_status_value` | `In Progress` | The option it is set to. |
+
+The Project move runs after each launch or recover delivers the brief, and is never retried. Ids are resolved every time. The outcome is one card comment: `project: In Progress`, `project: not in Project #<n>`, `project: field/option not found`, or `project: failed: <error>`. It never blocks a launch. The tick's `gh` login needs the `project` scope: `gh auth refresh -s project`.
 
 ## Per-repo production notes
 
