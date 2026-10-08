@@ -111,33 +111,22 @@ def test_a_permission_request_carries_the_card_and_no_questions(tmp_path, capsys
     req = only()
     assert req["kind"] == "permission" and req["tool"] == {"name": "Bash"}
     assert "questions" not in req and "choices" not in req
-    assert req["card"] == {"command": "echo [redacted]", "why": "Say hi", "session": True}
+    assert req["card"] == {"command": "echo [redacted]", "why": "Say hi"}
     assert out(capsys) == {"hookSpecificOutput": {"hookEventName": "PermissionRequest",
                                                   "decision": {"behavior": "allow"}}}
 
 
 def test_approval_card_for_each_kind_of_tool():
-    assert bridge.approval_card("Bash", {"command": "ls"}) == {"command": "ls", "why": "Claude wants to use Bash",
-                                                              "session": True}
+    assert bridge.approval_card("Bash", {"command": "ls"}) == {"command": "ls", "why": "Claude wants to use Bash"}
     edit = bridge.approval_card("Edit", {"file_path": "/a", "token": "ghp_abcdef123456"}, sub="Explore")
-    assert edit["session"] is False and "/a" in edit["command"] and "ghp_abcdef123456" not in edit["command"]
+    assert "/a" in edit["command"] and "ghp_abcdef123456" not in edit["command"]
     assert edit["why"] == "Claude wants to use Edit (the Explore subagent)"
-    assert bridge.approval_card("Bash", None)["session"] is False  # no command: no session rule
 
 
-def test_allow_for_this_session_adds_a_session_rule_for_the_exact_command(tmp_path, capsys):
-    thread = answer_when_open(answer={"decision": "allow", "scope": "session"})
-    bridge.wait(tmp_path, LINK, BASH)
-    thread.join()
-    assert out(capsys)["hookSpecificOutput"]["decision"] == {"behavior": "allow", "updatedPermissions": [{
-        "type": "addRules", "rules": [{"toolName": "Bash", "ruleContent": "rm -rf build"}],
-        "behavior": "allow", "destination": "session"}]}
-    assert only()["outcome"] == "Allowed for this session ✓"
-
-
-def test_a_session_scope_on_another_tool_is_a_plain_allow():
-    req = {"kind": "permission", "tool": {"name": "Edit"}, "answer": {"decision": "allow", "scope": "session"}}
-    assert bridge.decision(req, {"file_path": "/a"}) == {"behavior": "allow"}
+def test_an_allow_never_carries_a_permission_update():
+    # Allow session was dropped: a session rule did not stop the next prompt (seen live), so allow is once only
+    req = {"kind": "permission", "tool": {"name": "Bash"}, "answer": {"decision": "allow", "scope": "session"}}
+    assert bridge.decision(req, {"command": "ls"}) == {"behavior": "allow"}
 
 
 def test_allow_once_is_done_as_allowed(tmp_path):

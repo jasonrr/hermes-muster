@@ -364,9 +364,9 @@ async def presented(rid, messages, failure):
 
 
 async def present_approval(req):
-    """A permission prompt as Hermes's own approval card (formatted command; Allow once, Allow session for a
-    Bash command, Deny), queued and waited on by Hermes's approval wait, so its buttons, tap authorization,
-    edit and approvals.timeout apply unchanged. A reply to the card denies with that text."""
+    """A permission prompt as Hermes's own approval card (formatted command; Allow once and Deny only, see
+    bridge.approval_card), queued and waited on by Hermes's approval wait, so its buttons, edit and
+    approvals.timeout apply unchanged. A reply to the card denies with that text."""
     rid, card = req["id"], req["card"]
     S.presenting.add(rid)
     old, chat, loop = (req.get("presented") or {}), core.notify_target()["chat_id"], asyncio.get_running_loop()
@@ -375,7 +375,7 @@ async def present_approval(req):
 
     def notify(_data):  # runs in the wait thread, after Hermes queued the request
         future = asyncio.run_coroutine_threadsafe(S.adapter.send_exec_approval(
-            chat, card["command"], f"muster:{rid}", why, allow_permanent=False, allow_session=card["session"]), loop)
+            chat, card["command"], f"muster:{rid}", why, allow_permanent=False, allow_session=False), loop)
         try:
             res = future.result(60)
         except Exception as caught:  # noqa: BLE001
@@ -409,9 +409,9 @@ def approval_waiter(rid, command, notify, loop):
     if decision.get("notify_failed") or decision.get("cancelled"):
         return  # not sent (present retries), or withdrawn by release()
     choice = decision.get("choice")
-    if choice in ("once", "session"):
-        answer = {"decision": "allow", **({"scope": "session"} if choice == "session" else {})}
-    elif choice == "deny":
+    if choice == "once":
+        answer = {"decision": "allow"}
+    elif choice is not None:  # deny, or a tier the card does not offer: fail closed
         reason = (decision.get("reason") or "").strip()
         answer = {"decision": "deny", **({"message": reason} if reason else {})}
     else:  # Hermes's approvals.timeout passed with no answer: fail closed

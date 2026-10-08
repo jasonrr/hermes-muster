@@ -72,13 +72,13 @@ def normalize(question):
 
 def approval_card(name, tool_input, sub=None):
     """What Hermes's approval card shows: the command (a Bash command as is, any other tool's input as JSON,
-    secrets redacted), why, and whether "Allow session" is offered (Bash only: a session rule for that exact
-    command; any other tool's session rule would cover every call of the tool)."""
+    secrets redacted) and why. The card offers Allow once and Deny only: a session rule did not stop the next
+    prompt for the same command (seen live, 2.1.295; Claude's own "don't ask again" did not either)."""
     bash = name == "Bash" and isinstance(tool_input, dict) and isinstance(tool_input.get("command"), str)
     command = tool_input["command"] if bash else json.dumps(tool_input, indent=2, sort_keys=True)
     why = (tool_input.get("description") if bash else None) or f"Claude wants to use {name}"
     who = f" (the {sub} subagent)" if sub else ""
-    return {"command": core.SECRET.sub("[redacted]", command), "why": f"{why}{who}", "session": bash}
+    return {"command": core.SECRET.sub("[redacted]", command), "why": f"{why}{who}"}
 
 
 TERMINATED = []  # set by SIGTERM: Claude closed the dialog (answered in the pane) or is stopping
@@ -171,11 +171,6 @@ def decision(req, tool_input):
             return None
         return {"behavior": "allow", "updatedInput": {**tool_input, "answers": answer}}
     if answer.get("decision") == "allow":
-        command = (tool_input or {}).get("command") if req["tool"]["name"] == "Bash" else None
-        if answer.get("scope") == "session" and isinstance(command, str):
-            return {"behavior": "allow", "updatedPermissions": [{
-                "type": "addRules", "rules": [{"toolName": "Bash", "ruleContent": command}],
-                "behavior": "allow", "destination": "session"}]}
         return {"behavior": "allow"}
     if answer.get("decision") == "deny":
         message = answer.get("message")
@@ -198,7 +193,7 @@ def deliver(req, tool_input):
     elif chosen["behavior"] == "deny":
         outcome = "Denied ✓" + (f": {answer['message']}" if answer.get("message") else "")
     else:
-        outcome = "Allowed for this session ✓" if answer.get("scope") == "session" else "Allowed ✓"
+        outcome = "Allowed ✓"
     decisions.transition(req["id"], ("answered",), "done", outcome=outcome)
 
 

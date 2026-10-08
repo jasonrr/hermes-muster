@@ -64,7 +64,7 @@ def ask(text="Which?", labels=("Alpha", "Beta"), multi=False, **fields):
 
 def permission(**fields):
     fields = {"tool": {"name": "Bash"}, "run": {"branch": "b", "pane": "p1"}, "alive": time.time(),
-              "card": {"command": "touch x", "why": "Create x", "session": True}, **fields}
+              "card": {"command": "touch x", "why": "Create x"}, **fields}
     return decisions.create("permission", "led1", **fields)
 
 
@@ -628,22 +628,16 @@ def test_a_permission_prompt_is_hermess_approval_card():
         req = permission()
         card = await card_for(req)
         assert card["command"] == "touch x" and card["session"] == f"muster:{req['id']}"
-        assert card["permanent"] is False and card["session_button"] is True
+        assert card["permanent"] is False and card["session_button"] is False  # Allow once and Deny only
         assert card["text"].startswith("b: Create x.") and "reply to this message" in card["text"]
         assert decisions.load(req["id"])["presented"]["messages"] == {"0": [card["mid"]]}
     run(go())
 
 
-def test_a_non_bash_card_offers_no_session_button():
-    async def go():
-        permission(card={"command": "{}", "why": "x", "session": False})
-        return await card_for(None)
-    assert run(go())["session_button"] is False
-
-
 @pytest.mark.parametrize("choice,reason,expect", [
     ("once", None, {"decision": "allow"}),
-    ("session", None, {"decision": "allow", "scope": "session"}),
+    ("session", None, {"decision": "deny"}),  # not offered: a tier the card lacks fails closed
+    ("always", None, {"decision": "deny"}),
     ("deny", None, {"decision": "deny"}),
     ("deny", "use make", {"decision": "deny", "message": "use make"}),
 ])
