@@ -22,6 +22,7 @@ CTX = None  # the Hermes plugin context; set by register()
 SCAN_EVERY = 2  # s between scans
 ALIVE_MAX = 30  # s without a hook heartbeat before a question or permission request is stale
 PANE_EVERY = 10  # s between herdr looks at one permission request's pane
+SETTLE_MAX = 3600  # s after the hook delivered an answer before the request is closed without Claude's confirmation
 CAP = 3500  # characters per message (Telegram allows 4096)
 BACKOFF_MAX = 60
 STALE = "\x00stale"  # resolves a leftover clarify so its waiter thread exits
@@ -183,6 +184,10 @@ async def handle(req):
         if kind == "permission" and await pane_gone(req):
             await end(rid, "Answered in the pane")
             return
+    if req.get("delivered_by_hook") and time.time() - req.get("alive", req.get("created_at", 0)) > SETTLE_MAX:
+        # The hook gave Claude the answer but no PostToolUse ever came (Claude died mid-tool): stop watching it.
+        await blocking(decisions.transition, rid, ("answered",), "done", outcome="Answered; muster could not confirm where")
+        return
     if req["status"] != "open" or rid in S.presenting:
         return
     if (req.get("presented") or {}).get("boot") == BOOT:

@@ -603,3 +603,13 @@ def test_register_adds_the_gateway_pieces_only_when_hermes_has_them(monkeypatch)
 def test_plugin_yaml_discloses_the_gateway_pieces():
     text = (ROOT / "plugin.yaml").read_text()
     assert "Telegram callback guard" in text and "pre_gateway_dispatch" in text and "approver's click" in text
+
+
+def test_a_delivered_answer_claude_never_confirmed_is_closed_after_an_hour():
+    old, recent = ask(alive=time.time() - 3601), ask(alive=time.time() - 60)
+    for r in (old, recent):
+        decisions.transition(r["id"], ("open",), "answered", answer={"Which?": "Alpha"}, delivered_by_hook=True)
+    run(gateway.scan())
+    got = decisions.load(old["id"])
+    assert (got["status"], got["outcome"]) == ("done", "Answered; muster could not confirm where")
+    assert decisions.load(recent["id"])["status"] == "answered"
