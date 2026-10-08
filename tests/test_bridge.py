@@ -195,6 +195,14 @@ def test_the_deadline_stales_an_open_request(tmp_path, capsys, monkeypatch):
     assert out(capsys) is None and req["status"] == "stale" and "expired after 24 h" in req["outcome"]
 
 
+def test_a_permission_prompt_waits_only_ten_minutes_then_leaves_it_to_the_pane(tmp_path, capsys, monkeypatch):
+    assert bridge.PERMISSION_DEADLINE == 600
+    monkeypatch.setattr(bridge, "PERMISSION_DEADLINE", 0.05)  # DEADLINE (questions) stays 24 h
+    bridge.wait(tmp_path, LINK, BASH)
+    req = only()
+    assert out(capsys) is None and req["status"] == "stale" and "expired after 10 min" in req["outcome"]
+
+
 def test_an_answer_that_wins_the_deadline_race_is_used(tmp_path, capsys, monkeypatch):
     monkeypatch.setattr(bridge, "DEADLINE", 0)
     real = decisions.transition

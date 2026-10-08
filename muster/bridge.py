@@ -22,7 +22,8 @@ from . import claude, config, core, decisions
 
 POLL = 1  # s between looks at the request
 ALIVE_EVERY = 5  # s between `alive` writes
-DEADLINE = 86340  # s: just inside the hook's 86400 s timeout
+DEADLINE = 86340  # s a question waits: just inside the hook's 86400 s timeout
+PERMISSION_DEADLINE = 600  # s a permission prompt waits for the channel; then the pane alone decides (never allow)
 BLOCKED_WAIT = 5  # s to wait for herdr to show the pane blocked
 MARKERS = "muster-decisions"
 ASKED = "AskUserQuestion"
@@ -152,8 +153,9 @@ def poll(rid, tool_input):
             req = decisions.load(rid)
         except FileNotFoundError:
             return
-        if req["status"] == "open" and time.monotonic() - start >= DEADLINE:
-            req, ok = decisions.transition(rid, ("open",), "stale", outcome="expired after 24 h; answer in the pane")
+        limit, after = (PERMISSION_DEADLINE, "10 min") if req["kind"] == "permission" else (DEADLINE, "24 h")
+        if req["status"] == "open" and time.monotonic() - start >= limit:
+            req, ok = decisions.transition(rid, ("open",), "stale", outcome=f"expired after {after}; answer in the pane")
             if ok:
                 return
         if req["status"] == "answered":
