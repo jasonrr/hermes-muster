@@ -4,7 +4,7 @@ Registered only by the pane's own --settings file (core.agent_settings); a no-op
 without <git dir>/muster-card.json. The gateway notifier turns each block or completion into a
 Telegram ping for the human and a queued agent turn.
 
-  notification   open a WAIT card (subscribed notify+wake, blocked "<message>\\nReply in Herdr pane P.")
+  notification   open a WAIT card (subscribed notify+wake, or wake when muster pages it itself; blocked "<message>\\nReply in Herdr pane P.")
                  for a permission prompt or an AskUserQuestion (hook matchers in claude.hook_settings)
                  unless one is open or the ledger is archived (after done the pull request is in
                  review, so questions still page); its id is kept in <git dir>/muster-wait

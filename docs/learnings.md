@@ -47,3 +47,10 @@
 
 - A command the agent runs from its own shell, routed through the hook entry point (`hook propose`) → it reads stdin like a hook and hangs on the pane's tty until the 30 s timeout; exempt agent-run events (`done`, `propose`) from the stdin read in both `events.hook` and `runs.hook`.
 - A PreToolUse gate keyed on the tool payload alone (`tool_name` + `tool_input`) → PostToolUse carries the same payload, so the answered question's close was denied and its wait card stayed open; gate on the hook event (`notification` = PreToolUse here), not on the payload.
+
+## actionable decisions (issue #17, 2026-10-08)
+
+- Answering a Claude dialog by keystrokes (Escape + prompt) → fragile and interrupts work; a `PermissionRequest` hook runs in parallel with the pane's dialog and its `updatedInput.answers` answers an AskUserQuestion natively (verified live, also under `--permission-mode auto`), so answer through the hook and let whichever side answers first win.
+- A `PermissionRequest` hook that exits 2 (argparse on an unknown subcommand, an older plugin) → Claude reads it as a deny; register it as `<cmd> permission || exit 0` so any failure leaves the dialog to the pane.
+- `gh pr checks` (with or without `--required`) exits 1 with "no checks reported" on a repository without checks → a merge gate built on it refuses every merge there; gate on `gh pr view --json mergeStateStatus` and let `gh pr merge --match-head-commit` stay GitHub's authority.
+- Switching a card to the `wake` delivery mode → Hermes sends no ping at all; make it conditional on muster being able to page the human itself (platform, bridge hook in the pane's settings, a fresh gateway heartbeat), or idle and old-pane waits go silent.
