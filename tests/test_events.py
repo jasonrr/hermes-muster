@@ -335,9 +335,16 @@ def test_an_empty_marker_left_by_a_killed_hook_is_cleared_when_the_agent_resumes
     assert board["cards"]["t_wait1"] == "blocked"
 
 
-@pytest.mark.parametrize("status", ["done", "archived"])
-def test_no_wait_card_once_the_ledger_is_done_or_archived(board, monkeypatch, status):
-    board["cards"]["t_abc123"] = status
+def test_a_question_after_done_still_pages(board, monkeypatch):
+    """The pull request is still in review after done; a reviewer's follow-up makes the agent ask again."""
+    board["cards"]["t_abc123"] = "done"
+    assert hook(monkeypatch, "notification") == 0
+    assert verbs(board) == ["create", "notify-subscribe", "block"]
+    assert board["cards"] == {"t_abc123": "done", "t_wait1": "blocked"}
+
+
+def test_no_wait_card_once_the_ledger_is_archived(board, monkeypatch):
+    board["cards"]["t_abc123"] = "archived"
     assert hook(monkeypatch, "notification") == 0
     assert verbs(board) == []
     assert not (board["git_dir"] / core.WAIT_KIND).exists()
@@ -375,11 +382,11 @@ def test_a_full_session_pages_once_per_real_wait(board, monkeypatch):
     hook(monkeypatch, "notification", message="Claude needs your permission to use Bash")
     hook(monkeypatch, "prompt")  # keypress resume
     assert done(PR) == 0
-    hook(monkeypatch, "notification", message="Claude needs your permission to use Bash")  # late permission
-    hook(monkeypatch, "notification", **question)  # late question
-    assert verbs(board).count("create") == 2
-    assert board["blocks"] == {"t_wait1": 1, "t_wait2": 1}
-    assert board["cards"] == {"t_abc123": "done", "t_wait1": "archived", "t_wait2": "archived"}
+    hook(monkeypatch, "notification", message="Claude needs your permission to use Bash")  # in review
+    hook(monkeypatch, "notification", **question)  # while that wait is open
+    assert verbs(board).count("create") == 3
+    assert board["blocks"] == {"t_wait1": 1, "t_wait2": 1, "t_wait3": 1}
+    assert board["cards"] == {"t_abc123": "done", "t_wait1": "archived", "t_wait2": "archived", "t_wait3": "blocked"}
 
 
 def test_a_run_link_without_an_issue_names_its_branch(board):
