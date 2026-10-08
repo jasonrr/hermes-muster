@@ -24,7 +24,9 @@ that card's newest blocked or completed event. The claim is the gateway's, befor
 proves the human was told, not that the agent's turn ran.
 
 One run is the directory <data dir>/runs/<card>/: run.json, lock, the wait marker (core.WAIT_KIND),
-brief.md, settings.json, outbox/<ns>-<event>.json and sent/<ns>-<event>.json.
+brief.md, settings.json, outbox/<ns>-<event>.json and sent/<ns>-<event>.json. An issue run's card
+(events.hook) has only lock and outbox/: its entries carry their git_dir and link, and the flush
+replays them through events.replay.
 """
 
 import contextlib
@@ -68,14 +70,19 @@ def load(card):
     return json.loads((run_dir(card) / "run.json").read_text())
 
 
-def enqueue(card, event, detail):
-    """Save one event before any kanban call, so a failed or killed delivery is tried again."""
-    if not (run_dir(card) / "run.json").is_file():
+def enqueue(card, event, detail, **issue):
+    """Save one event before any kanban call, so a failed or killed delivery is tried again. Returns its path.
+
+    An issue run's event (events.hook) has no run.json: it carries its git_dir and link instead.
+    """
+    if not issue and not (run_dir(card) / "run.json").is_file():
         raise core.LaunchError(f"no run {card}")
     ns = time.time_ns()
+    path = run_dir(card) / "outbox" / f"{ns}-{event}.json"
     # The key is fixed here, so a redelivery finds the wait card the first attempt made.
-    core.save_json(run_dir(card) / "outbox" / f"{ns}-{event}.json",
-                   {"event": event, "detail": detail, "key": f"{card}:wait:{ns}", "at": int(time.time())})
+    core.save_json(path, {"event": event, "detail": detail, "key": f"{card}:wait:{ns}", "at": int(time.time()),
+                          **issue})
+    return path
 
 
 def pending(card):
@@ -207,23 +214,25 @@ def note(card, path, entry, error):
             core.save_json(path, {**entry, "error": text})
 
 
-def drain(card):
+def drain(card, wait=False):
     """Deliver every saved event of one run in order, then check the acks of the delivered ones.
 
     A delivery failure stops the queue: a prompt must not overtake the wait it closes. A process
     killed between a move and its record redelivers; every move reads state first, so none repeats.
+    An issue run's events (no run.json) are replayed by events.replay and need no ack. False when
+    another hook or the flush held the lock (`wait` blocks for it instead).
     """
     directory = run_dir(card)
     with open(directory / "lock", "w") as lock:
         try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(lock, fcntl.LOCK_EX | (0 if wait else fcntl.LOCK_NB))
         except BlockingIOError:
-            return  # another hook or the flush holds it; the next flush delivers what is left
-        run = load(card)
+            return False  # the holder or the next flush delivers what is left
+        run = load(card) if (directory / "run.json").is_file() else None
         for path in pending(card):
             entry = json.loads(path.read_text())
             try:
-                ack = deliver(run, entry)
+                ack = deliver(run, entry) if run else events.replay(entry)
                 if ack:
                     core.save_json(directory / "sent" / path.name,
                                    {**entry, "ack": ack, "moved_at": int(time.time()), "error": None})
@@ -232,7 +241,7 @@ def drain(card):
                 note(card, path, entry, error)
                 if entry["event"] == "stop":
                     continue  # it only checks for a finished PR: a later ask must not wait behind it
-                return
+                return True
             log(f"{card} {entry['event']}: delivered, ack {ack}")
         for path in sent(card):
             entry = json.loads(path.read_text())
@@ -245,6 +254,7 @@ def drain(card):
                     log(f"{card} {entry['event']}: gateway has not acked card {entry['ack']} after 15 min")
             except ERRORS as error:
                 note(card, path, entry, error)
+    return True
 
 
 def reconcile(run):
@@ -299,9 +309,13 @@ def flush(args=None):
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             return 0
-        for directory in sorted(p for p in runs_dir().iterdir() if (p / "run.json").is_file()):
+        for directory in sorted(p for p in runs_dir().iterdir() if p.is_dir()):
             card = directory.name
             try:
+                if not (directory / "run.json").is_file():
+                    if pending(card):
+                        drain(card)  # an issue run's hook events (events.hook): nothing to reconcile
+                    continue
                 if load(card).get("closed") and not pending(card):
                     continue
                 drain(card)

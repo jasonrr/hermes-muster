@@ -18,9 +18,11 @@ full text. Provenance (pane, branch, worktree, issue) stays on the card: its bod
 
 A card per wait because hermes routes a second same-kind block of one card to triage, where
 unblock, block and complete all fail (tests/test_kanban_contract.py). The ledger card is blocked
-at most once and completed once. A hook never fails the agent: after one retry the error goes to
-<data dir>/logs/events.log and it exits 0. Only `done` prints, and only `done` can exit non-zero,
-because a UserPromptSubmit hook's stdout reaches the agent's context.
+at most once and completed once. Each event is saved to <data dir>/runs/<card>/outbox/ before any
+kanban call and delivered from there in order (runs.drain, then replay here); one that does not land
+in two tries stays queued, and the flush (runs.flush, every minute) delivers it. A hook never fails
+the agent: the error goes to <data dir>/logs/events.log and it exits 0. Only `done` prints, and only
+`done` can exit non-zero, because a UserPromptSubmit hook's stdout reaches the agent's context.
 """
 
 import contextlib
@@ -163,6 +165,23 @@ def move(event, git_dir, link, detail, key):
     return f"{event}: card {card} is {now}, nothing to do"
 
 
+def replay(entry):
+    """One saved event's moves (runs.drain), tried twice. Safe to repeat: every move reads state first."""
+    git_dir, link, event = Path(entry["git_dir"]), entry["link"], entry["event"]
+    if status(link["card"]) == "archived":
+        close_wait(git_dir, event)  # nothing to move, but a wait card it opened still closes
+        return
+    if event == "notification" and not git_dir.is_dir():
+        return  # the worktree is gone: no agent is left waiting
+    for attempt in range(2):
+        try:
+            move(event, git_dir, link, entry["detail"], entry["key"])
+            return
+        except (core.CommandError, core.LaunchError, OSError, ValueError, KeyError):
+            if attempt:
+                raise
+
+
 def log(line):
     path = log_path()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -219,20 +238,33 @@ def hook(args):
         detail = args.url
     else:
         detail = claude.detail(payload)
-    # One key per hook call, so its retry finds the wait card the first attempt made.
-    key = f"{link['card']}:wait:{time.time_ns()}"
-    error = None
-    for _ in range(2):
-        try:
-            report = move(event, git_dir, link, detail, key)
-            if event == "done":
-                print(report)
+    from . import runs  # lazy: runs imports events at module level
+    card = link["card"]
+    queued = runs.pending(card)
+    if event == "prompt" and (queued[-1].name.endswith("-prompt.json") if queued
+                              else not (git_dir / core.WAIT_KIND).exists()):
+        return 0  # every PostToolUse lands here: nothing open, or one queued prompt is enough
+    try:
+        # Saved before any move, so a hook killed mid-move leaves its event for the flush.
+        path = runs.enqueue(card, event, detail, git_dir=str(git_dir), link=link)
+        drained = runs.drain(card, wait=event == "done")  # only done waits: the agent reads its answer
+        if not path.exists():
+            if event != "done":
+                return 0
+            now = status(card)  # an archived ledger's entry is dropped, not completed
+            if now != "done":
+                raise core.CommandError(f"done: card {card} is {now}; complete it by hand")
+            print(f"done: card {card} -> done")
             return 0
-        except (core.CommandError, core.LaunchError, OSError, ValueError, KeyError) as caught:
-            error = caught
-    line = f"{event} card {link['card']}: {' '.join(str(error).split())}"
-    log(line)
-    if event == "done":
-        print(line, file=sys.stderr)
-        return 1
-    return 0
+        if not drained:
+            return 0  # another hook or the flush holds the queue and delivers it
+        # The queue stops at its oldest failure, which may be an earlier event's.
+        error = json.loads(runs.pending(card)[0].read_text()).get("error") or "not delivered"
+        raise core.CommandError(f"{error} (queued for the flush)")
+    except Exception as caught:  # a hook must never crash the agent
+        line = f"{event} card {card}: {' '.join(str(caught).split())}"
+        log(line)
+        if event == "done":
+            print(line, file=sys.stderr)
+            return 1
+        return 0

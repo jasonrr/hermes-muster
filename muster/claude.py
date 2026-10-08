@@ -13,7 +13,7 @@ ASK_NOTIFICATIONS = "permission_prompt|elicitation_dialog|elicitation_url_dialog
 def hook_settings(hook_cmd: list[str]) -> dict:
     """Claude Code settings.json: every hook runs `<hook_cmd> <event>`. Same seven hooks for issue and ad-hoc runs."""
     def hook(event, matcher=None):
-        # A short timeout: a hook waits on hermes, git and gh, and a killed one is retried by the flush.
+        # A short timeout: a hook waits on hermes, git and gh, and a killed one's saved event is delivered by the flush.
         h = {"hooks": [{"type": "command", "command": " ".join(shlex.quote(a) for a in [*hook_cmd, event]), "timeout": 30}]}
         if matcher:
             h["matcher"] = matcher

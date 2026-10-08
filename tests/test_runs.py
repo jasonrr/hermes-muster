@@ -714,5 +714,6 @@ def test_core_recover_dispatches_to_runs(board, run1, monkeypatch):
     monkeypatch.setattr(runs, "recover", lambda card, resend, adopt: seen.append((card, resend, adopt)) or 0)
     monkeypatch.setattr(core, "recover_card", lambda card, resend, adopt: seen.append(("core", card)) or 0)
     assert core.recover(argparse.Namespace(card=CARD, resend=True, adopt=False)) == 0
+    (runs.run_dir("t_issue") / "outbox").mkdir(parents=True)  # an issue card's hook outbox is not a run
     assert core.recover(argparse.Namespace(card="t_issue", resend=False, adopt=False)) == 0
     assert seen == [(CARD, True, False), ("core", "t_issue")]
