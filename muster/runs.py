@@ -547,6 +547,9 @@ def hook(args):
         print("done: an ad-hoc run is finished by its pull request, nothing to report", file=sys.stderr)
         return 1
     if event == "propose":  # run by the agent from its shell: no hook payload on stdin
+        if not (run_dir(card) / "run.json").is_file():
+            print(f"propose card {card}: no run {card}", file=sys.stderr)
+            return 1
         core.prepare_env()
         return events.propose(card, args.url)
     try:

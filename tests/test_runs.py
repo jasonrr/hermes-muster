@@ -2,6 +2,7 @@
 
 import argparse
 import fcntl
+import hashlib
 import io
 import json
 import time
@@ -780,3 +781,26 @@ def test_flush_marks_a_run_closed_only_under_its_launch_lock(board, run1):
     assert "another launch or recover" in runs.log_path().read_text()
     runs.flush()
     assert json.loads((run1 / "run.json").read_text())["closed"] is True
+
+
+def test_an_ad_hoc_proposal_is_a_ledger_comment_and_the_next_ask_carries_it(board, run1, monkeypatch, tmp_path, capsys):
+    design = tmp_path / "design.md"
+    design.write_text("## Approach\nOne propose hook.")
+    monkeypatch.setattr("sys.stdin", io.StringIO(""))  # the agent's shell: no hook payload
+    assert runs.hook(argparse.Namespace(card=CARD, event="propose", url=str(design))) == 0
+    head = f"Proposal v1 {hashlib.sha256(design.read_bytes()).hexdigest()[:12]}"
+    assert capsys.readouterr().out == f"proposal: {head} on ledger {CARD}\n"
+    assert board["comments"][CARD] == [f"{head}\n\n## Approach\nOne propose hook."]
+    assert files(run1, "outbox") == [] and files(run1, "sent") == []  # a comment pings no one: no ack to wait on
+    fire(monkeypatch, "notification", message="", tool_name="AskUserQuestion",
+         tool_input={"questions": [{"question": "Approve?", "options": [{"label": "Yes", "description": "build"}]}]})
+    body = board["bodies"]["t_wait1"]
+    assert "| branch fix/x |" in body and f"# {head}" in body and "- Yes: build" in body
+    assert block_text(board, "t_wait1") == f"Approve?\n{head}: full text on this card and ledger {CARD}.\nReply in Herdr pane w_1:p2."
+
+
+def test_an_ad_hoc_propose_without_a_run_fails_loudly(board, tmp_path, capsys):
+    design = tmp_path / "design.md"
+    design.write_text("plan")
+    assert runs.hook(argparse.Namespace(card="t_nope", event="propose", url=str(design))) == 1
+    assert "no run t_nope" in capsys.readouterr().err and not runs.run_dir("t_nope").exists()
