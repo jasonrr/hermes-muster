@@ -728,3 +728,10 @@ def test_the_issue_query_url_encodes_the_label(tmp_path, monkeypatch):
     monkeypatch.setattr(core, "run", lambda argv: calls.append(argv) or "")
     core.intake(REPO)
     assert "labels=ready%20%26%20go&" in calls[0][-1]
+
+
+def test_a_command_error_never_carries_a_token():
+    """CommandError text reaches card bodies (setup_trouble) and logs: a token gh or git echoes is cut first."""
+    with pytest.raises(core.CommandError) as e:
+        core.run(["sh", "-c", "echo ghp_ABCDEF0123 github_pat_11AB_cd >&2; exit 1", "ghs_inargv9"])
+    assert "ghp_" not in str(e.value) and "github_pat_" not in str(e.value) and "[redacted]" in str(e.value)

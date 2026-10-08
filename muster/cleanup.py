@@ -89,7 +89,6 @@ QUIET = {"zsh", "bash", "sh", "fish", "herdr-reviewr", "herdr-file-view", "lazyg
 # the program or its first argument (`tally mcp`, `pyright-langserver`, `node .../langserver.index.js`),
 # never by a path or word further along. An MCP server named otherwise keeps the workspace (safe side).
 HELPER = re.compile(r"mcp|.+-mcp|mcp-.+|.*langserver.*|.+-language-server|.+-lsp", re.I)
-SECRET = re.compile(r"gh[pousr]_\w+|github_pat_\w+")
 # Agent scaffolding files a tool copies into each new worktree.
 # Only these paths may be deleted as copies, and only when `copied` proves them one.
 SCAFFOLD = re.compile(r"AGENTS\.md|\.agents/.+|\.codex/.+")
@@ -105,7 +104,7 @@ class NotReady(Exception):
 
 def say(line):
     """One log line: whitespace folded, anything shaped like a GitHub token redacted."""
-    print(SECRET.sub("[redacted]", " ".join(str(line).split()))[:400])
+    print(core.SECRET.sub("[redacted]", " ".join(str(line).split()))[:400])
 
 
 def herdr(*args):

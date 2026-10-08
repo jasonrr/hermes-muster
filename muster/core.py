@@ -75,6 +75,9 @@ def board_db():
     return root / "kanban.db" if board == "default" else root / "kanban" / "boards" / board / "kanban.db"
 
 
+SECRET = re.compile(r"gh[pousr]_\w+|github_pat_\w+")  # GitHub token shapes
+
+
 class CommandError(Exception):
     """A command exited non-zero; the message names the command and its exit code."""
 
@@ -89,9 +92,11 @@ def run(argv):
     try:
         result = subprocess.run(argv, capture_output=True, text=True, timeout=300, check=False)
     except subprocess.TimeoutExpired:
-        raise CommandError(f"{' '.join(argv[:3])}: no answer in 300 s") from None
+        raise CommandError(SECRET.sub("[redacted]", f"{' '.join(argv[:3])}: no answer in 300 s")) from None
     if result.returncode != 0:
-        raise CommandError(f"{' '.join(argv[:3])}: exit {result.returncode}\n{result.stderr.strip()}")
+        # Redacted here, where every CommandError is made: its text reaches card bodies and logs.
+        raise CommandError(SECRET.sub("[redacted]", f"{' '.join(argv[:3])}: exit {result.returncode}\n"
+                                                    f"{result.stderr.strip()}"))
     return result.stdout
 
 
