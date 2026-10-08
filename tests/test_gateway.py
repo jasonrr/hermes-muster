@@ -2,6 +2,7 @@ import asyncio
 import fcntl
 import importlib.util
 import sys
+import threading
 import time
 import types
 from pathlib import Path
@@ -265,7 +266,8 @@ def test_permission_answers():
     assert run(one("not now, please")) == {"decision": "deny", "message": "not now, please"}
 
 
-def test_build_answers_carry_the_action():
+def test_build_answers_carry_the_action(monkeypatch):
+    monkeypatch.setattr(gateway, "on_answered", lambda req: None)
     q = {"text": "Merge?", "header": "", "multi": False,
          "options": [{"label": "Merge (squash)", "description": ""}, {"label": "Do nothing", "description": ""}]}
     req = decisions.create("build", "led1", questions=[q], choices=[["Merge (squash)", "Do nothing"]],
@@ -613,3 +615,79 @@ def test_a_delivered_answer_claude_never_confirmed_is_closed_after_an_hour():
     got = decisions.load(old["id"])
     assert (got["status"], got["outcome"]) == ("done", "Answered; muster could not confirm where")
     assert decisions.load(recent["id"])["status"] == "answered"
+
+
+# -- executing build and feedback requests (task 6) -----------------------------------------------
+
+def tap_request(kind, status="answered", **fields):
+    req = decisions.create(kind, "led1", questions=[{"text": "Q", "header": "", "multi": False, "options": []}],
+                           choices=[["A"]], actions=["nothing"], run={"branch": "b"}, **fields)
+    if status != "open":
+        decisions.transition(req["id"], ("open",), status, executing_boot=fields.get("executing_boot"))
+    return req["id"]
+
+
+def test_an_answered_build_or_feedback_request_is_executed_on_the_pool_with_this_boot(monkeypatch):
+    calls = []
+    monkeypatch.setattr(decisions, "execute", lambda rid, boot="": calls.append((rid, boot, threading.current_thread())))
+    q = tap_request("question", "open")
+    b, f = tap_request("build"), tap_request("feedback")
+
+    async def go():
+        for rid in (q, b, f):
+            gateway.on_answered(decisions.load(rid))
+        await until(lambda: len(calls) == 2)
+
+    run(go())
+    assert sorted(c[0] for c in calls) == sorted([b, f]) and all(c[1] == gateway.BOOT for c in calls)
+    assert all(c[2] is not threading.main_thread() for c in calls)
+
+
+def test_a_tap_on_a_build_request_runs_the_action_and_settles_it(hermes):
+    labels = ["Merge (squash)", "Do nothing"]
+    req = decisions.create("build", "led1", run={"branch": "b"}, actions=["merge", "nothing"], choices=[labels],
+                           questions=[{"text": "R", "header": "Build", "multi": False,
+                                       "options": [{"label": x, "description": ""} for x in labels]}])
+
+    async def go():
+        await gateway.answered(req["id"], 0, "Do nothing")
+        await until(lambda: decisions.load(req["id"])["status"] == "done")
+
+    run(go())
+    assert decisions.load(req["id"])["outcome"] == "No action. PR open, not merged."
+
+
+def test_build_free_text_becomes_a_feedback_request_that_the_next_scan_presents(hermes):
+    q = {"text": "R", "header": "Build", "multi": False, "options": [{"label": "Do nothing", "description": ""}]}
+    req = decisions.create("build", "led1", run={"repo": "o/r", "branch": "b", "pane": "p1"}, actions=["nothing"],
+                           choices=[["Do nothing"]], questions=[q], head="h" * 40, base="main", pr="u", cycle=1,
+                           feedback="Fix it.")
+
+    async def go():
+        await gateway.answered(req["id"], 0, "please also add docs")
+        await until(lambda: decisions.load(req["id"])["status"] == "done")
+        await gateway.scan()
+
+    run(go())
+    (fb,) = decisions.for_ledger("led1", "feedback")
+    assert fb["feedback"] == "Fix it.\n\nAdditional instructions from the human:\nplease also add docs"
+    assert fb["choices"] == [["Send as written", "Don't send"]]
+    assert [m["choices"] for m in sent()] == [["Send as written", "Don't send"]]
+
+
+def test_the_first_scan_recovers_executing_requests_of_an_older_boot_once(monkeypatch):
+    rec, ex = [], []
+    monkeypatch.setattr(decisions, "recover", lambda req: rec.append(req["id"]))
+    monkeypatch.setattr(decisions, "execute", lambda rid, boot="": ex.append(rid))
+    old = tap_request("build", "executing", executing_boot="older")
+    mine = tap_request("feedback", "executing", executing_boot=gateway.BOOT)
+    pending = tap_request("feedback", "answered")
+    asked = tap_request("question", "answered")
+
+    async def go():
+        await gateway.scan()
+        await gateway.scan()
+        await until(lambda: rec and ex)
+
+    run(go())
+    assert rec == [old] and ex == [pending] and mine not in rec + ex and asked not in rec + ex

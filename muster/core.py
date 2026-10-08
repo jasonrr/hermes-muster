@@ -105,11 +105,12 @@ class LaunchError(Exception):
     """A launch precondition or readback failed; the message says which."""
 
 
-def run(argv):
-    """Run one command and return its stdout. The only subprocess seam; tests replace it."""
+def run(argv, env=None):
+    """Run one command and return its stdout. The only subprocess seam; tests replace it.
+    `env` replaces the environment when given (the human's own gh login for a merge)."""
     # cron starts a tick every minute; a hung command must not let ticks pile up.
     try:
-        result = subprocess.run(argv, capture_output=True, text=True, timeout=300, check=False)
+        result = subprocess.run(argv, capture_output=True, text=True, timeout=300, check=False, env=env)
     except subprocess.TimeoutExpired:
         raise CommandError(SECRET.sub("[redacted]", f"{' '.join(argv[:3])}: no answer in 300 s")) from None
     if result.returncode != 0:

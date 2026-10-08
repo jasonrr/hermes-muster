@@ -32,7 +32,7 @@ BOOT = secrets.token_hex(4)
 class State:
     def __init__(self):
         self.adapter = self.loop = self.task = self.lock_fd = self.pool = None
-        self.configured = self.warned = self.swept = False
+        self.configured = self.warned = self.swept = self.recovered = False
         self.presenting = set()  # request ids being presented right now
         self.retry = {}  # id -> (monotonic time not before, next delay)
         self.cids = {}  # id -> clarify ids registered in this process
@@ -140,6 +140,15 @@ async def scan():
     await blocking(_touch)
     reqs = await blocking(decisions.open_requests)
     live = {r["id"]: r["status"] for r in reqs}
+    if not S.recovered:  # once per boot: what an earlier boot left half done
+        S.recovered = True
+        for req in reqs:
+            if req["kind"] not in ("build", "feedback"):
+                continue
+            if req["status"] == "executing" and req.get("executing_boot") != BOOT:
+                background(decisions.recover, req)
+            elif req["status"] == "answered":  # tapped, but the gateway went down before it started
+                background(decisions.execute, req["id"], BOOT)
     for req in reqs:
         for n, ids in ((req.get("presented") or {}).get("messages") or {}).items():
             for mid in ids:
@@ -410,9 +419,22 @@ async def answered(rid, n, text):
     on_answered(req)
 
 
+def background(fn, *args):
+    """Run blocking work on the private pool without waiting for it; errors are logged (fn catches its own)."""
+    async def go():
+        try:
+            await blocking(fn, *args)
+        except Exception as caught:  # noqa: BLE001
+            log(f"{getattr(fn, '__name__', fn)}: {caught}")
+
+    _keep(asyncio.ensure_future(go()))
+
+
 def on_answered(req):
-    """The single hook point for an answered request. question and permission need nothing more: the pane's
-    hook picks the answer up. Task 6 adds executing build and feedback actions here."""
+    """An answered request. question and permission need nothing more: the pane's hook picks the answer up.
+    build and feedback are executed here, off the loop; a request they create is presented by the next scan."""
+    if req["kind"] in ("build", "feedback"):
+        background(decisions.execute, req["id"], BOOT)
 
 
 # -- typed replies --------------------------------------------------------------------------------
