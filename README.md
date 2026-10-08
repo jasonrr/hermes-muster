@@ -102,7 +102,7 @@ Set under `plugins.entries.muster.settings`. Required: `approver_login`, `approv
 | `project_status_field` | `Status` | The single-select field to set. |
 | `project_status_value` | `In Progress` | The option it is set to. |
 
-The Project move runs after each launch or recover delivers the brief, and is never retried. Ids are resolved every time. The outcome is one card comment: `project: In Progress`, `project: not in Project #<n>`, `project: field/option not found`, or `project: failed: <error>`. It never blocks a launch. The tick's `gh` login needs the `project` scope: `gh auth refresh -s project`.
+The Project move runs after each launch or recover delivers the brief, and is never retried. Ids are resolved every time. The outcome is one card comment: `project: In Progress`, `project: not in Project #<n>` (or `not in the first 300 items of Project #<n>`: only 300 are searched), `project: field/option not found`, or `project: failed: <error>`. It never blocks a launch. The tick's `gh` login needs the `project` scope: `gh auth refresh -s project`.
 
 ## Per-repo production notes
 

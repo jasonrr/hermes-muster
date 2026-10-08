@@ -38,3 +38,7 @@
 ## automatic approvers (issue #2, 2026-10-08)
 
 - A rule that requires "both labels" from one dict keyed by label name → an entry whose label equals the main label collapses it to one label event, silently weakening the rule; reject the collision in `config.require()`, and reject unknown entry keys so a typo (`lable`) cannot silently fall back to the default.
+
+## Project status (issue #3, 2026-10-08)
+
+- The issue named `gh project field-list` as the source of the ids, but `item-edit --project-id` needs the Project's node id, which only `gh project view` returns → read the real `gh` JSON (`--format json` against a live Project) before writing a fake, not the issue's sketch.

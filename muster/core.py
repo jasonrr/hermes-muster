@@ -489,7 +489,7 @@ def project_status(repo, number):
     url = f"https://github.com/{repo}/issues/{number}".lower()  # a draft item has no url
     item = next((i for i in items if str((i.get("content") or {}).get("url", "")).lower() == url), None)
     if item is None:
-        return f"not in Project #{s['project_number']}"
+        return f"not in {'the first 300 items of ' if len(items) >= 300 else ''}Project #{s['project_number']}"
     run(["gh", "project", "item-edit", "--project-id", project["id"], "--id", item["id"],
          "--field-id", field["id"], "--single-select-option-id", option["id"]])
     return s["project_status_value"]

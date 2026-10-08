@@ -975,3 +975,11 @@ def test_with_no_project_configured_no_gh_project_call_is_made(tmp_path, monkeyp
     monkeypatch.setattr(core, "run", fake_world(tmp_path, calls, project=PROJECT)[0])
     assert tick() == 0
     assert not [c for c in calls if c[:2] == ["gh", "project"]] and not project_comments(calls)
+
+
+def test_an_issue_past_the_300_item_cap_is_not_called_absent(tmp_path, monkeypatch, project_on):
+    calls = []
+    full = {**PROJECT, "item-list": {"items": [{"id": f"I{n}", "content": {"url": f"u{n}"}} for n in range(300)]}}
+    monkeypatch.setattr(core, "run", fake_world(tmp_path, calls, project=full)[0])
+    assert tick() == 0
+    assert project_comments(calls) == ["project: not in the first 300 items of Project #5"]
