@@ -63,8 +63,7 @@ def save(req):
     """Write the request where it belongs: archive/ once its status is terminal."""
     if req["status"] in TERMINAL:
         core.save_json(root() / "archive" / f"{req['id']}.json", req)
-        (root() / f"{req['id']}.json").unlink(missing_ok=True)
-        (root() / f"{req['id']}.lock").unlink(missing_ok=True)
+        (root() / f"{req['id']}.json").unlink(missing_ok=True)  # the lock file stays: a waiter holds its inode
     else:
         core.save_json(root() / f"{req['id']}.json", req)
 

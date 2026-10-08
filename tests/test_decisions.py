@@ -49,7 +49,7 @@ def test_terminal_status_archives_and_load_still_finds_it():
     rid = decisions.create("question", "t_1")["id"]
     decisions.transition(rid, ("open",), "done", outcome="finished")
     root = config.data_dir() / "decisions"
-    assert not (root / f"{rid}.json").exists() and not (root / f"{rid}.lock").exists()
+    assert not (root / f"{rid}.json").exists()
     assert (root / "archive" / f"{rid}.json").is_file()
     req = decisions.load(rid)
     assert req["status"] == "done" and req["audit"][-1]["result"] == "finished"
