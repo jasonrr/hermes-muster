@@ -79,6 +79,10 @@ def expect(card, want, event):
         raise core.CommandError(f"{event}: card {card} read back {got}, wanted {want}")
 
 
+class Unfinished(core.CommandError):
+    """A revised build that is not a finished pull request yet: told to the agent once, never retried."""
+
+
 def where(link):
     """(title prefix, body reference) of a wait card: a muster pane's issue, an ad-hoc run's branch."""
     if "issue" in link:
@@ -378,6 +382,10 @@ def move(event, git_dir, link, detail, key, ask=None, proposal=None, bridged=Fal
             expect(card, "done", event)
         elif now != "done":
             raise core.CommandError(f"done: card {card} is {now}; complete it by hand")
+        else:  # already done: a revision after a send-back goes back to review
+            why = decisions.rereview(card)[1]
+            if why:
+                raise Unfinished(f"done: {why}")
         close_wait(git_dir, event)
         return f"{event}: card {card} {now} -> done"
     return f"{event}: card {card} is {now}, nothing to do"
@@ -396,6 +404,8 @@ def replay(entry):
             move(event, git_dir, link, entry["detail"], entry["key"], entry.get("ask"), entry.get("proposal"),
                  entry.get("bridged", False))
             return
+        except Unfinished:
+            raise
         except (core.CommandError, core.LaunchError, OSError, ValueError, KeyError):
             if attempt:
                 raise
@@ -511,8 +521,9 @@ def hook(args):
         if not drained:
             return 0  # another hook or the flush holds the queue and delivers it
         # The queue stops at its oldest failure, which may be an earlier event's.
-        error = json.loads(runs.pending(card)[0].read_text()).get("error") or "not delivered"
-        raise core.CommandError(f"{error} (queued for the flush)")
+        first = json.loads(runs.pending(card)[0].read_text())
+        error = first.get("error") or "not delivered"
+        raise core.CommandError(error if first.get("unfinished") else f"{error} (queued for the flush)")
     except Exception as caught:  # a hook must never crash the agent
         line = f"{event} card {card}: {' '.join(str(caught).split())}"
         log(line)

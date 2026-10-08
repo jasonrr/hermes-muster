@@ -151,6 +151,42 @@ def run_of(ledger):
     raise core.CommandError(f"no run found for card {ledger}")
 
 
+def rereview(ledger, run=None):
+    """(review card, None) once a verified revision follows a delivered send-back, else (None, why or None).
+
+    The ledger stays `done`. The cheap local check comes first: no delivered send-back, no git or gh call.
+    The review card's idempotency key holds the head, so a repeated call, retry or replay finds it.
+    """
+    from . import runs  # runs imports events, which imports core
+
+    sent = next((r for r in for_ledger(ledger, "feedback") if r["status"] == "done" and r.get("outcome") == "Sent ✓"),
+                None)
+    if not sent:
+        return None, None
+    run = run or run_of(ledger)
+    if not Path(run.get("worktree") or "/nonexistent").is_dir():
+        core.log("decisions", f"rereview {ledger}: worktree gone")
+        return None, "worktree gone"
+    pr, why = runs.verify(run)
+    if why:
+        return None, why
+    head = pr["headRefOid"]
+    if head == sent.get("head"):
+        return None, None
+    cycle = sent.get("cycle", 0) + 1
+    card = json.loads(core.kanban(
+        "create", "--body",
+        f"Revised after a send-back. ledger {ledger} | {pr['url']} | head {head} | review cycle {cycle}\n"
+        + core.PROVENANCE, "--idempotency-key", f"review:{ledger}:{head}", "--created-by", core.CREATED_BY, "--json",
+        "--", f"{run.get('title') or run['repo'] + '/' + run['branch']}: revised, ready for re-review"))
+    if card["status"] == "ready":
+        core.subscribe(card["id"])
+        core.kanban("complete", card["id"], "--summary", f"Revised, ready for re-review: {pr['url']} at {head[:7]}")
+        events.expect(card["id"], "done", "rereview")
+    stale_others(ledger, ("build",), keep=None, why=f"stale: PR moved to {head[:7]}")
+    return card["id"], None
+
+
 # -- recommend: the coordinator's review of a finished build becomes a `build` request ------------------
 
 LABELS = {"merge": "Merge (squash)", "send-back": "Send back", "nothing": "Do nothing"}

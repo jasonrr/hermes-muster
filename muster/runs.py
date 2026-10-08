@@ -38,7 +38,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import bridge, claude, config, core, events
+from . import bridge, claude, config, core, decisions, events
 
 UNACKED_AFTER = 15 * 60
 IDLE_AFTER = 10 * 60
@@ -164,7 +164,12 @@ def deliver(run, entry):
                           entry.get("proposal"), entry.get("bridged", False))
         return wait_card(directory)
     if ledger == "done":
-        return card  # a late hook, or a redelivery after a kill: its completion still needs its ack
+        # A late hook, or a redelivery after a kill: its completion still needs its ack. After a delivered
+        # send-back a verified revision is a new review card, and that card is the one to ack.
+        review, why = decisions.rereview(card, run)
+        if why:
+            log(f"{card} {event}: no re-review yet: {why}")  # a Stop with a dirty tree is normal mid-work
+        return review or card
     pr, why = verify(run)
     if pr:
         return complete(run, pr)
@@ -251,12 +256,20 @@ def drain(card, wait=False):
             entry = read_entry(card, path)
             if entry is None:
                 continue
+            if entry.get("unfinished"):  # the agent was told why once; it reruns done after fixing it
+                path.unlink()
+                log(f"{card} {entry['event']}: dropped after reporting: {entry.get('error')}")
+                continue
             try:
                 ack = deliver(run, entry) if run else events.replay(entry)
                 if ack:
                     core.save_json(directory / "sent" / path.name,
                                    {**entry, "ack": ack, "moved_at": int(time.time()), "error": None})
                 path.unlink()
+            except events.Unfinished as error:
+                note(card, path, entry, error)
+                core.save_json(path, {**entry, "error": " ".join(str(error).split()), "unfinished": True})
+                return True
             except ERRORS as error:
                 note(card, path, entry, error)
                 if entry["event"] == "stop":

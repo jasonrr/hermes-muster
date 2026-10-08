@@ -887,3 +887,96 @@ def test_only_a_question_or_a_permission_prompt_is_bridged():
     assert events.is_bridged("notification", {"notification_type": "elicitation_dialog"}) is False
     assert events.is_bridged("notification", {"tool_name": "AskUserQuestion"}) is True
     assert events.is_bridged("idle", {"tool_name": "AskUserQuestion"}) is False
+
+
+# -- re-review after a send-back (#17 task 7) ------------------------------------------------------
+
+REVIEWED, REVISED = "a" * 40, "b" * 40
+
+
+def verified(monkeypatch, tmp_path, board, pr=None, why=None):
+    """An issue run that is `done`, sent back once at REVIEWED; runs.verify answers from `answer`."""
+    board["cards"]["t_abc123"] = "done"
+    board["comments"]["t_abc123"] = [core.LINKS_PREFIX + json.dumps({
+        "repo": "acme/app", "issue": 397, "branch": "muster/397", "base": "main", "worktree": str(tmp_path),
+        "pane": "p_agent", "title": "Fix it"})]
+    rid = decisions.create("feedback", "t_abc123", head=REVIEWED, cycle=1)["id"]
+    decisions.transition(rid, ("open",), "done", outcome="Sent ✓")
+    answer = {"pr": pr or {"url": PR, "headRefOid": REVISED}, "why": why, "calls": []}
+
+    def verify(run):
+        answer["calls"].append(run)
+        return (None, answer["why"]) if answer["why"] else (answer["pr"], None)
+    monkeypatch.setattr(runs, "verify", verify)
+    return answer
+
+
+def test_an_issue_run_done_after_a_send_back_makes_one_review_card(board, monkeypatch, tmp_path, capsys):
+    answer = verified(monkeypatch, tmp_path, board)
+    open_build = decisions.create("build", "t_abc123", head=REVIEWED)["id"]
+    for _ in range(3):  # a repeated done
+        assert done(PR) == 0
+    runs.drain("t_abc123")
+    assert board["cards"] == {"t_abc123": "done", "t_wait1": "done"}
+    assert len(board["keys"]) == 1 and verbs(board).count("complete") == 1 and verbs(board).count("notify-subscribe") == 1
+    create = next(c for c in board["calls"] if c[4:5] == ["create"])
+    assert create[create.index("--idempotency-key") + 1] == f"review:t_abc123:{REVISED}"
+    assert create[-1] == "Fix it: revised, ready for re-review"
+    assert answer["calls"][0]["worktree"] == str(tmp_path) and answer["calls"][0]["branch"] == "muster/397"
+    assert decisions.load(open_build)["status"] == "stale"
+    assert board["comments"]["t_abc123"][0].startswith(core.LINKS_PREFIX) and len(board["comments"]["t_abc123"]) == 1
+    assert capsys.readouterr().out.count("done: card t_abc123 -> done") == 3
+
+
+def test_a_second_cycle_makes_a_second_card(board, monkeypatch, tmp_path):
+    answer = verified(monkeypatch, tmp_path, board)
+    assert done(PR) == 0
+    rid = decisions.create("feedback", "t_abc123", head=REVISED, cycle=2)["id"]
+    decisions.transition(rid, ("open",), "done", outcome="Sent ✓")
+    answer["pr"] = {"url": PR, "headRefOid": "c" * 40}
+    assert done(PR) == 0
+    assert board["cards"] == {"t_abc123": "done", "t_wait1": "done", "t_wait2": "done"}
+
+
+def test_a_replayed_done_entry_makes_no_second_card(board, monkeypatch, tmp_path):
+    verified(monkeypatch, tmp_path, board)
+    entry = {"event": "done", "detail": PR, "key": "k", "git_dir": str(board["git_dir"]), "link": LINKS}
+    events.replay(entry)
+    events.replay(entry)
+    assert len(board["keys"]) == 1 and verbs(board).count("complete") == 1 and verbs(board).count("notify-subscribe") == 1
+
+
+def test_done_without_a_send_back_neither_verifies_nor_makes_a_card(board, monkeypatch, tmp_path):
+    answer = verified(monkeypatch, tmp_path, board)
+    for req in decisions.for_ledger("t_abc123"):
+        decisions.update(req["id"], outcome="Not sent")
+    assert done(PR) == 0
+    assert answer["calls"] == [] and verbs(board).count("create") == 0
+
+
+def test_the_reviewed_head_again_is_nothing(board, monkeypatch, tmp_path):
+    verified(monkeypatch, tmp_path, board, pr={"url": PR, "headRefOid": REVIEWED})
+    assert done(PR) == 0 and verbs(board).count("create") == 0
+
+
+def test_a_revision_that_does_not_verify_fails_done_with_the_reason_and_leaves_the_queue_clear(
+        board, monkeypatch, tmp_path, capsys):
+    answer = verified(monkeypatch, tmp_path, board, why="some changes are not committed")
+    assert done(PR) == 1
+    err = capsys.readouterr().err
+    assert "some changes are not committed" in err and "queued for the flush" not in err
+    assert board["cards"] == {"t_abc123": "done"}
+    # the flush after the report drops the entry instead of retrying it for ever
+    runs.drain("t_abc123")
+    assert runs.pending("t_abc123") == []
+    # the agent fixes it and reruns done
+    answer["why"] = None
+    assert done(PR) == 0
+    assert board["cards"] == {"t_abc123": "done", "t_wait1": "done"} and runs.pending("t_abc123") == []
+
+
+def test_an_unreported_failure_does_not_hold_a_later_wait(board, monkeypatch, tmp_path):
+    verified(monkeypatch, tmp_path, board, why="some changes are not committed")
+    assert done(PR) == 1
+    assert hook(monkeypatch, "notification") == 0  # drains the flagged entry first, then opens the wait
+    assert board["cards"]["t_wait1"] == "blocked" and runs.pending("t_abc123") == []

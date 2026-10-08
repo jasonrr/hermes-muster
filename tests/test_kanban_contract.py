@@ -176,3 +176,12 @@ def test_a_comment_and_a_create_body_read_back_whole_from_show_json(k):
     shown = json.loads(k("show", card, "--json"))
     assert shown["task"]["body"] == text
     assert shown["comments"][-1]["body"] == text
+
+
+def test_create_with_a_key_on_a_card_that_is_already_done_returns_that_card(k):
+    """decisions.rereview repeats its create for a head it already made a review card for: no second card."""
+    first = new(k, "review:t_x:abc")
+    k("complete", first["id"], "--summary", "s")
+    again = new(k, "review:t_x:abc")
+    assert again["id"] == first["id"] and again["status"] == "done"
+    assert status(k, first["id"]) == "done"
