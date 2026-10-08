@@ -92,7 +92,7 @@ def board_db():
     return root / "kanban.db" if board == "default" else root / "kanban" / "boards" / board / "kanban.db"
 
 
-SECRET = re.compile(r"gh[pousr]_\w+|github_pat_\w+")  # GitHub token shapes
+SECRET = re.compile(r"\b(?:gh[pousr]_\w+|github_pat_\w+)")  # GitHub token shapes
 
 
 class CommandError(Exception):

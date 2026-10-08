@@ -747,3 +747,4 @@ def test_a_command_error_never_carries_a_token():
     with pytest.raises(core.CommandError) as e:
         core.run(["sh", "-c", "echo ghp_ABCDEF0123 github_pat_11AB_cd >&2; exit 1", "ghs_inargv9"])
     assert "ghp_" not in str(e.value) and "github_pat_" not in str(e.value) and "[redacted]" in str(e.value)
+    assert core.SECRET.sub("[redacted]", "highs_x token=ghp_abc") == "highs_x token=[redacted]"
