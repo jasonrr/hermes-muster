@@ -341,7 +341,11 @@ def _merge(req, boot):
     if why:
         fail(rid, why)
         return
-    core.run(["gh", "pr", "merge", req["pr"], "--squash", "--match-head-commit", head], env=env)
+    try:
+        core.run(["gh", "pr", "merge", req["pr"], "--squash", "--match-head-commit", head], env=env)
+        error = None
+    except core.CommandError as caught:  # it may still have merged (a timeout): GitHub's read-back decides
+        error = caught
     state = {}
     for attempt in range(READBACK_TRIES):
         if attempt:
@@ -354,7 +358,9 @@ def _merge(req, boot):
             sha7 = ((state.get("mergeCommit") or {}).get("oid") or head)[:7]
             transition(rid, ("executing",), "done", outcome=f"Merged {sha7} (squash). Not deployed by muster.")
             return
-    if state.get("state") == "OPEN" and state.get("autoMergeRequest"):
+    if error:
+        fail(rid, error)
+    elif state.get("state") == "OPEN" and state.get("autoMergeRequest"):
         transition(rid, ("executing",), "done", outcome="Merge queued; not merged yet")
     else:
         fail(rid, f"merge not confirmed (the pull request reads {state.get('state') or 'unknown'}); check GitHub")

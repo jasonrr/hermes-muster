@@ -169,6 +169,7 @@ class World:
         self.merge_error = self.gh_missing = self.prompt_error = None
         self.merges_on_call = True  # the merge call really merges
         self.delivers = True  # the pane's UserPromptSubmit hook fires
+        self.merges_anyway = False
         self.merge_lag = 0  # readbacks that still show OPEN after the merge call
         self.lagging = None
 
@@ -186,6 +187,8 @@ class World:
             return json.dumps({k: self.pr[k] for k in argv[argv.index("--json") + 1].split(",")})
         if argv[:3] == ["gh", "pr", "merge"]:
             if self.merge_error:
+                if self.merges_anyway:  # gh timed out, but GitHub merged
+                    self.pr.update(state="MERGED", mergeCommit={"oid": "c" * 40})
                 raise core.CommandError(self.merge_error)
             if self.merges_on_call and self.merge_lag:
                 self.lagging = self.merge_lag
@@ -404,6 +407,13 @@ def test_a_merge_that_exits_non_zero_is_failed_and_redacted_never_merged(world):
     decisions.execute(rid)
     status, outcome = state(rid)
     assert status == "failed" and "refused" in outcome and "ghp_" not in outcome and "Merged" not in outcome
+
+
+def test_a_merge_call_that_errors_after_github_merged_reads_back_merged(world):
+    world.merge_error, world.merges_anyway = "gh pr merge: no answer in 300 s", True
+    rid = build(world, {"action": "merge"})
+    decisions.execute(rid)
+    assert state(rid)[0] == "done" and "Merged" in state(rid)[1]
 
 
 def test_the_readback_retries_up_to_three_times(world):
