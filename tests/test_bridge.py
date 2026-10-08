@@ -194,15 +194,44 @@ def test_the_deadline_stales_an_open_request(tmp_path, capsys, monkeypatch):
     monkeypatch.setattr(bridge, "DEADLINE", 0.05)
     bridge.wait(tmp_path, LINK, ASK)
     req = only()
-    assert out(capsys) is None and req["status"] == "stale" and "expired after 24 h" in req["outcome"]
+    assert out(capsys) is None and req["status"] == "stale" and "No answer in 24 h" in req["outcome"]
 
 
-def test_a_permission_prompt_waits_only_ten_minutes_then_leaves_it_to_the_pane(tmp_path, capsys, monkeypatch):
+def test_a_permission_prompt_waits_only_ten_minutes_then_is_denied(tmp_path, capsys, monkeypatch):
     assert bridge.PERMISSION_DEADLINE == 600
     monkeypatch.setattr(bridge, "PERMISSION_DEADLINE", 0.05)  # DEADLINE (questions) stays 24 h
     bridge.wait(tmp_path, LINK, BASH)
     req = only()
-    assert out(capsys) is None and req["status"] == "stale" and "expired after 10 min" in req["outcome"]
+    decision = out(capsys)["hookSpecificOutput"]["decision"]
+    assert decision["behavior"] == "deny" and "10 minutes" in decision["message"]
+    assert req["status"] == "stale" and req["outcome"] == "No answer in 10 min: denied"
+
+
+def gateway_heartbeat(age=0):
+    beat = decisions.root() / ".gateway"
+    beat.parent.mkdir(parents=True, exist_ok=True)
+    beat.touch()
+    os.utime(beat, (time.time() - age, time.time() - age))
+
+
+def test_a_subagent_prompt_is_sent_without_waiting_for_a_blocked_pane(tmp_path, capsys, monkeypatch):
+    # Claude shows a subagent's dialog only after the hook returns, so herdr shows the main agent idle meanwhile
+    monkeypatch.setattr(core, "agent_at", lambda pane: {"agent_status": "idle"})
+    gateway_heartbeat()
+    thread = answer_when_open(answer={"decision": "allow"})
+    bridge.wait(tmp_path, LINK, {**BASH, "agent_id": "a1", "agent_type": "general-purpose"})
+    thread.join()
+    req = only()
+    assert out(capsys)["hookSpecificOutput"]["decision"] == {"behavior": "allow"}
+    assert req["subagent"] == "general-purpose" and "blocked_seen" not in req  # the gateway never reads the pane for it
+    assert req["questions"][0]["text"].startswith("Allow Bash (from the general-purpose subagent)?")
+
+
+def test_a_subagent_prompt_with_the_gateway_down_goes_straight_to_the_pane(tmp_path, capsys):
+    gateway_heartbeat(age=decisions.GATEWAY_FRESH + 5)
+    assert bridge.wait(tmp_path, LINK, {**BASH, "agent_id": "a1", "agent_type": "Explore"}) == 0
+    assert out(capsys) is None and decisions.for_ledger("t_led") == []
+    assert "gateway down" in core.log_path("bridge").read_text()
 
 
 def test_an_answer_that_wins_the_deadline_race_is_used(tmp_path, capsys, monkeypatch):

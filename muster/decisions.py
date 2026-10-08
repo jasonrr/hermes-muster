@@ -21,10 +21,19 @@ from . import config, core, events
 
 OPEN = ("open", "answered", "executing")
 TERMINAL = ("done", "failed", "stale")
+GATEWAY_FRESH = 30  # seconds: the gateway touches decisions/.gateway every scan
 
 
 def root():
     return config.data_dir() / "decisions"
+
+
+def gateway_up():
+    """True while the gateway's scan is touching decisions/.gateway: something will present a new request."""
+    try:
+        return time.time() - (root() / ".gateway").stat().st_mtime < GATEWAY_FRESH
+    except OSError:
+        return False
 
 
 def create(kind, ledger, **fields):

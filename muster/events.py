@@ -91,7 +91,6 @@ def where(link):
     return f"{link['repo']} {link['branch']}", f"branch {link['branch']}"
 
 
-GATEWAY_FRESH = 30  # seconds: the gateway touches decisions/.gateway every scan
 
 
 def is_bridged(event, payload):
@@ -118,8 +117,7 @@ def muster_pages(directory, link, bridged):
     settings = (core.intake_dir() / link["card"] / core.SETTINGS_FILE if "issue" in link
                 else directory / "settings.json")
     try:
-        return ('"PermissionRequest"' in settings.read_text()
-                and time.time() - (decisions.root() / ".gateway").stat().st_mtime < GATEWAY_FRESH)
+        return '"PermissionRequest"' in settings.read_text() and decisions.gateway_up()
     except OSError:
         return False
 

@@ -3,7 +3,12 @@
 Claude Code runs a PermissionRequest hook in parallel with the pane's own dialog, and takes whichever
 answers first. `wait` records the dialog as a request (muster.decisions), polls until the gateway has
 answered it, and prints that answer as the hook's decision. Printing nothing leaves the dialog to decide,
-so every failure path prints nothing: muster never allows on error. `settle` (a PostToolUse hook) finishes
+so every failure path prints nothing: muster never allows on error. A permission prompt nobody answers in
+PERMISSION_DEADLINE gets an explicit deny.
+
+A subagent's prompt (the payload names `agent_id`) differs: Claude shows its dialog only after this hook
+returns (seen live, 2.1.295), so herdr never shows the pane blocked and the pane cannot answer while we wait.
+It is sent only when the gateway is up; otherwise the hook returns at once and the dialog shows. `settle` (a PostToolUse hook) finishes
 the request from what Claude actually did, and `session_end` stales whatever is still waiting.
 
 Files under the run's directory (<git dir> for an issue run, runs/<card> for an ad-hoc run):
@@ -23,7 +28,7 @@ from . import claude, config, core, decisions
 POLL = 1  # s between looks at the request
 ALIVE_EVERY = 5  # s between `alive` writes
 DEADLINE = 86340  # s a question waits: just inside the hook's 86400 s timeout
-PERMISSION_DEADLINE = 600  # s a permission prompt waits for the channel; then the pane alone decides (never allow)
+PERMISSION_DEADLINE = 600  # s a permission prompt waits for the channel; then muster denies it
 BLOCKED_WAIT = 5  # s to wait for herdr to show the pane blocked
 MARKERS = "muster-decisions"
 ASKED = "AskUserQuestion"
@@ -75,12 +80,13 @@ def normalize(question):
             "options": options, "multi": bool(question.get("multiSelect"))}
 
 
-def permission_question(name, tool_input):
+def permission_question(name, tool_input, sub=None):
     shown = core.SECRET.sub("[redacted]", json.dumps(tool_input, indent=2, sort_keys=True))
     options = [{"label": "Allow once", "description": ""}, {"label": "Deny", "description": ""}]
     if len(shown) > SHOWN_MAX:
         shown, options = "(the input is too long to show here; allow in the pane)", options[1:]
-    return {"text": f"Allow {name}?\n{shown}", "header": "Permission", "options": options, "multi": False}
+    who = f" (from the {sub} subagent)" if sub else ""
+    return {"text": f"Allow {name}{who}?\n{shown}", "header": "Permission", "options": options, "multi": False}
 
 
 def wait(directory, link, payload):
@@ -89,6 +95,10 @@ def wait(directory, link, payload):
     try:
         core.prepare_env()
         name, tool_input = payload.get("tool_name"), payload.get("tool_input")
+        sub = (payload.get("agent_type") or "worker") if payload.get("agent_id") else None
+        if sub and not decisions.gateway_up():
+            log(f"permission {link.get('card')}: gateway down; the {sub} subagent's dialog is left to the pane")
+            return 0  # its dialog shows only once this hook returns: holding it would hide the prompt
         pin = None
         if name == ASKED:
             questions = [normalize(q) for q in claude.ask(payload) or []]
@@ -102,7 +112,7 @@ def wait(directory, link, payload):
             with_pin.unlink(missing_ok=True)
             kind = "question"
         else:
-            questions, kind = [permission_question(name, tool_input)], "permission"
+            questions, kind = [permission_question(name, tool_input, sub)], "permission"
         try:
             wait_card = (directory / core.WAIT_KIND).read_text().strip() or None
         except OSError:
@@ -113,14 +123,15 @@ def wait(directory, link, payload):
         rid = decisions.create(
             kind, link["card"], questions=questions, choices=[labels(q["options"]) for q in questions],
             tool={"name": name, "input_sha": fingerprint(name, tool_input)}, proposal=pin, wait=wait_card,
-            run=run, alive=time.time())["id"]
+            run=run, alive=time.time(), **({"subagent": sub} if sub else {}))["id"]
         markers = directory / MARKERS
         markers.mkdir(parents=True, exist_ok=True)
         (markers / rid).write_text("")
-        if not blocked(run["pane"]):
-            decisions.transition(rid, ("open",), "stale", outcome="answered before muster could ask")
-            return 0
-        decisions.update(rid, blocked_seen=True)  # from here on, the pane leaving `blocked` means it was answered there
+        if not sub:
+            if not blocked(run["pane"]):
+                decisions.transition(rid, ("open",), "stale", outcome="answered before muster could ask")
+                return 0
+            decisions.update(rid, blocked_seen=True)  # from here on, the pane leaving `blocked` means it was answered there
         poll(rid, tool_input)
     except Exception as caught:  # noqa: BLE001 - a hook never fails the agent, and never allows on error
         log(f"permission {link.get('card')}: {' '.join(str(caught).split())}")
@@ -154,10 +165,14 @@ def poll(rid, tool_input):
             req = decisions.load(rid)
         except FileNotFoundError:
             return
-        limit, after = (PERMISSION_DEADLINE, "10 min") if req["kind"] == "permission" else (DEADLINE, "24 h")
-        if req["status"] == "open" and time.monotonic() - start >= limit:
-            req, ok = decisions.transition(rid, ("open",), "stale", outcome=f"expired after {after}; answer in the pane")
+        permission = req["kind"] == "permission"
+        if req["status"] == "open" and time.monotonic() - start >= (PERMISSION_DEADLINE if permission else DEADLINE):
+            outcome = "No answer in 10 min: denied" if permission else "No answer in 24 h; answer in the pane"
+            req, ok = decisions.transition(rid, ("open",), "stale", outcome=outcome)
             if ok:
+                if permission:
+                    emit({"behavior": "deny", "message": "No answer from the human within 10 minutes, so muster denied "
+                          "this. Ask again, or wait for the human, if you still need it."})
                 return
         if req["status"] == "answered":
             return deliver(req, tool_input)
@@ -191,8 +206,12 @@ def deliver(req, tool_input):
     if chosen is None:
         log(f"request {req['id']}: answer not usable, left to the pane")
         return
-    print(json.dumps({"hookSpecificOutput": {"hookEventName": "PermissionRequest", "decision": chosen}}), flush=True)
+    emit(chosen)
     decisions.update(req["id"], delivered_by_hook=True)
+
+
+def emit(chosen):
+    print(json.dumps({"hookSpecificOutput": {"hookEventName": "PermissionRequest", "decision": chosen}}), flush=True)
 
 
 # -- what Claude did ------------------------------------------------------------------------------
