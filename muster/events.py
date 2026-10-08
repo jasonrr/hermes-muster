@@ -45,7 +45,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import bridge, claude, config, core
+from . import bridge, claude, config, core, decisions
 
 STALE_CLAIM = 120  # s: an empty wait marker this old is from a hook killed at its 30 s timeout
 PR_URL = re.compile(r"https://github\.com/([\w.-]+/[\w.-]+)/pull/\d+")
@@ -87,7 +87,38 @@ def where(link):
     return f"{link['repo']} {link['branch']}", f"branch {link['branch']}"
 
 
-def open_wait(git_dir, link, detail, key, ask=None, proposal=None):
+GATEWAY_FRESH = 30  # seconds: the gateway touches decisions/.gateway every scan
+
+
+def is_bridged(event, payload):
+    """True when this hook event is a dialog the bridge can answer from the channel: an AskUserQuestion, or a
+    permission prompt. Saved on the outbox entry so a redelivery decides the same way."""
+    return event == "notification" and (payload.get("tool_name") == "AskUserQuestion"
+                                        or payload.get("notification_type") == "permission_prompt")
+
+
+def wake_only(directory, link, bridged):
+    """True when a wait card may subscribe `wake` (no Hermes passive ping) because muster pages the human itself.
+
+    A `wake` subscription is silent to the human, so every condition guards against a page nobody sends:
+    - bridged: only a question or permission prompt gets a decision request (and its Telegram message);
+      idle, reconcile and other waits have none, so Hermes must ping them.
+    - telegram: the gateway's buttons and replies exist only there.
+    - the pane carries the PermissionRequest hook: an older pane never creates the request.
+    - decisions/.gateway is fresh: with the gateway down nothing would deliver the request.
+    """
+    if not bridged or config.settings["notify_platform"] != "telegram":
+        return False
+    settings = (core.intake_dir() / link["card"] / core.SETTINGS_FILE if "issue" in link
+                else directory / "settings.json")
+    try:
+        return ('"PermissionRequest"' in settings.read_text()
+                and time.time() - (decisions.root() / ".gateway").stat().st_mtime < GATEWAY_FRESH)
+    except OSError:
+        return False
+
+
+def open_wait(git_dir, link, detail, key, ask=None, proposal=None, bridged=False):
     ledger = status(link["card"])
     if ledger not in ("ready", "blocked", "done"):  # done: its pull request is in review, questions still page
         return f"notification: ledger {link['card']} is {ledger}, no wait card"
@@ -100,13 +131,13 @@ def open_wait(git_dir, link, detail, key, ask=None, proposal=None):
             card = path.read_text().strip()
             stale = not card and time.time() - path.stat().st_mtime > STALE_CLAIM
         except FileNotFoundError:  # another hook just reclaimed it
-            return open_wait(git_dir, link, detail, key, ask, proposal)
+            return open_wait(git_dir, link, detail, key, ask, proposal, bridged)
         if stale:
             # The hook that claimed it was killed (hook timeout) before recording a card.
             # ponytail: two hooks reclaiming the same stale marker within milliseconds can open two wait cards;
             # rename-to-unique and re-check if that is ever seen.
             path.unlink(missing_ok=True)
-            return open_wait(git_dir, link, detail, key, ask, proposal)
+            return open_wait(git_dir, link, detail, key, ask, proposal, bridged)
         # An empty marker is another hook mid-create. A recorded card still ready is one whose
         # subscribe or block failed: finish it rather than open a second.
         if not card or status(card) != "ready":
@@ -131,7 +162,7 @@ def open_wait(git_dir, link, detail, key, ask=None, proposal=None):
         finally:
             os.close(claim)
     if status(card) == "ready":
-        core.subscribe(card)
+        core.subscribe(card, "wake" if wake_only(git_dir, link, bridged or bool(ask)) else "notify+wake")
         # "--": the agent's question may start with "--" (e.g. "--kind=..."); argparse would read it as a flag.
         seen = (f"\n{heading(proposal)}: full text on this card and ledger {link['card']}." if proposal else "")
         core.kanban("block", "--kind", "needs_input", "--", card,
@@ -211,7 +242,7 @@ def enqueue(card, event, detail, payload, pin=None, **issue):
     request its pin (gate), so a revision made later never changes what this question was asked about."""
     from . import runs  # lazy: runs imports events at module level
     questions = claude.ask(payload) if event == "notification" else None
-    return runs.enqueue(card, event, detail, ask=questions, proposal=pin, **issue)
+    return runs.enqueue(card, event, detail, ask=questions, proposal=pin, bridged=is_bridged(event, payload), **issue)
 
 
 def gate(card, directory, event, payload, command):
@@ -322,12 +353,12 @@ def propose(card, file, **issue):
     return 0
 
 
-def move(event, git_dir, link, detail, key, ask=None, proposal=None):
+def move(event, git_dir, link, detail, key, ask=None, proposal=None, bridged=False):
     """This event's moves, each read back. Returns a report line; raises when a move did not land."""
     if event == "proposal":
         return post_proposal(link["card"], proposal)
     if event == "notification":
-        return open_wait(git_dir, link, detail, key, ask, proposal)
+        return open_wait(git_dir, link, detail, key, ask, proposal, bridged)
     if event == "prompt":
         return close_wait(git_dir, event)
     card = link["card"]
@@ -362,7 +393,8 @@ def replay(entry):
         return  # the worktree is gone: no agent is left waiting
     for attempt in range(2):
         try:
-            move(event, git_dir, link, entry["detail"], entry["key"], entry.get("ask"), entry.get("proposal"))
+            move(event, git_dir, link, entry["detail"], entry["key"], entry.get("ask"), entry.get("proposal"),
+                 entry.get("bridged", False))
             return
         except (core.CommandError, core.LaunchError, OSError, ValueError, KeyError):
             if attempt:

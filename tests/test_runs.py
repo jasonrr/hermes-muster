@@ -25,7 +25,7 @@ PR = {"url": "https://github.com/o/r/pull/7", "state": "OPEN", "headRefOid": "ab
 @pytest.fixture
 def board(tmp_path, monkeypatch):
     """hermes, git, gh and herdr as the run sees them; hermes moves follow tests/test_kanban_contract.py."""
-    state = {"cards": {}, "blocks": {}, "keys": {}, "calls": [], "fail": {}, "down": False, "events": {},
+    state = {"cards": {}, "blocks": {}, "keys": {}, "calls": [], "fail": {}, "down": False, "mode": "notify+wake", "events": {},
              "seq": 0, "cursor": 0, "head": "abc", "dirty": "", "prs": [], "gh_fail": 0, "agent": "working", "agent_seq": 1,
              "created_at": {}, "kinds": {}, "comments": {}, "bodies": {}}
     monkeypatch.setattr(runs, "last_event", lambda card: state["events"].get(card, 0))
@@ -67,7 +67,7 @@ def board(tmp_path, monkeypatch):
         if verb == "notify-list":
             if cards[argv[5]] == "archived" or state.get("no_subs"):
                 return "[]"  # the notifier drops a card's subscriptions on archive
-            return json.dumps([{"chat_id": "4242", "user_id": "4242", "chat_type": "dm", "notifier_profile": "default", "delivery_mode": "notify+wake",
+            return json.dumps([{"chat_id": "4242", "user_id": "4242", "chat_type": "dm", "notifier_profile": "default", "delivery_mode": state["mode"],
                                 "last_event_id": state["cursor"], "last_ping_event_id": state["cursor"]}])
         if verb == "create":
             key = argv[argv.index("--idempotency-key") + 1]
@@ -81,6 +81,7 @@ def board(tmp_path, monkeypatch):
             state["comments"].setdefault(argv[-2], []).append(text)
             return ""
         if verb == "notify-subscribe":
+            state["mode"] = argv[argv.index("--delivery-mode") + 1]
             return ""
         # unblock: only a recover, once, of a launch-failure block (see the contract test)
         assert verb in ("block", "archive", "complete", "unblock"), argv
@@ -851,3 +852,18 @@ def test_an_ad_hoc_approval_request_whose_outbox_save_fails_is_denied_and_keeps_
     assert "stays saved" in decision["permissionDecisionReason"]
     assert "t_wait1" not in board["cards"] and files(run1, "outbox") == []
     assert (runs.run_dir(CARD) / "proposals" / "armed").is_file()
+
+
+def test_wake_subs_need_no_ping_but_notify_wake_subs_do(monkeypatch):
+    monkeypatch.setattr(runs, "last_event", lambda card: 5)
+    monkeypatch.setattr(runs.events, "status", lambda card: "blocked")
+
+    def acked(*subs):
+        monkeypatch.setattr(core, "kanban", lambda *a: json.dumps(list(subs)))
+        return runs.acked("t_x")
+    wake = {"delivery_mode": "wake", "last_event_id": 5, "last_ping_event_id": 0}
+    both = {"delivery_mode": "notify+wake", "last_event_id": 5, "last_ping_event_id": 5}
+    unpinged = {"delivery_mode": "notify+wake", "last_event_id": 5, "last_ping_event_id": 0}
+    assert acked(wake) and acked(both) and acked(wake, both)
+    assert not acked(unpinged) and not acked(wake, unpinged)
+    assert not acked({**wake, "last_event_id": 4})

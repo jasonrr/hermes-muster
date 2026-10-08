@@ -9,7 +9,9 @@ import time
 
 import pytest
 
+import muster.config as config
 import muster.core as core
+import muster.decisions as decisions
 import muster.events as events
 import muster.runs as runs
 
@@ -25,7 +27,7 @@ def board(tmp_path, monkeypatch):
     git_dir.mkdir()
     (git_dir / core.CARD_FILE).write_text(json.dumps(LINKS))
     state = {"cards": {"t_abc123": "ready"}, "blocks": {}, "keys": {}, "calls": [], "flaky": 0, "git_dir": git_dir,
-             "fail": {}, "on_create": None, "head": "muster/397", "comments": {}, "bodies": {}}
+             "fail": {}, "mode": "notify+wake", "on_create": None, "head": "muster/397", "comments": {}, "bodies": {}}
 
     def fake_run(argv):
         state["calls"].append(argv)
@@ -41,7 +43,7 @@ def board(tmp_path, monkeypatch):
             return json.dumps({"task": {"id": argv[5], "status": cards[argv[5]], "body": state["bodies"].get(argv[5])},
                                "comments": [{"author": "default", "body": b} for b in state["comments"].get(argv[5], [])]})
         if verb == "notify-list":
-            return json.dumps([{"chat_id": "4242", "user_id": "4242", "chat_type": "dm", "notifier_profile": "default", "delivery_mode": "notify+wake"}])
+            return json.dumps([{"chat_id": "4242", "user_id": "4242", "chat_type": "dm", "notifier_profile": "default", "delivery_mode": state["mode"]}])
         if state["flaky"]:
             state["flaky"] -= 1
             raise core.CommandError("hermes kanban --board: exit 1\ndatabase is locked")
@@ -58,6 +60,7 @@ def board(tmp_path, monkeypatch):
             state["bodies"].setdefault(card, argv[argv.index("--body") + 1])
             return json.dumps({"id": card, "status": cards[card]})
         if verb == "notify-subscribe":
+            state["mode"] = argv[argv.index("--delivery-mode") + 1]
             return ""
         if verb == "comment":
             assert argv[5] == "--", argv  # the text is the agent's: it may start with "--"
@@ -817,3 +820,70 @@ def test_an_approval_ask_writes_the_armed_pin(board, monkeypatch):
     approval = {"tool_name": "AskUserQuestion", "tool_input": {"questions": [{"question": "Ok?", "header": "Approval", "options": []}]}}
     hook(monkeypatch, "notification", **approval)
     assert json.loads((board["git_dir"] / core.PIN_FILE).read_text()) == {"version": 3, "sha": "bbb"}
+
+
+# --- wait mode: wake only when muster itself can deliver the page (#17 task 4) ---
+
+def bridge_ready(board, link=LINKS, gateway_age=0, hook_key="PermissionRequest"):
+    """Everything wake mode needs: the pane's settings carry the hook, the gateway touched its heartbeat."""
+    if "issue" in link:
+        settings = core.intake_dir() / link["card"] / core.SETTINGS_FILE
+    else:
+        settings = board["git_dir"] / "settings.json"
+    settings.parent.mkdir(parents=True, exist_ok=True)
+    settings.write_text(json.dumps({"hooks": {hook_key: []}}))
+    beat = decisions.root() / ".gateway"
+    beat.parent.mkdir(parents=True, exist_ok=True)
+    beat.touch()
+    os.utime(beat, (time.time() - gateway_age,) * 2)
+
+
+def wait_mode(board):
+    return board["mode"]
+
+
+@pytest.mark.parametrize("ad_hoc", [False, True])
+def test_a_bridged_wait_with_everything_in_place_subscribes_wake(board, ad_hoc):
+    link = {k: v for k, v in LINKS.items() if k != "issue"} | {"branch": "fix/x"} if ad_hoc else LINKS
+    bridge_ready(board, link)
+    events.open_wait(board["git_dir"], link, "why", "k1", bridged=True)
+    assert wait_mode(board) == "wake"
+
+
+def test_an_ask_wakes_without_the_bridged_flag(board):
+    bridge_ready(board)
+    events.open_wait(board["git_dir"], LINKS, "why", "k1", [QUESTION])
+    assert wait_mode(board) == "wake"
+
+
+@pytest.mark.parametrize("spoil", ["not bridged", "platform", "no hook", "no settings", "stale gateway", "no gateway"])
+def test_each_missing_condition_keeps_notify_wake(board, monkeypatch, spoil):
+    bridge_ready(board, gateway_age=60 if spoil == "stale gateway" else 0,
+                 hook_key="Notification" if spoil == "no hook" else "PermissionRequest")
+    if spoil == "platform":
+        monkeypatch.setitem(config.settings, "notify_platform", "slack")
+    if spoil == "no settings":
+        (core.intake_dir() / LINKS["card"] / core.SETTINGS_FILE).unlink()
+    if spoil == "no gateway":
+        (decisions.root() / ".gateway").unlink()
+    events.open_wait(board["git_dir"], LINKS, "why", "k1", bridged=spoil != "not bridged")
+    assert wait_mode(board) == "notify+wake"
+
+
+def test_a_wait_without_a_bridged_question_stays_notify_wake_with_everything_in_place(board):
+    """idle, reconcile and every other wait call open_wait without bridged."""
+    bridge_ready(board)
+    events.open_wait(board["git_dir"], LINKS, "idle", "k1")
+    assert wait_mode(board) == "notify+wake"
+
+
+def test_a_permission_prompt_hook_reaches_open_wait_as_bridged(board, monkeypatch):
+    bridge_ready(board)
+    assert hook(monkeypatch, "notification", notification_type="permission_prompt") == 0
+    assert wait_mode(board) == "wake"
+
+
+def test_only_a_question_or_a_permission_prompt_is_bridged():
+    assert events.is_bridged("notification", {"notification_type": "elicitation_dialog"}) is False
+    assert events.is_bridged("notification", {"tool_name": "AskUserQuestion"}) is True
+    assert events.is_bridged("idle", {"tool_name": "AskUserQuestion"}) is False

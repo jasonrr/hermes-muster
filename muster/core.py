@@ -311,16 +311,17 @@ def notify_target():
     return {"chat_id": chat, "user_id": chat, "chat_type": "dm"}
 
 
-def subscribe(card):
-    """notify+wake: the gateway pings the human, then queues a fresh agent turn, for every card event."""
+def subscribe(card, mode="notify+wake"):
+    """notify+wake: the gateway pings the human, then queues a fresh agent turn, for every card event.
+    wake: only the agent turn, no passive ping (muster's own gateway pages the human instead)."""
     target = notify_target()
     kanban("notify-subscribe", card, "--platform", config.settings["notify_platform"], "--chat-id", target["chat_id"],
            "--user-id", target["user_id"], "--chat-type", target["chat_type"],
-           "--notifier-profile", "default", "--delivery-mode", "notify+wake")
+           "--notifier-profile", "default", "--delivery-mode", mode)
     subs = json.loads(kanban("notify-list", card, "--json"))
-    want = {**target, "notifier_profile": "default", "delivery_mode": "notify+wake"}
+    want = {**target, "notifier_profile": "default", "delivery_mode": mode}
     if not any(all(s.get(k) == v for k, v in want.items()) for s in subs):
-        raise LaunchError("the notify+wake subscription did not read back")
+        raise LaunchError(f"the {mode} subscription did not read back")
 
 
 def agent_settings():
