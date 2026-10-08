@@ -137,9 +137,10 @@ def test_an_open_request_is_presented_once(hermes):
     (msg,) = sent()
     assert (msg["chat"], msg["cid"], msg["session"], msg["choices"]) == (
         DM, f"mu{req['id']}q0", f"muster:{req['id']}", ["Alpha", "Beta"])
-    for part in ("o/r #7", "Which?", "1. Alpha - about Alpha", "Proposal v2 abcdef12", "full text on ledger led1",
-                 "Herdr pane p1 (optional)"):
+    for part in ("o/r #7", "Which?", "• Alpha: about Alpha", "Proposal v2 abcdef12", "full text on ledger led1",
+                 "Herdr pane p1 (optional)", "reply to this message"):
         assert part in msg["text"]
+    assert "1. Alpha" not in msg["text"]  # Hermes numbers the options under the text, matching its buttons
     saved = decisions.load(req["id"])
     assert saved["presented"] == {"boot": gateway.BOOT, "messages": {"0": [msg["mid"]]}}
     assert f"mu{req['id']}q0" in hermes._entries
@@ -225,12 +226,47 @@ def test_oversize_text_is_capped_and_points_to_the_wait_card():
     assert "Full options on wait card w1" in text and "Herdr pane p1 (optional)" in text
 
 
+def test_a_description_that_repeats_its_label_is_not_shown():
+    ask(labels=("Skip", "No phrase"), questions=[{"text": "Phrase?", "header": "", "multi": False, "options": [
+        {"label": "Skip", "description": "Skip"}, {"label": "No phrase", "description": " No phrase "}]}])
+    run(gateway.scan())
+    assert "•" not in sent()[0]["text"]
+
+
+def test_other_sends_a_force_reply_bound_to_the_question(hermes):
+    req, mid = presented(hermes)
+    app = fh.Application()
+    gateway.S.bot = app.bot
+    run(gateway.guard(fh.update(4242, 4242, data=f"cl:mu{req['id']}q0:other"), None))
+    (prompt,) = app.bot.sent
+    assert isinstance(prompt["markup"], fh.ForceReply) and prompt["markup"].selective
+    assert "reply to this message" in prompt["text"] and "tg://user?id=4242" in prompt["text"]
+    assert decisions.load(req["id"])["presented"]["replies"] == {"0": [str(prompt["mid"])]}
+    hermes.mark_awaiting_text(f"mu{req['id']}q0")  # what Hermes's own handler does next
+
+    async def go():
+        got = await gateway.on_dispatch(event=fh.event("typed words", "4242", "4242", reply=str(prompt["mid"])))
+        await until(lambda: decisions.load(req["id"])["status"] == "answered")
+        return got
+
+    assert run(go()) == {"action": "skip"}
+    assert decisions.load(req["id"])["answer"] == {"Which?": "typed words"}
+
+
+def test_a_plain_tap_sends_no_force_reply(hermes):
+    req, _ = presented(hermes)
+    app = fh.Application()
+    gateway.S.bot = app.bot
+    run(gateway.guard(fh.update(4242, 4242, data=f"cl:mu{req['id']}q0:1"), None))
+    assert app.bot.sent == []
+
+
 def test_long_descriptions_are_cut_first():
     ask(labels=("A", "B"), questions=[{"text": "Which?", "header": "", "multi": False, "options": [
         {"label": "A", "description": "d" * 2000}, {"label": "B", "description": "e" * 2000}]}])
     run(gateway.scan())
     text = sent()[0]["text"]
-    assert len(text) <= gateway.CAP and "1. A" in text and "d" * 100 not in text and "wait card w1" in text
+    assert len(text) <= gateway.CAP and "d" * 100 not in text and "wait card w1" in text
 
 
 # -- 5. answers -------------------------------------------------------------------------------------

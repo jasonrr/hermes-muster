@@ -86,6 +86,7 @@ class CallbackQueryHandler:
 class Application:
     def __init__(self):
         self.handlers = []  # (handler, group)
+        self.bot = Bot()
 
     def add_handler(self, handler, group=0):
         self.handlers.append((handler, group))
@@ -117,18 +118,36 @@ class Adapter:
         return SimpleNamespace(success=True, message_id=message_id, error=None)
 
 
+class ForceReply:
+    def __init__(self, selective=None, input_field_placeholder=None):
+        self.selective, self.input_field_placeholder = selective, input_field_placeholder
+
+
+class Bot:
+    """PTB's bot as the Telegram app carries it: send_message returns the Message."""
+
+    def __init__(self):
+        self.sent, self._n = [], 900
+
+    async def send_message(self, chat_id, text, parse_mode=None, reply_markup=None):
+        self._n += 1
+        self.sent.append({"chat": chat_id, "text": text, "markup": reply_markup, "mid": self._n})
+        return SimpleNamespace(message_id=self._n)
+
+
 class Query:
-    def __init__(self, user, chat):
-        self.from_user = SimpleNamespace(id=user)
+    def __init__(self, user, chat, data="cl:mu0q0:0"):
+        self.from_user = SimpleNamespace(id=user, mention_html=lambda: f'<a href="tg://user?id={user}">J</a>')
         self.message = SimpleNamespace(chat=SimpleNamespace(id=chat))
+        self.data = data
         self.answers = []
 
     async def answer(self, text=None):
         self.answers.append(text)
 
 
-def update(user, chat):
-    return SimpleNamespace(callback_query=Query(user, chat))
+def update(user, chat, data="cl:mu0q0:0"):
+    return SimpleNamespace(callback_query=Query(user, chat, data))
 
 
 def event(text, user, chat, reply=None, platform="telegram"):
@@ -145,7 +164,7 @@ def install(monkeypatch):
     ext = types.ModuleType("telegram.ext")
     ext.CallbackQueryHandler, ext.ApplicationHandlerStop = CallbackQueryHandler, ApplicationHandlerStop
     telegram = types.ModuleType("telegram")
-    telegram.ext = ext
+    telegram.ext, telegram.ForceReply = ext, ForceReply
     for name, mod in (("tools", tools), ("tools.clarify_gateway", clarify), ("telegram", telegram),
                       ("telegram.ext", ext)):
         monkeypatch.setitem(sys.modules, name, mod)

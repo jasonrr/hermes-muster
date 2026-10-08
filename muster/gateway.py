@@ -32,7 +32,7 @@ BOOT = secrets.token_hex(4)
 
 class State:
     def __init__(self):
-        self.adapter = self.loop = self.task = self.lock_fd = self.pool = None
+        self.adapter = self.loop = self.task = self.lock_fd = self.pool = self.bot = None
         self.configured = self.warned = self.swept = self.recovered = False
         self.presenting = set()  # request ids being presented right now
         self.retry = {}  # id -> (monotonic time not before, next delay)
@@ -74,6 +74,7 @@ def telegram_factory(app, adapter):
     core.prepare_env()
     app.add_handler(CallbackQueryHandler(guard, pattern=r"^cl:mu"), -1)
     S.adapter, S.loop = adapter, asyncio.get_running_loop()
+    S.bot = getattr(app, "bot", None)  # Telegram's own bot, for the ForceReply after Other
     s = config.settings
     if s["notify_chat_id"] and not s["notify_user_id"] and not S.warned:
         S.warned = True
@@ -112,11 +113,43 @@ async def guard(update, context):
         log(f"guard error, refused: {caught}")
         ok = False
     if ok:
-        return
+        if str(getattr(query, "data", "")).endswith(":other"):
+            await ask_for_text(query)
+        return  # Hermes's own clarify handler (group 0) records the tap
     log(f"refused a tap from user {getattr(query.from_user, 'id', '?')} in chat "
         f"{getattr(getattr(query.message, 'chat', None), 'id', '?')}")
     await query.answer("Not authorized")
     raise ApplicationHandlerStop
+
+
+async def ask_for_text(query):
+    """After Other: a ForceReply naming the human, bound to the same question. In a group Telegram delivers a
+    message to the bot only when it replies to the bot (privacy mode), and the Other button opens no reply box."""
+    from telegram import ForceReply
+
+    found = re.fullmatch(r"cl:mu([0-9a-f]+)q(\d+):other", str(query.data))
+    if not found or S.bot is None:
+        return
+    rid, n = found.group(1), int(found.group(2))
+    try:
+        msg = await S.bot.send_message(
+            chat_id=query.message.chat.id, parse_mode="HTML",
+            text=f"{query.from_user.mention_html()}: reply to this message with your answer.",
+            reply_markup=ForceReply(selective=True, input_field_placeholder="Your answer"))
+        mid = str(msg.message_id)
+        S.messages[mid] = (rid, n)
+        await blocking(add_reply, rid, n, mid)
+    except Exception as caught:  # noqa: BLE001 - the question still takes a reply to its own message
+        log(f"request {rid}: reply prompt: {caught}")
+
+
+def add_reply(rid, n, mid):
+    """Keep a reply prompt's id with the request, so a reply to it still binds after a restart."""
+    req = decisions.load(rid)
+    presented = req.get("presented") or {}
+    replies = presented.get("replies") or {}
+    replies.setdefault(str(n), []).append(mid)
+    decisions.update(rid, presented={**presented, "replies": replies})
 
 
 # -- the scan -------------------------------------------------------------------------------------
@@ -155,7 +188,8 @@ async def scan():
             elif req["status"] == "answered":  # tapped, but the gateway went down before it started
                 background(decisions.execute, req["id"], BOOT)
     for req in reqs:
-        for n, ids in ((req.get("presented") or {}).get("messages") or {}).items():
+        presented = req.get("presented") or {}
+        for n, ids in [*(presented.get("messages") or {}).items(), *(presented.get("replies") or {}).items()]:
             for mid in ids:
                 S.messages[str(mid)] = (req["id"], int(n))
         if (req.get("presented") or {}).get("messages"):
@@ -244,8 +278,12 @@ def render(req, n):
     card = req.get("wait") or req["ledger"]
     head = [title]
     tail = []
-    if q.get("multi"):
+    if req["kind"] == "permission":
+        tail.append("To deny with a message to the agent, reply to this message.")
+    elif q.get("multi"):
         tail.append("Several: tap Other and type the numbers, e.g. 1,3")
+    else:
+        tail.append("Your own words: tap Other, or reply to this message.")
     if req.get("proposal"):
         p = req["proposal"]
         tail.append(f"Proposal v{p.get('version')} {str(p.get('sha', ''))[:8]} (full text on ledger {req['ledger']})")
@@ -253,9 +291,10 @@ def render(req, n):
         tail.append(f"Herdr pane {run['pane']} (optional)")
 
     def build(described, body):
-        options = [f"{i}. {o['label']}" + (f" - {o['description']}" if described and o.get("description") else "")
-                   for i, o in enumerate(q["options"], 1)]
-        return "\n\n".join([*head, body, *(["\n".join(options)] if options else []), *tail])
+        # Hermes lists the numbered options under the text, matching its buttons: only add what a label lacks.
+        notes = [f"• {o['label']}: {o['description']}" for o in q["options"]
+                 if described and o.get("description") and o["description"].strip() != o["label"].strip()]
+        return "\n\n".join([*head, body, *(["\n".join(notes)] if notes else []), *tail])
 
     text = build(True, q["text"])
     if len(text) > CAP:
@@ -338,7 +377,9 @@ async def settle_edit(rid):
         S.watch.discard(rid)
         return
     chat = core.notify_target()["chat_id"]
-    newest = [ids[-1] for ids in ((req.get("presented") or {}).get("messages") or {}).values() if ids]
+    presented = req.get("presented") or {}
+    newest = [ids[-1] for ids in (presented.get("messages") or {}).values() if ids]
+    newest += [mid for ids in (presented.get("replies") or {}).values() for mid in ids]  # reply prompts too
     ok = all([await edit(chat, mid, req.get("outcome") or req["status"]) for mid in newest])
     if ok or rid in S.edit_failed:
         S.watch.discard(rid)
