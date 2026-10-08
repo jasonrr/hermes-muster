@@ -134,8 +134,8 @@ def run_of(ledger):
     run_dir = runs.run_dir(ledger)
     if (run_dir / "run.json").is_file():
         run = runs.load(ledger)
-        return {"repo": run["repo"], "branch": run["branch"], "base": run["base"], "worktree": run["worktree"],
-                "pane": run["pane"], "title": run["title"], "evidence_dir": str(run_dir),
+        return {"repo": run["repo"], "branch": run["branch"], "base": run["base"], "worktree": run["launch"]["path"],
+                "pane": run["launch"]["pane"], "title": run["title"], "evidence_dir": str(run_dir),
                 "kind": "adhoc", "card": ledger}
     comments = json.loads(core.kanban("show", ledger, "--json"))["comments"]
     for comment in reversed(comments):

@@ -110,8 +110,8 @@ def test_stale_others_keeps_one_and_leaves_other_kinds():
 
 
 def test_run_of_adhoc_run():
-    run = {"repo": "acme/app", "branch": "muster/x", "base": "main", "worktree": "/wt", "pane": "p_1",
-           "title": "T", "card": "t_9", "other": 1}
+    run = {"repo": "acme/app", "branch": "muster/x", "base": "main", "title": "T", "card": "t_9",
+           "launch": {"path": "/wt", "pane": "p_1"}}
     runs.run_dir("t_9").mkdir(parents=True)
     (runs.run_dir("t_9") / "run.json").write_text(json.dumps(run))
     assert decisions.run_of("t_9") == {
