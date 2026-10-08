@@ -108,8 +108,11 @@ def prepare_env():
 def board_exists():
     """The kanban board must exist before the first tick: a missing board is a CommandError on every call."""
     board = config.settings["board"]
-    boards = json.loads(run(["hermes", "kanban", "boards", "list", "--json"]))
-    if not any(b.get("slug") == board for b in boards):
+    try:
+        boards = [b.get("slug") for b in json.loads(run(["hermes", "kanban", "boards", "list", "--json"]))]
+    except (CommandError, ValueError, TypeError, AttributeError) as error:
+        raise config.ConfigError(f"muster: cannot list kanban boards: {' '.join(str(error).split())}") from None
+    if board not in boards:
         raise config.ConfigError(f"muster: kanban board {board!r} does not exist; "
                                  f"create it with `hermes kanban boards create`")
 

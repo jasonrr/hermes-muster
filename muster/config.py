@@ -39,13 +39,11 @@ def load(ctx):
 
 def require():
     missing = [k for k in ("approver_login", "repos") if not settings[k]]
-    try:
-        if int(settings["approver_id"]) <= 0:
-            missing.append("approver_id")
-    except (TypeError, ValueError):
+    approver = settings["approver_id"]  # an int: a quoted YAML id or a float is a typo, not an id
+    if not isinstance(approver, int) or isinstance(approver, bool) or approver <= 0:
         missing.append("approver_id")
-    if not isinstance(settings["branch_prefix"], str) or not settings["branch_prefix"]:
-        missing.append("branch_prefix")
+    missing += [k for k in ("label", "board", "branch_prefix")
+                if not isinstance(settings[k], str) or not settings[k].strip()]
     if missing:
         raise ConfigError(f"muster: set plugins.entries.muster.settings.{{{', '.join(missing)}}} in config.yaml")
     from . import claude

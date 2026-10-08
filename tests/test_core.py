@@ -436,6 +436,21 @@ def test_tick_refuses_missing_board(tmp_path, monkeypatch):
     assert not any(c[4:5] == ["create"] for c in calls)
 
 
+@pytest.mark.parametrize("out", ["boom", "not json", "5"])
+def test_a_board_list_that_fails_or_is_not_json_is_a_config_error(tmp_path, monkeypatch, out):
+    base = fake_world(tmp_path, [])[0]
+
+    def run(argv):
+        if argv[:4] == ["hermes", "kanban", "boards", "list"]:
+            if out == "boom":
+                raise core.CommandError("hermes kanban boards: exit 1\ndatabase is locked")
+            return out
+        return base(argv)
+    monkeypatch.setattr(core, "run", run)
+    with pytest.raises(config.ConfigError, match="cannot list kanban boards"):
+        tick()
+
+
 def test_a_failing_repository_is_reported_and_the_rest_still_run(tmp_path, monkeypatch, capsys):
     calls = []
     failing = list(config.repos())[1]

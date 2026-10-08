@@ -66,7 +66,7 @@ def test_require_names_missing_keys_for_defaults():
         assert key in str(e.value)
 
 
-@pytest.mark.parametrize("bad", ["x", -1])
+@pytest.mark.parametrize("bad", ["x", -1, "7", 7.0, True])
 def test_require_rejects_bad_approver_id(bad):
     config.settings.update(approver_login="me", repos=["o/a"], approver_id=bad)
     with pytest.raises(config.ConfigError, match="approver_id"):
@@ -120,3 +120,11 @@ def test_require_rejects_a_branch_prefix_that_is_not_a_valid_ref(prefix):
     config.settings.update(approver_login="me", repos=["o/a"], approver_id=7, branch_prefix=prefix)
     with pytest.raises(config.ConfigError, match="branch_prefix"):
         config.require()
+
+
+@pytest.mark.parametrize("key, bad", [("label", ""), ("label", "  "), ("label", None), ("board", 5), ("board", "")])
+def test_require_rejects_a_label_or_board_that_is_not_a_non_empty_string(key, bad):
+    config.settings.update(approver_login="me", repos=["o/a"], approver_id=7, **{key: bad})
+    with pytest.raises(config.ConfigError, match=key):
+        config.require()
+
