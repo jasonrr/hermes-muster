@@ -851,7 +851,7 @@ def recover(args):
     with open(lock_path(), "w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)  # never beside a cron tick: both may touch the issue branch
         board_exists()
-        if (config.data_dir() / "runs" / args.card).is_dir():
+        if (config.data_dir() / "runs" / args.card / "run.json").is_file():  # an issue card may have an outbox there
             from . import runs
             return runs.recover(args.card, args.resend, args.adopt)
         return recover_card(args.card, args.resend, args.adopt)

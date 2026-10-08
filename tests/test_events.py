@@ -11,6 +11,7 @@ import pytest
 
 import muster.core as core
 import muster.events as events
+import muster.runs as runs
 
 LINKS = {"card": "t_abc123", "repo": "acme/app", "issue": 397, "pane": "p_agent",
          "workspace": "w_1", "worktree": "/wt"}
@@ -167,7 +168,7 @@ def test_done_completes_with_one_readable_line_and_prints(board, monkeypatch, ca
     # One line, the PR link, and no claim the work is merged or live. Issue, pane, worktree
     # stay on the card's body and its muster links comment.
     assert complete[complete.index("--summary") + 1] == f"Ready for review: {PR} (open; not merged or deployed)"
-    assert "ready -> done" in capsys.readouterr().out
+    assert "card t_abc123 -> done" in capsys.readouterr().out
 
 
 def test_done_completes_a_blocked_ledger_directly_and_archives_an_open_wait(board, monkeypatch):
@@ -386,7 +387,6 @@ def test_core_and_events_agree_on_card_file(board, tmp_path):
 
 
 def test_hook_with_card_delegates_to_runs(monkeypatch):
-    import muster.runs as runs
     seen = []
     monkeypatch.setattr(runs, "hook", lambda args: seen.append(args.card) or 0)
     assert events.hook(argparse.Namespace(event="stop", url=None, card="t_run1")) == 0
@@ -406,3 +406,60 @@ def test_a_stale_empty_wait_marker_is_replaced_and_a_fresh_one_is_left(board, mo
 
 def test_done_compares_the_repository_case_insensitively(board, monkeypatch):
     assert done(f"https://github.com/{LINKS['repo'].upper()}/pull/1") == 0
+
+
+def test_an_issue_run_session_end_that_keeps_failing_is_queued_and_the_flush_blocks_the_card(board, monkeypatch):
+    board["fail"]["block"] = 3
+    assert hook(monkeypatch, "session-end") == 0
+    assert board["cards"]["t_abc123"] == "ready"
+    [queued] = runs.pending("t_abc123")
+    assert json.loads(queued.read_text())["event"] == "session-end"
+    assert runs.flush() == 0
+    assert board["cards"]["t_abc123"] == "blocked" and board["blocks"]["t_abc123"] == 1
+    assert runs.pending("t_abc123") == []
+
+
+def test_a_hook_that_lands_queues_nothing(board, monkeypatch):
+    assert hook(monkeypatch, "session-end") == 0
+    assert board["cards"]["t_abc123"] == "blocked"
+    assert runs.pending("t_abc123") == []
+
+
+def test_an_issue_run_event_is_saved_before_any_kanban_move(board, monkeypatch):
+    """A hook killed mid-move must leave its event for the flush."""
+    seen = []
+    real = core.run
+    monkeypatch.setattr(core, "run", lambda argv: (seen.append(len(runs.pending("t_abc123"))) if argv[4:5] == ["block"]
+                                                    else None) or real(argv))
+    assert hook(monkeypatch, "session-end") == 0
+    assert seen == [1]
+    assert runs.pending("t_abc123") == []
+
+
+def test_done_that_cannot_land_is_queued_exits_1_and_the_flush_completes_it(board, monkeypatch, capsys):
+    board["fail"]["complete"] = 2
+    assert done(PR) == 1
+    assert "queued for the flush" in capsys.readouterr().err
+    assert board["cards"]["t_abc123"] == "ready"
+    runs.flush()
+    assert board["cards"]["t_abc123"] == "done" and runs.pending("t_abc123") == []
+
+
+def test_a_queued_event_of_an_archived_ledger_is_dropped(board, monkeypatch):
+    board["fail"]["block"] = 2
+    hook(monkeypatch, "session-end")
+    board["cards"]["t_abc123"] = "archived"
+    runs.flush()
+    assert runs.pending("t_abc123") == [] and board["blocks"] == {}
+
+
+def test_a_queued_wait_is_delivered_before_the_prompt_that_closes_it(board, monkeypatch):
+    board["fail"]["block"] = 2
+    hook(monkeypatch, "notification")
+    hook(monkeypatch, "prompt")  # drains the wait first, then closes it
+    assert board["cards"]["t_wait1"] == "archived" and runs.pending("t_abc123") == []
+
+
+def test_a_tool_use_with_nothing_open_writes_nothing(board, monkeypatch):
+    assert hook(monkeypatch, "prompt") == 0
+    assert not runs.run_dir("t_abc123").exists()

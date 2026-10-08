@@ -25,3 +25,8 @@
 - Trusting `kanban show --json` for the block kind → it lacks `block_kind`; read it from the board sqlite read-only.
 - Treating an untrusted-path `agent_not_ready` as a failure → a retry loop on a question only a person can answer; it is a person-wait.
 - A test fake that keys a resource globally when the real system keys it per repo (fake herdr: branch unique across all clones) → a cross-repo bug cannot even be reproduced; key fakes the way the real system does.
+
+## issue-run outbox (issue #5, 2026-10-07)
+
+- Saving an event only after its delivery failed (the design the issue proposed) → a hook killed mid-move still loses it; save first, deliver from the outbox, and make every move read state first so a replay never repeats one.
+- A routing check on "the directory exists" (`core.recover`: `runs/<card>/` means an ad-hoc run) → it misroutes as soon as another kind writes there (issue cards' outboxes); key on the record file (`run.json`), not its directory.
