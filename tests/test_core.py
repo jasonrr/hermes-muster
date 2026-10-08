@@ -291,10 +291,22 @@ def test_no_origin_head_and_no_suffix_launches_from_main_and_records_why(tmp_pat
 def test_an_existing_card_launches_nothing(tmp_path, monkeypatch, capsys):
     calls = []
     monkeypatch.setattr(core, "run", fake_world(tmp_path, calls, card_age=60)[0])
+    core.save_json(core.intake_dir() / "t_abc123" / "launch.json", {"card": "t_abc123"})  # its launch began
     assert tick() == 0
     assert not any(c[0] == "herdr" for c in calls)
     assert not any(c[:2] == ["hermes", "kanban"] and c[4] == "notify-subscribe" for c in calls)
     assert f"{REPO}#397 task t_abc123 (ready) card exists" in capsys.readouterr().out
+
+
+def test_a_ready_card_a_killed_tick_left_without_a_launch_is_launched(tmp_path, monkeypatch, capsys):
+    """A tick killed between `kanban create` and launch(): the next tick sees "card exists", no record."""
+    calls = []
+    monkeypatch.setattr(core, "run", fake_world(tmp_path, calls, card_age=60)[0])
+    assert tick() == 0
+    assert len([c for c in calls if c[:3] == ["herdr", "agent", "prompt"]]) == 1
+    assert (core.intake_dir() / "t_abc123" / "launch.json").is_file()
+    out = capsys.readouterr().out
+    assert "card exists" not in out and "task t_abc123 pane w1:p2" in out
 
 
 def test_gate_skips_missing_clone(tmp_path, monkeypatch, capsys):

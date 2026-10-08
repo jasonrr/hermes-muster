@@ -965,7 +965,9 @@ def intake(repo, dry=False):
             task = json.loads(run(card_argv(repo, issue, event)))
             # The create is idempotent: an existing card comes back with its old created_at,
             # and only a card made just now gets a pane.
-            if task["created_at"] < before:
+            # ...unless a tick was killed between that create and launch()'s first save.
+            if task["created_at"] < before and (task.get("status") != "ready"
+                                                or (intake_dir() / task["id"] / "launch.json").is_file()):
                 print(f"{repo}#{number} task {task['id']} ({task.get('status')}) card exists")
                 continue
             launched = launch(repo, issue, task["id"], event)
