@@ -214,6 +214,20 @@ def note(card, path, entry, error):
             core.save_json(path, {**entry, "error": text})
 
 
+def read_entry(card, path):
+    """A saved event, or None after dropping a file a crash cut short (or that is no event): it would wedge the queue."""
+    try:
+        entry = json.loads(path.read_text())
+        if isinstance(entry, dict) and "event" in entry:
+            return entry
+        error = "not an event"
+    except ValueError as caught:
+        error = caught
+    log(f"{card} {path.parent.name}/{path.name}: unreadable, dropped: {error}")
+    path.unlink(missing_ok=True)
+    return None
+
+
 def drain(card, wait=False):
     """Deliver every saved event of one run in order, then check the acks of the delivered ones.
 
@@ -230,7 +244,9 @@ def drain(card, wait=False):
             return False  # the holder or the next flush delivers what is left
         run = load(card) if (directory / "run.json").is_file() else None
         for path in pending(card):
-            entry = json.loads(path.read_text())
+            entry = read_entry(card, path)
+            if entry is None:
+                continue
             try:
                 ack = deliver(run, entry) if run else events.replay(entry)
                 if ack:
@@ -244,7 +260,9 @@ def drain(card, wait=False):
                 return True
             log(f"{card} {entry['event']}: delivered, ack {ack}")
         for path in sent(card):
-            entry = json.loads(path.read_text())
+            entry = read_entry(card, path)
+            if entry is None:
+                continue
             try:
                 if acked(entry["ack"]):
                     path.unlink()
@@ -286,7 +304,12 @@ def reconcile(run):
         idle_file.unlink(missing_ok=True)
         return
     # herdr keeps no idle-since time: the first flush that sees this state change starts the clock.
-    idle = json.loads(idle_file.read_text()) if idle_file.is_file() else {}
+    try:
+        idle = json.loads(idle_file.read_text()) if idle_file.is_file() else {}
+    except ValueError:  # cut short by a crash: restart the clock
+        idle = {}
+    if not isinstance(idle, dict):
+        idle = {}
     if idle.get("seq") != agent.get("state_change_seq"):
         core.save_json(idle_file, {"seq": agent.get("state_change_seq"), "since": int(time.time())})
         enqueue(card, "stop", "the agent is idle")

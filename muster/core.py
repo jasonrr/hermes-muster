@@ -268,7 +268,10 @@ def save_json(path, data):
     """Write whole or not at all: a crash mid-write leaves the old file."""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(data))
+    with open(tmp, "w") as out:
+        out.write(json.dumps(data))
+        out.flush()
+        os.fsync(out.fileno())  # else a power cut after the rename can leave an empty file
     os.replace(tmp, path)
 
 
@@ -412,17 +415,30 @@ def prompt_seen(directory, payload):
     """A UserPromptSubmit hook's evidence that a prompt reached Claude: its sha256, kept beside the record."""
     if not isinstance(payload, dict) or not isinstance(payload.get("prompt"), str):
         return
-    Path(directory).mkdir(parents=True, exist_ok=True)
-    with open(Path(directory) / "prompt-seen.jsonl", "a") as out:
-        out.write(json.dumps({"sha256": hashlib.sha256(payload["prompt"].encode()).hexdigest(),
-                              "at": int(time.time()), "session": payload.get("session_id")}) + "\n")
+    path = Path(directory) / "prompt-seen.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "ab+") as out:
+        out.seek(0, os.SEEK_END)
+        if out.tell():
+            out.seek(-1, os.SEEK_END)
+            torn = out.read(1) != b"\n"  # a crash mid-append: start a fresh line, never glue onto it
+        else:
+            torn = False
+        out.write(("\n" if torn else "").encode() + json.dumps({"sha256": hashlib.sha256(payload["prompt"].encode()).hexdigest(),
+                              "at": int(time.time()), "session": payload.get("session_id")}).encode() + b"\n")
 
 
 def seen(directory, sha):
     path = Path(directory) / "prompt-seen.jsonl"
     if not path.is_file():
         return False
-    return any(json.loads(line).get("sha256") == sha for line in path.read_text().splitlines() if line.strip())
+    for line in path.read_text().splitlines():
+        try:
+            if json.loads(line).get("sha256") == sha:
+                return True
+        except (ValueError, AttributeError):  # a line torn by a crash, or not a record: not evidence
+            continue
+    return False
 
 
 def owner_of(path):
@@ -472,7 +488,7 @@ def take_worktree(rec, save, known):
                             "--path", rec["path"], "--label", rec["label"], "--no-focus", "--trust-repository")
         rec["workspace"] = made["workspace"]["workspace_id"]
         git_dir, _ = owner_of(made["worktree"]["path"])
-        (git_dir / OWNER_FILE).write_text(json.dumps({"owner": rec["owner"], "branch": branch}))
+        save_json(git_dir / OWNER_FILE, {"owner": rec["owner"], "branch": branch})
         save(rec)
         return git_dir
     git_dir, owner = owner_of(rec["path"])
@@ -500,7 +516,7 @@ def take_worktree(rec, save, known):
         rec["reused"] = {"commits": ahead, "uncommitted": len(dirty)}
         note(rec, f"adopted {rec['path']} from {owner or prior or 'a person (--adopt)'}: {ahead} commits, "
                   f"{len(dirty)} uncommitted or untracked files kept")
-        (git_dir / OWNER_FILE).write_text(json.dumps({"owner": rec["owner"], "branch": branch, "previous": owner or prior}))
+        save_json(git_dir / OWNER_FILE, {"owner": rec["owner"], "branch": branch, "previous": owner or prior})
     workspace = here.get("open_workspace_id")
     if not workspace:
         rec["step"] = "worktree"
