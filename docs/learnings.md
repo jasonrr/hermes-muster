@@ -24,3 +24,4 @@
 - Judging a prompt delivered by the call returning → a brief that never arrived looks sent; save "sending" before the prompt call and judge delivery by herdr state + `completion_seq` + the UserPromptSubmit hook's sha256.
 - Trusting `kanban show --json` for the block kind → it lacks `block_kind`; read it from the board sqlite read-only.
 - Treating an untrusted-path `agent_not_ready` as a failure → a retry loop on a question only a person can answer; it is a person-wait.
+- A test fake that keys a resource globally when the real system keys it per repo (fake herdr: branch unique across all clones) → a cross-repo bug cannot even be reproduced; key fakes the way the real system does.
