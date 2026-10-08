@@ -720,3 +720,23 @@ def test_a_proposal_not_yet_on_the_ledger_is_not_armed_and_the_flush_posts_it_on
     ask(monkeypatch)
     assert denied(capsys) is None and len(board["comments"]["t_abc123"]) == 1
     assert board["cards"]["t_wait1"] == "blocked" and "Proposal v1" in board["bodies"]["t_wait1"]
+
+
+def test_the_answered_approval_requests_posttooluse_closes_its_wait_and_prints_nothing(board, monkeypatch, tmp_path, capsys):
+    """PostToolUse carries the ask's own payload as a `prompt`: the gate must not take it for a new request."""
+    propose(tmp_path, "the plan")
+    ask(monkeypatch)
+    capsys.readouterr()
+    hook(monkeypatch, "prompt", message="", tool_name="AskUserQuestion", tool_input={"questions": [QUESTION]})
+    assert capsys.readouterr().out == "" and board["cards"]["t_wait1"] == "archived"
+
+
+def test_an_approval_request_behind_a_question_not_yet_on_the_board_is_denied(board, monkeypatch, tmp_path, capsys):
+    propose(tmp_path, "the plan")
+    board["fail"]["create"] = 99  # the board is down for wait cards
+    hook(monkeypatch, "notification", message="Which file?")
+    capsys.readouterr()
+    ask(monkeypatch)
+    assert denied(capsys).startswith("An earlier question is not on the board yet")
+    assert [p.name.split("-", 1)[1] for p in runs.pending("t_abc123")] == ["notification.json"]
+    assert events.proposals("t_abc123").joinpath("armed").is_file()

@@ -214,7 +214,7 @@ def enqueue(card, event, detail, payload, pin=None, **issue):
     return runs.enqueue(card, event, detail, ask=questions, proposal=pin, **issue)
 
 
-def gate(card, directory, payload, command):
+def gate(card, directory, event, payload, command):
     """(pin, None) to let an approval request ask, (None, why) to deny it; (None, None) for any other event.
 
     An approval request needs an armed proposal (propose read it back on the ledger) and no other open
@@ -222,10 +222,16 @@ def gate(card, directory, payload, command):
     on its way lands before the check. A denial leaves the proposal armed for the next request.
     """
     from . import runs  # lazy: runs imports events at module level
-    if not claude.approval(payload):
+    # Only the ask itself (PreToolUse, saved as `notification`): its PostToolUse carries the same payload
+    # as a `prompt`, and must still close the wait the human just answered.
+    if event != "notification" or not claude.approval(payload):
         return None, None
     if runs.pending(card):
         runs.drain(card, wait=True)
+    if any(p.name.endswith("-notification.json") for p in runs.pending(card)):
+        # Not on the board yet (hermes down?): this request would land behind it and be swallowed.
+        return None, ("An earlier question is not on the board yet, so this approval request would not reach "
+                      "the human. Tell the human in plain text and ask again in a minute.")
     try:
         pin = json.loads((proposals(card) / "armed").read_text())
     except (OSError, ValueError):
@@ -425,7 +431,7 @@ def hook(args):
     from . import runs  # lazy: runs imports events at module level
     card = link["card"]
     try:
-        pin, why = gate(card, git_dir, payload, f"{config.hermes_bin()} muster hook propose <file>")
+        pin, why = gate(card, git_dir, event, payload, f"{config.hermes_bin()} muster hook propose <file>")
     except Exception as caught:  # noqa: BLE001 - fail closed, and say why
         pin, why = None, f"muster could not check this approval request: {' '.join(str(caught).split())}"
     if why:

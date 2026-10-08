@@ -572,7 +572,7 @@ def hook(args):
             return 0  # every PostToolUse lands here: nothing open, nothing queued, nothing to do
         core.prepare_env()
         try:
-            pin, why = events.gate(card, run_dir(card), payload,
+            pin, why = events.gate(card, run_dir(card), event, payload,
                                    f"{config.hermes_bin()} muster hook --card {card} propose <file>")
         except Exception as error:  # noqa: BLE001 - fail closed, and say why
             pin, why = None, f"muster could not check this approval request: {' '.join(str(error).split())}"
