@@ -236,6 +236,16 @@ def test_a_hook_that_keeps_failing_is_logged_and_never_fails_the_agent(board, mo
     assert not (board["git_dir"] / core.WAIT_KIND).exists()
 
 
+def test_a_type_error_is_logged_like_any_other_failure(board, monkeypatch, capsys):
+    def broken(*args):
+        raise TypeError("'NoneType' object is not subscriptable")
+    monkeypatch.setattr(events, "move", broken)
+    assert hook(monkeypatch, "notification") == 0
+    assert done(PR) == 1
+    assert events.log_path().read_text().count("not subscriptable") == 2
+    assert "not subscriptable" in capsys.readouterr().err
+
+
 def test_hook_events_point_hermes_at_the_configured_home(board, monkeypatch):
     monkeypatch.delenv("HERMES_KANBAN_HOME")
     hook(monkeypatch, "prompt")

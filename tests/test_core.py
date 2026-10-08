@@ -651,6 +651,14 @@ def test_recover_of_a_card_without_a_launch_record_says_how_to_relaunch(tmp_path
     assert "re-apply agent-ready" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize("record", [{"card": "t_x", "repo": REPO, "issue": 397}, {"card": "t_x", "launch": []}])
+def test_recover_of_a_record_without_a_launch_says_so_without_a_traceback(tmp_path, monkeypatch, capsys, record):
+    monkeypatch.setattr(core, "run", fake_world(tmp_path, [])[0])
+    core.save_json(core.intake_dir() / "t_x" / "launch.json", record)
+    assert recover("t_x") == 1
+    assert "has no launch record; remove and re-apply agent-ready" in capsys.readouterr().err
+
+
 def test_a_new_label_reuses_the_checkout_an_earlier_card_of_the_issue_left(tmp_path, monkeypatch):
     """An earlier card's launch failed and left muster/<n>; the approver labels again."""
     calls, world = [], World(tmp_path)

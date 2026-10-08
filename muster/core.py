@@ -886,7 +886,12 @@ def recover_card(card, resend=False, adopt=False):
     at, record = {"step": "record"}, None
     try:
         with launch_lock(directory):
-            record = json.loads((directory / "launch.json").read_text())
+            loaded = json.loads((directory / "launch.json").read_text())
+            if not isinstance(loaded.get("launch"), dict):  # bound only once valid: the handler below reads it
+                print(f"recover {card}: {directory / 'launch.json'} has no launch record; remove and re-apply "
+                      f"{config.settings['label']}", file=sys.stderr)
+                return 1
+            record = loaded
             repo, number = record["repo"], record["issue"]
             at["step"] = "card"
             status = recoverable(card)
