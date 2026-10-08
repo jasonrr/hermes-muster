@@ -42,3 +42,8 @@
 ## Project status (issue #3, 2026-10-08)
 
 - The issue named `gh project field-list` as the source of the ids, but `item-edit --project-id` needs the Project's node id, which only `gh project view` returns → read the real `gh` JSON (`--format json` against a live Project) before writing a fake, not the issue's sketch.
+
+## proposal snapshots (issue #14, 2026-10-08)
+
+- A command the agent runs from its own shell, routed through the hook entry point (`hook propose`) → it reads stdin like a hook and hangs on the pane's tty until the 30 s timeout; exempt agent-run events (`done`, `propose`) from the stdin read in both `events.hook` and `runs.hook`.
+- A PreToolUse gate keyed on the tool payload alone (`tool_name` + `tool_input`) → PostToolUse carries the same payload, so the answered question's close was denied and its wait card stayed open; gate on the hook event (`notification` = PreToolUse here), not on the payload.

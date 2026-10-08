@@ -2,6 +2,7 @@
 
 import argparse
 import fcntl
+import hashlib
 import io
 import json
 import time
@@ -26,7 +27,7 @@ def board(tmp_path, monkeypatch):
     """hermes, git, gh and herdr as the run sees them; hermes moves follow tests/test_kanban_contract.py."""
     state = {"cards": {}, "blocks": {}, "keys": {}, "calls": [], "fail": {}, "down": False, "events": {},
              "seq": 0, "cursor": 0, "head": "abc", "dirty": "", "prs": [], "gh_fail": 0, "agent": "working", "agent_seq": 1,
-             "created_at": {}, "kinds": {}}
+             "created_at": {}, "kinds": {}, "comments": {}, "bodies": {}}
     monkeypatch.setattr(runs, "last_event", lambda card: state["events"].get(card, 0))
     monkeypatch.setattr(core, "block_kind", lambda card: state["kinds"].get(card))
 
@@ -60,8 +61,9 @@ def board(tmp_path, monkeypatch):
         if state["fail"].get(verb):
             state["fail"][verb] -= 1
             raise core.CommandError(f"hermes kanban --board: exit 1\n{verb} failed")
-        if verb == "show":
-            return json.dumps({"task": {"id": argv[5], "status": cards[argv[5]]}})
+        if verb == "show":  # as the real CLI (test_kanban_contract): the body and every comment, whole
+            return json.dumps({"task": {"id": argv[5], "status": cards[argv[5]], "body": state["bodies"].get(argv[5])},
+                               "comments": [{"author": "default", "body": b} for b in state["comments"].get(argv[5], [])]})
         if verb == "notify-list":
             if cards[argv[5]] == "archived" or state.get("no_subs"):
                 return "[]"  # the notifier drops a card's subscriptions on archive
@@ -72,8 +74,13 @@ def board(tmp_path, monkeypatch):
             card = state["keys"].setdefault(key, f"t_wait{len(state['keys']) + 1}")
             state["created_at"].setdefault(card, int(time.time()))
             cards.setdefault(card, "ready")
+            state["bodies"].setdefault(card, argv[argv.index("--body") + 1])
             return json.dumps({"id": card, "status": cards[card], "created_at": state["created_at"][card]})
-        if verb in ("notify-subscribe", "comment"):
+        if verb == "comment":
+            text = argv[-1]  # `comment -- <card> <text>`, or the launch's links comment without "--"
+            state["comments"].setdefault(argv[-2], []).append(text)
+            return ""
+        if verb == "notify-subscribe":
             return ""
         # unblock: only a recover, once, of a launch-failure block (see the contract test)
         assert verb in ("block", "archive", "complete", "unblock"), argv
@@ -458,6 +465,7 @@ def test_launch_brief_is_the_callers_text_plus_the_run_footer(board, clone):
     brief = (runs.run_dir(card) / "brief.md").read_text()
     assert brief.startswith("Fix the thing.\n")
     assert f"## This run: {card}" in brief and "`fix/x`" in brief and "You never report it yourself" in brief
+    assert f"`{config.hermes_bin()} muster hook --card {card} propose <file>`" in brief and "the header `Approval`" in brief
 
 
 def test_launch_opens_a_trusted_worktree_and_starts_claude_in_auto_mode(board, clone):
@@ -774,3 +782,70 @@ def test_flush_marks_a_run_closed_only_under_its_launch_lock(board, run1):
     assert "another launch or recover" in runs.log_path().read_text()
     runs.flush()
     assert json.loads((run1 / "run.json").read_text())["closed"] is True
+
+
+def test_an_ad_hoc_proposal_is_a_ledger_comment_and_the_next_ask_carries_it(board, run1, monkeypatch, tmp_path, capsys):
+    design = tmp_path / "design.md"
+    design.write_text("## Approach\nOne propose hook.")
+    monkeypatch.setattr("sys.stdin", io.StringIO(""))  # the agent's shell: no hook payload
+    assert runs.hook(argparse.Namespace(card=CARD, event="propose", url=str(design))) == 0
+    head = f"Proposal v1 {hashlib.sha256(design.read_bytes()).hexdigest()[:12]}"
+    assert capsys.readouterr().out == f"proposal: {head} on ledger {CARD}\n"
+    assert board["comments"][CARD] == [f"{head}\n\n## Approach\nOne propose hook."]
+    assert files(run1, "outbox") == [] and files(run1, "sent") == []  # a comment pings no one: no ack to wait on
+    fire(monkeypatch, "notification", message="", tool_name="AskUserQuestion",
+         tool_input={"questions": [{"question": "Approve?", "header": "Approval",
+                                 "options": [{"label": "Yes", "description": "build"}]}]})
+    body = board["bodies"]["t_wait1"]
+    assert "| branch fix/x |" in body and f"# {head}" in body and "- Yes: build" in body
+    assert block_text(board, "t_wait1") == f"Approve?\n{head}: full text on this card and ledger {CARD}.\nReply in Herdr pane w_1:p2."
+
+
+def test_an_ad_hoc_propose_without_a_run_fails_loudly(board, tmp_path, capsys):
+    design = tmp_path / "design.md"
+    design.write_text("plan")
+    assert runs.hook(argparse.Namespace(card="t_nope", event="propose", url=str(design))) == 1
+    assert "no run t_nope" in capsys.readouterr().err and not runs.run_dir("t_nope").exists()
+
+
+def test_an_ad_hoc_approval_request_without_a_saved_proposal_is_denied(board, run1, monkeypatch, capsys):
+    fire(monkeypatch, "notification", message="", tool_name="AskUserQuestion",
+         tool_input={"questions": [{"question": "Approve?", "header": "Approval", "options": []}]})
+    why = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["permissionDecisionReason"]
+    assert why.startswith("No proposal is saved") and f"muster hook --card {CARD} propose <file>" in why
+    assert "t_wait1" not in board["cards"] and files(run1, "outbox") == []
+
+
+def test_an_ad_hoc_approval_requests_posttooluse_closes_its_wait(board, run1, monkeypatch, tmp_path, capsys):
+    design = tmp_path / "design.md"
+    design.write_text("plan")
+    monkeypatch.setattr("sys.stdin", io.StringIO(""))
+    runs.hook(argparse.Namespace(card=CARD, event="propose", url=str(design)))
+    ask = {"tool_name": "AskUserQuestion", "tool_input": {"questions": [{"question": "Approve?", "header": "Approval"}]}}
+    fire(monkeypatch, "notification", message="", **ask)
+    capsys.readouterr()
+    fire(monkeypatch, "prompt", **ask)  # PostToolUse: the same payload, the human answered
+    assert capsys.readouterr().out == "" and board["cards"]["t_wait1"] == "archived"
+
+
+def test_an_ad_hoc_approval_request_whose_outbox_save_fails_is_denied_and_keeps_its_proposal(board, run1, monkeypatch, tmp_path, capsys):
+    design = tmp_path / "design.md"
+    design.write_text("plan")
+    monkeypatch.setattr("sys.stdin", io.StringIO(""))
+    runs.hook(argparse.Namespace(card=CARD, event="propose", url=str(design)))
+    capsys.readouterr()
+    real = runs.enqueue
+
+    def full_disk(card, event, *a, **k):
+        if event == "notification":
+            raise OSError(28, "No space left on device")
+        return real(card, event, *a, **k)
+    monkeypatch.setattr(runs, "enqueue", full_disk)
+    ask = {"tool_name": "AskUserQuestion", "tool_input": {"questions": [{"question": "Approve?", "header": "Approval"}]}}
+    assert fire(monkeypatch, "notification", message="", **ask) == 0
+    decision = json.loads(capsys.readouterr().out)["hookSpecificOutput"]
+    assert decision["permissionDecision"] == "deny"
+    assert decision["permissionDecisionReason"].startswith("muster could not save this approval request")
+    assert "stays saved" in decision["permissionDecisionReason"]
+    assert "t_wait1" not in board["cards"] and files(run1, "outbox") == []
+    assert (runs.run_dir(CARD) / "proposals" / "armed").is_file()

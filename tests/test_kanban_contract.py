@@ -165,3 +165,14 @@ def test_the_run_ack_reads_event_ids_from_the_board_db_and_cursors_from_notify_l
     [sub] = json.loads(k("notify-list", card, "--json"))
     assert sub["delivery_mode"] == "notify+wake"
     assert sub["last_event_id"] >= 0 and sub["last_ping_event_id"] == 0  # nothing pinged: no gateway
+
+
+def test_a_comment_and_a_create_body_read_back_whole_from_show_json(k):
+    """events.post_proposal skips a version whose header comment is already on the ledger, and a reviewer
+    reads the snapshot from `show --json`: both need comments and the create body back verbatim."""
+    text = "Proposal v1 0123456789ab for review\n\n## Approach\n--kind=x is text\n" + "x" * 20000
+    card = json.loads(k("create", "--body", text, "--json", "--", "title"))["id"]
+    k("comment", "--", card, text)
+    shown = json.loads(k("show", card, "--json"))
+    assert shown["task"]["body"] == text
+    assert shown["comments"][-1]["body"] == text

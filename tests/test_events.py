@@ -25,7 +25,7 @@ def board(tmp_path, monkeypatch):
     git_dir.mkdir()
     (git_dir / core.CARD_FILE).write_text(json.dumps(LINKS))
     state = {"cards": {"t_abc123": "ready"}, "blocks": {}, "keys": {}, "calls": [], "flaky": 0, "git_dir": git_dir,
-             "fail": {}, "on_create": None, "head": "muster/397"}
+             "fail": {}, "on_create": None, "head": "muster/397", "comments": {}, "bodies": {}}
 
     def fake_run(argv):
         state["calls"].append(argv)
@@ -37,8 +37,9 @@ def board(tmp_path, monkeypatch):
                 raise core.CommandError("gh pr view: exit 1\nHTTP 502")
             return json.dumps({"headRefName": state["head"]})
         verb, cards = argv[4], state["cards"]
-        if verb == "show":
-            return json.dumps({"task": {"id": argv[5], "status": cards[argv[5]]}})
+        if verb == "show":  # as the real CLI (test_kanban_contract): the body and every comment, whole
+            return json.dumps({"task": {"id": argv[5], "status": cards[argv[5]], "body": state["bodies"].get(argv[5])},
+                               "comments": [{"author": "default", "body": b} for b in state["comments"].get(argv[5], [])]})
         if verb == "notify-list":
             return json.dumps([{"chat_id": "4242", "user_id": "4242", "chat_type": "dm", "notifier_profile": "default", "delivery_mode": "notify+wake"}])
         if state["flaky"]:
@@ -54,8 +55,13 @@ def board(tmp_path, monkeypatch):
             key = argv[argv.index("--idempotency-key") + 1]
             card = state["keys"].setdefault(key, f"t_wait{len(state['keys']) + 1}")
             cards.setdefault(card, "ready")
+            state["bodies"].setdefault(card, argv[argv.index("--body") + 1])
             return json.dumps({"id": card, "status": cards[card]})
         if verb == "notify-subscribe":
+            return ""
+        if verb == "comment":
+            assert argv[5] == "--", argv  # the text is the agent's: it may start with "--"
+            state["comments"].setdefault(argv[6], []).append(argv[7])
             return ""
         assert verb in ("block", "archive", "complete"), argv  # never unblock: see the contract test
         card = argv[-2] if verb == "block" else argv[5]  # block ... [--] <card> <reason>
@@ -534,3 +540,231 @@ def test_done_behind_a_failing_event_names_that_failure(board, monkeypatch, caps
     hook(monkeypatch, "session-end")
     assert done(PR) == 1
     assert "block failed (queued for the flush)" in capsys.readouterr().err
+
+
+QUESTION = {"question": "Approve this design, as described above?", "header": "Approval", "multiSelect": False,
+            "options": [{"label": "Approve (Recommended)", "description": "Build it as proposed."},
+                        {"label": "Change something", "description": "Say what to change.", "preview": "a\nb"}]}
+
+
+def propose(tmp_path, text, name="design.md"):
+    path = tmp_path / name
+    path.write_text(text)
+    return events.hook(ns("propose", str(path)))
+
+
+def ask(monkeypatch, *questions):
+    return hook(monkeypatch, "notification", message="", tool_name="AskUserQuestion",
+                tool_input={"questions": list(questions or [QUESTION])})
+
+
+def sha(text):
+    return hashlib.sha256(text.encode()).hexdigest()[:12]
+
+
+def test_a_proposal_is_one_ledger_comment_and_the_next_ask_carries_it_and_every_option(board, monkeypatch, tmp_path, capsys):
+    text = "## Approach\nA propose hook.\n## Non-goals\nNo auto-approval."
+    assert propose(tmp_path, text) == 0
+    head = f"Proposal v1 {sha(text)}"
+    assert capsys.readouterr().out == f"proposal: {head} on ledger t_abc123\n"
+    assert board["comments"]["t_abc123"] == [f"{head}\n\n{text}"]
+    assert ask(monkeypatch) == 0
+    shown = json.loads(core.kanban("show", "t_wait1", "--json"))["task"]["body"]
+    assert "ledger t_abc123 | issue https://github.com/acme/app/issues/397 | pane p_agent" in shown  # provenance kept
+    assert f"# {head} (also on ledger t_abc123" in shown and shown.endswith(text)
+    assert "## Approve this design, as described above?" in shown
+    assert "- Approve (Recommended): Build it as proposed." in shown and "\n    a\n    b" in shown
+    reason = next(c for c in board["calls"] if c[4:5] == ["block"])[-1]
+    assert reason == (f"Approve this design, as described above?\n{head}: full text on this card and ledger t_abc123.\n"
+                      "Reply in Herdr pane p_agent.")  # the ping stays short: the text is on the cards
+
+
+def test_a_revision_is_a_new_version_the_old_one_stays_and_the_next_ask_names_the_new_one(board, monkeypatch, tmp_path):
+    first, second = "plan one", "plan two"
+    propose(tmp_path, first)
+    ask(monkeypatch)
+    hook(monkeypatch, "prompt")
+    assert propose(tmp_path, first) == 0  # unchanged: still v1, and no second comment
+    assert propose(tmp_path, second) == 0
+    assert [c.split("\n")[0] for c in board["comments"]["t_abc123"]] == [
+        f"Proposal v1 {sha(first)}", f"Proposal v2 {sha(second)}"]
+    ask(monkeypatch)
+    body = board["bodies"]["t_wait2"]
+    assert f"Proposal v2 {sha(second)}" in body and "Proposal v1" not in body and body.endswith(second)
+    assert propose(tmp_path, first) == 0  # a revert is a new revision to review, not v1 again
+    assert board["comments"]["t_abc123"][-1] == f"Proposal v3 {sha(first)}\n\n{first}"
+    assert sorted(p.name for p in events.proposals("t_abc123").glob("v*.md")) == ["v1.md", "v2.md", "v3.md"]
+
+
+def test_a_redelivered_proposal_posts_no_second_comment(board, tmp_path):
+    propose(tmp_path, "the plan")
+    entry = {"version": 1, "sha": sha("the plan")}
+    runs.enqueue("t_abc123", "proposal", "Proposal v1", proposal=entry, git_dir=str(board["git_dir"]), link=LINKS)
+    runs.drain("t_abc123")  # a hook killed after the comment, before its entry was removed
+    assert len(board["comments"]["t_abc123"]) == 1 and not runs.pending("t_abc123")
+
+
+@pytest.mark.parametrize("content", [None, "", " \n", "x" * (events.PROPOSAL_MAX + 1)])
+def test_propose_refuses_a_missing_empty_or_oversized_file_before_saving_anything(board, tmp_path, capsys, content):
+    path = tmp_path / "design.md"
+    if content is not None:
+        path.write_text(content)
+    assert events.hook(ns("propose", str(path))) == 1
+    assert capsys.readouterr().err.startswith("propose card t_abc123: ")
+    assert verbs(board) == [] and not events.proposals("t_abc123").exists()
+
+
+def test_propose_redacts_a_github_token(board, tmp_path):
+    propose(tmp_path, "use ghp_abcdefghijklmnop to push")
+    assert board["comments"]["t_abc123"][0].endswith("use [redacted] to push")
+
+
+def test_propose_on_an_archived_ledger_says_it_was_not_posted(board, tmp_path, capsys):
+    board["cards"]["t_abc123"] = "archived"
+    assert propose(tmp_path, "the plan") == 1
+    assert "archived: not posted" in capsys.readouterr().err and "t_abc123" not in board["comments"]
+
+
+def test_a_wait_reopened_past_a_stale_claim_still_carries_the_question_and_proposal(board, monkeypatch, tmp_path):
+    """The retry for a hook killed at its timeout: the pin and the questions must survive it."""
+    propose(tmp_path, "the plan")
+    marker = board["git_dir"] / core.WAIT_KIND
+    marker.write_text("")
+    os.utime(marker, (1, 1))
+    ask(monkeypatch)
+    body = board["bodies"]["t_wait1"]
+    assert "Proposal v1" in body and "- Approve (Recommended)" in body and body.endswith("the plan")
+
+
+def test_a_long_preview_is_cut_and_says_so(board, monkeypatch):
+    big = dict(QUESTION, header="Pick", options=[{"label": "A", "description": "d", "preview": "p" * (events.PREVIEW_MAX + 50)}])
+    ask(monkeypatch, big)
+    assert "p" * (events.PREVIEW_MAX + 1) not in board["bodies"]["t_wait1"]
+    assert "[preview cut at 2 KB; the whole of it is in the pane]" in board["bodies"]["t_wait1"]
+
+
+def test_propose_without_a_file_prints_its_usage(board, capsys):
+    assert events.hook(ns("propose")) == 1
+    assert "usage: hermes muster hook propose <file>" in capsys.readouterr().err
+
+
+def denied(capsys):
+    """The PreToolUse decision a denied approval request prints, or None when the ask was let through."""
+    out = capsys.readouterr().out
+    if not out:
+        return None
+    decision = json.loads(out)["hookSpecificOutput"]
+    assert decision["hookEventName"] == "PreToolUse" and decision["permissionDecision"] == "deny"
+    return decision["permissionDecisionReason"]
+
+
+def test_an_approval_request_without_a_saved_proposal_is_denied_before_its_dialog(board, monkeypatch, capsys):
+    assert ask(monkeypatch) == 0
+    why = denied(capsys)
+    assert why.startswith("No proposal is saved on the ledger card") and "muster hook propose <file>" in why
+    assert "t_wait1" not in board["cards"] and not runs.pending("t_abc123")  # nothing queued, nothing pinged
+
+
+def test_only_a_question_headed_approval_takes_the_proposal_and_it_is_used_once(board, monkeypatch, tmp_path, capsys):
+    propose(tmp_path, "the plan")
+    ask(monkeypatch, dict(QUESTION, header="Path", question="Which file?"))
+    hook(monkeypatch, "prompt")
+    hook(monkeypatch, "notification", message="Claude needs your permission to use Bash")
+    hook(monkeypatch, "prompt")
+    capsys.readouterr()
+    ask(monkeypatch)  # the approval request: the question and the permission prompt left it armed
+    assert denied(capsys) is None
+    hook(monkeypatch, "prompt")
+    assert ["Proposal" in board["bodies"][f"t_wait{n}"] for n in (1, 2, 3)] == [False, False, True]
+    assert ["Proposal" in c[-1] for c in board["calls"] if c[4:5] == ["block"]] == [False, False, True]
+    ask(monkeypatch)  # carried once: approving again needs a proposal saved again
+    assert denied(capsys).startswith("No proposal is saved") and "t_wait4" not in board["cards"]
+
+
+def test_an_approval_request_while_another_wait_is_open_is_denied_and_its_proposal_kept(board, monkeypatch, tmp_path, capsys):
+    hook(monkeypatch, "notification", message="Claude needs your permission to use Bash")  # t_wait1, unanswered
+    propose(tmp_path, "the plan")
+    capsys.readouterr()
+    ask(monkeypatch)
+    why = denied(capsys)
+    assert why.startswith("Wait card t_wait1 for an earlier question is still open")
+    assert f"Proposal v1 {sha('the plan')} stays saved" in why
+    assert "t_wait2" not in board["cards"] and events.proposals("t_abc123").joinpath("armed").is_file()
+    hook(monkeypatch, "prompt")  # the human answers the open wait
+    ask(monkeypatch)
+    assert denied(capsys) is None and board["bodies"]["t_wait2"].endswith("the plan")
+    assert not events.proposals("t_abc123").joinpath("armed").exists()  # consumed: a card carries it
+
+
+def test_a_pinned_request_that_finds_a_wait_open_at_delivery_keeps_its_proposal_armed(board, tmp_path):
+    """Past the gate, a wait opened in between: open_wait does not open a second card, and the pin is not lost."""
+    propose(tmp_path, "the plan")
+    pin = {"version": 1, "sha": sha("the plan")}
+    events.open_wait(board["git_dir"], LINKS, "Permission?", "k1")  # t_wait1 blocked
+    line = events.open_wait(board["git_dir"], LINKS, "Approve?", "k2", [QUESTION], pin)
+    assert line == "notification: wait card t_wait1 already open"
+    assert json.loads(events.proposals("t_abc123").joinpath("armed").read_text()) == pin
+
+
+def test_a_proposal_not_yet_on_the_ledger_is_not_armed_and_the_flush_posts_it_once(board, monkeypatch, tmp_path, capsys):
+    board["fail"]["comment"] = 2
+    assert propose(tmp_path, "the plan") == 1
+    assert "comment failed (queued for the flush)" in capsys.readouterr().err
+    board["fail"]["comment"] = 2  # the gate's drain tries twice more
+    ask(monkeypatch)
+    assert denied(capsys).startswith("No proposal is saved") and "t_wait1" not in board["cards"]
+    runs.flush()
+    assert len(board["comments"]["t_abc123"]) == 1
+    assert propose(tmp_path, "the plan") == 0  # finds its comment, posts nothing, arms it
+    capsys.readouterr()
+    ask(monkeypatch)
+    assert denied(capsys) is None and len(board["comments"]["t_abc123"]) == 1
+    assert board["cards"]["t_wait1"] == "blocked" and "Proposal v1" in board["bodies"]["t_wait1"]
+
+
+def test_the_answered_approval_requests_posttooluse_closes_its_wait_and_prints_nothing(board, monkeypatch, tmp_path, capsys):
+    """PostToolUse carries the ask's own payload as a `prompt`: the gate must not take it for a new request."""
+    propose(tmp_path, "the plan")
+    ask(monkeypatch)
+    capsys.readouterr()
+    hook(monkeypatch, "prompt", message="", tool_name="AskUserQuestion", tool_input={"questions": [QUESTION]})
+    assert capsys.readouterr().out == "" and board["cards"]["t_wait1"] == "archived"
+
+
+def test_an_approval_request_behind_a_question_not_yet_on_the_board_is_denied(board, monkeypatch, tmp_path, capsys):
+    propose(tmp_path, "the plan")
+    board["fail"]["create"] = 99  # the board is down for wait cards
+    hook(monkeypatch, "notification", message="Which file?")
+    capsys.readouterr()
+    ask(monkeypatch)
+    assert denied(capsys).startswith("An earlier question is not on the board yet")
+    assert [p.name.split("-", 1)[1] for p in runs.pending("t_abc123")] == ["notification.json"]
+    assert events.proposals("t_abc123").joinpath("armed").is_file()
+
+
+def test_an_approval_request_whose_outbox_save_fails_is_denied_and_keeps_its_proposal(board, monkeypatch, tmp_path, capsys):
+    """The gate passed, but the durable entry was not saved: no card would track the dialog, so deny it."""
+    propose(tmp_path, "the plan")
+    capsys.readouterr()
+    real = runs.enqueue
+
+    def full_disk(card, event, *a, **k):
+        if event == "notification":
+            raise OSError(28, "No space left on device")
+        return real(card, event, *a, **k)
+    monkeypatch.setattr(runs, "enqueue", full_disk)
+    assert ask(monkeypatch) == 0
+    why = denied(capsys)  # a deny decision, not a silent 0 that lets the dialog show
+    assert why.startswith("muster could not save this approval request ([Errno 28] No space left on device)")
+    assert f"Proposal v1 {sha('the plan')} stays saved" in why
+    assert "t_wait1" not in board["cards"] and not runs.pending("t_abc123")
+    assert json.loads(events.proposals("t_abc123").joinpath("armed").read_text()) == {"version": 1, "sha": sha("the plan")}
+    monkeypatch.setattr(runs, "enqueue", real)
+    ask(monkeypatch)  # the retry
+    assert denied(capsys) is None and board["bodies"]["t_wait1"].endswith("the plan")
+
+
+def test_a_plain_question_whose_outbox_save_fails_is_still_never_denied(board, monkeypatch, capsys):
+    monkeypatch.setattr(runs, "enqueue", lambda *a, **k: (_ for _ in ()).throw(OSError("disk full")))
+    assert ask(monkeypatch, dict(QUESTION, header="Path")) == 0
+    assert capsys.readouterr().out == ""  # only an approval request is gated; a hook never blocks other asks

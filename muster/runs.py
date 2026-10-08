@@ -73,7 +73,7 @@ def enqueue(card, event, detail, **issue):
 
     An issue run's event (events.hook) has no run.json: it carries its git_dir and link instead.
     """
-    if not issue and not (run_dir(card) / "run.json").is_file():
+    if "git_dir" not in issue and not (run_dir(card) / "run.json").is_file():
         raise core.LaunchError(f"no run {card}")
     ns = time.time_ns()
     path = run_dir(card) / "outbox" / f"{ns}-{event}.json"
@@ -152,12 +152,15 @@ def deliver(run, entry):
     ledger = events.status(card)
     if ledger == "archived":
         return None
+    if event == "proposal":
+        events.post_proposal(card, entry["proposal"])
+        return None  # a comment is no notifier event: nothing to ack
     if event == "prompt":
         events.close_wait(directory, event)
         return None
     clear_dead_claim(directory)
     if event == "notification":
-        events.open_wait(directory, run, entry["detail"], entry["key"])
+        events.open_wait(directory, run, entry["detail"], entry["key"], entry.get("ask"), entry.get("proposal"))
         return wait_card(directory)
     if ledger == "done":
         return card  # a late hook, or a redelivery after a kill: its completion still needs its ack
@@ -361,7 +364,12 @@ from `{run['branch']}` into `{run['base']}` has your HEAD as its head and no tra
 uncommitted changes. Then the human is told, with the pull request's link.
 
 When you need a decision or a fact you cannot read, ask the human with the AskUserQuestion tool and
-wait: that pings them. A question in plain text does not. Never push to {run['base']}, merge, deploy
+wait: that pings them. A question in plain text does not. Before you ask the human to approve a design
+or plan, write all of it to a file (approach, scope and non-goals, safety boundaries, trade-offs, the
+test plan, the decision you need; no secrets) and run
+`{config.hermes_bin()} muster hook --card {run['card']} propose <file>`, again after every revision.
+Then ask with AskUserQuestion, giving the approval question the header `Approval`: without a saved
+proposal that question is refused. The human reviews from the cards, not your pane. Never push to {run['base']}, merge, deploy
 or force-push.
 """
 
@@ -538,11 +546,17 @@ def recover(card, resend=False, adopt=False):
 
 
 def hook(args):
-    """A hook of the run's pane. Never fails the agent, never prints."""
+    """A hook of the run's pane. Never fails the agent; prints only a denied approval request's decision."""
     card, event = args.card, args.event
     if event == "done":  # an ad-hoc run finishes by its pull request; reading stdin here would hang
         print("done: an ad-hoc run is finished by its pull request, nothing to report", file=sys.stderr)
         return 1
+    if event == "propose":  # run by the agent from its shell: no hook payload on stdin
+        if not (run_dir(card) / "run.json").is_file():
+            print(f"propose card {card}: no run {card}", file=sys.stderr)
+            return 1
+        core.prepare_env()
+        return events.propose(card, args.url)
     try:
         try:
             payload = json.loads(sys.stdin.read() or "{}")
@@ -557,9 +571,24 @@ def hook(args):
         if event == "prompt" and not (run_dir(card) / core.WAIT_KIND).exists() and not pending(card):
             return 0  # every PostToolUse lands here: nothing open, nothing queued, nothing to do
         core.prepare_env()
+        try:
+            pin, why = events.gate(card, run_dir(card), event, payload,
+                                   f"{config.hermes_bin()} muster hook --card {card} propose <file>")
+        except Exception as error:  # noqa: BLE001 - fail closed, and say why
+            pin, why = None, f"muster could not check this approval request: {' '.join(str(error).split())}"
+        if why:
+            log(f"{card} hook {event}: approval request denied: {why}")
+            return events.deny(why)
         queued = pending(card)
         if not (event == "prompt" and queued and queued[-1].name.endswith("-prompt.json")):
-            enqueue(card, event, claude.detail(payload))  # one queued prompt is enough
+            try:
+                events.enqueue(card, event, claude.detail(payload), payload, pin)  # one queued prompt is enough
+            except Exception as error:
+                if not pin:
+                    raise
+                why = events.unsaved(pin, error)  # an unsaved approval dialog would be one no card tracks
+                log(f"{card} hook {event}: approval request denied: {why}")
+                return events.deny(why)
         drain(card)
     except Exception as error:  # a hook must never crash the agent; the flush retries what was saved
         with contextlib.suppress(Exception):
