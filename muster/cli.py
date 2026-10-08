@@ -11,6 +11,7 @@ SUBCOMMANDS = {  # name → (sibling module, function); resolved relative to thi
     "hook": ("events", "hook"),
     "cleanup": ("cleanup", "cleanup"),
     "open": ("cleanup", "open_workspace"),
+    "recommend": ("decisions", "recommend"),
 }
 
 
@@ -32,6 +33,13 @@ def setup(parser):
     p.add_argument("url", nargs="?", help="done: the pull request URL; propose: the plan or design file")
     p.add_argument("--card", default=None)
     sub.add_parser("cleanup", help="close finished workspaces").add_argument("--dry-run", action="store_true")
+    p = sub.add_parser("recommend", help="record the coordinator's recommendation on a finished build")
+    p.add_argument("ledger")
+    p.add_argument("--pr", required=True)
+    p.add_argument("--head", required=True)
+    p.add_argument("--choice", required=True, choices=["merge", "send-back", "nothing"])
+    p.add_argument("--review", required=True, help="file with the review text")
+    p.add_argument("--feedback", default=None, help="file with the feedback to send the agent (needed for send-back)")
     p = sub.add_parser("open", help="open an analysis workspace muster owns")
     p.add_argument("--cwd", required=True)
     p.add_argument("--label", required=True)

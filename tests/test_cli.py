@@ -31,6 +31,7 @@ def parse(argv):
         ["hook", "done", "https://github.com/o/r/pull/1"],
         ["launch", "--cwd", ".", "--branch", "feat/x", "--title", "t", "--brief", "b"],
         ["open", "--cwd", ".", "--label", "x"],
+        ["recommend", "t_1", "--pr", "u", "--head", "h", "--choice", "send-back", "--review", "r", "--feedback", "f"],
     ],
 )
 def test_parser_accepts(argv):
@@ -98,3 +99,14 @@ def test_root_loads_as_package_and_dispatches(monkeypatch):
     finally:
         for key in [k for k in sys.modules if k.startswith(f"{name}.")]:
             sys.modules.pop(key, None)
+
+
+def test_recommend_needs_a_valid_choice():
+    with pytest.raises(SystemExit):
+        parse(["recommend", "t_1", "--pr", "u", "--head", "h", "--choice", "ship", "--review", "r"])
+
+
+def test_recommend_dispatches_to_decisions(monkeypatch):
+    monkeypatch.setitem(sys.modules, "muster.decisions", types.SimpleNamespace(recommend=lambda args: 1))
+    args = parse(["recommend", "t_1", "--pr", "u", "--head", "h", "--choice", "merge", "--review", "r"])
+    assert cli.main(args, StubCtx()) == 1

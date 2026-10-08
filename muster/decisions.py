@@ -12,9 +12,11 @@ import fcntl
 import json
 import os
 import secrets
+import sys
 import time
+from pathlib import Path
 
-from . import config, core
+from . import config, core, events
 
 OPEN = ("open", "answered", "executing")
 TERMINAL = ("done", "failed", "stale")
@@ -146,3 +148,78 @@ def run_of(ledger):
                     "title": link.get("title"), "evidence_dir": link.get("launch_dir"),
                     "kind": "issue", "card": ledger}
     raise core.CommandError(f"no run found for card {ledger}")
+
+
+# -- recommend: the coordinator's review of a finished build becomes a `build` request ------------------
+
+LABELS = {"merge": "Merge (squash)", "send-back": "Send back", "nothing": "Do nothing"}
+MERGEABLE = ("CLEAN", "HAS_HOOKS", "UNSTABLE")  # GitHub's mergeStateStatus; it stays the authority on checks
+
+
+def view(url, fields, env=None):
+    return json.loads(core.run(["gh", "pr", "view", url, "--json", fields], env=env))
+
+
+def refusal(run, url, pr, head):
+    """Why `pr` (read from GitHub) is not the run's own open pull request at `head`, else None."""
+    match = events.PR_URL.fullmatch(url or "")
+    if not match or match.group(1).lower() != run["repo"].lower():
+        return f"{url} is not a pull request of {run['repo']}"
+    if pr.get("headRefName") != run["branch"]:
+        return f"{url} is from branch {pr.get('headRefName')}, not {run['branch']}"
+    if pr.get("baseRefName") != run["base"]:
+        return f"{url} targets {pr.get('baseRefName')}, not {run['base']}"
+    if pr.get("isCrossRepository"):
+        return f"{url} is from a fork"
+    if pr.get("isDraft"):
+        return f"{url} is still a draft"
+    if pr.get("state") != "OPEN":
+        return f"{url} is {pr.get('state')}, not OPEN"
+    if pr.get("headRefOid") != head:
+        return f"stale: PR moved to {str(pr.get('headRefOid'))[:7]}"
+    return None
+
+
+def read_text(path, what):
+    raw = Path(path).read_bytes()
+    if len(raw) > events.PROPOSAL_MAX:
+        raise ValueError(f"{path} ({what}) is {len(raw)} bytes, over {events.PROPOSAL_MAX}: shorten it")
+    text = core.SECRET.sub("[redacted]", raw.decode()).strip()
+    if not text:
+        raise ValueError(f"{path} ({what}) is empty")
+    return text
+
+
+def recommend(args):
+    """`hermes muster recommend`: print the id of the open `build` request, or the refusal on stderr and 1."""
+    core.prepare_env()
+    config.require()
+    try:
+        if args.choice == "send-back" and not args.feedback:
+            raise ValueError("--choice send-back needs --feedback FILE")
+        review = read_text(args.review, "review")
+        feedback = read_text(args.feedback, "feedback") if args.feedback else None
+        for req in for_ledger(args.ledger, "build"):
+            if req["status"] == "open" and req.get("head") == args.head:
+                print("an open build request already exists for this head; the new text was ignored", file=sys.stderr)
+                print(req["id"])
+                return 0
+        run = run_of(args.ledger)
+        why = refusal(run, args.pr, view(args.pr, "url,state,headRefOid,headRefName,baseRefName,isDraft,isCrossRepository"),
+                      args.head)
+        if why:
+            raise ValueError(why)
+    except (ValueError, OSError, core.CommandError) as caught:
+        print(f"recommend: {caught}", file=sys.stderr)
+        return 1
+    order = [args.choice] + [a for a in LABELS if a != args.choice]
+    labels = [LABELS[a] + (" (recommended)" if a == args.choice else "") for a in order]
+    sent = sum(1 for r in for_ledger(args.ledger, "feedback") if r["status"] == "done" and r.get("outcome") == "Sent ✓")
+    req = create("build", args.ledger, run=run, head=args.head, base=run["base"], pr=args.pr, review=review,
+                 feedback=feedback, cycle=1 + sent, proposal=None, wait=None, actions=order, choices=[labels],
+                 recommended=args.choice,
+                 questions=[{"text": review, "header": "Build", "multi": False,
+                             "options": [{"label": label, "description": ""} for label in labels]}])
+    stale_others(args.ledger, ("build",), req["id"], "superseded by a newer recommendation")
+    print(req["id"])
+    return 0
