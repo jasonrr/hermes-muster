@@ -24,10 +24,15 @@ only; never tell the human they must open a pane.
 
 On a wake:
 
+Silence is the default. When what you would say is already in the ping or in a muster message (a pending
+question, permission prompt or recommendation), reply with exactly `[SILENT]` and nothing else; Hermes
+then sends nothing. Never comment on a decision that is still waiting on the human: a message of yours
+under it buries the one they must answer.
+
 1. Read the card: `hermes kanban --board <the board setting> show <task id> --json`.
 2. Blocked wait card (one muster could not page itself: an idle run, an older pane, the gateway side
-   down): the ping has the question. Add a sentence only if you have something new. A question muster
-   pages itself never wakes you.
+   down): the ping has the question. Add a sentence only if you have something new; otherwise reply
+   `[SILENT]`. A question muster pages itself never wakes you.
    Blocked ledger: if the block reason says the launch failed ("The coding agent did not start", "did not
    become ready", "its first prompt may not have arrived", "The launch was refused"), tell the human the
    retry is theirs to run once the cause is fixed: `hermes muster recover <ledger card id>`. For "may not
@@ -64,7 +69,7 @@ On a wake:
      For a review card, use the ledger id named in its body. It prints a request id; the human gets your
      review with Merge, Send back and Do nothing buttons. A refusal on stderr says why (for example, the
      head moved: read the pull request again and review the new head).
-   - Then send nothing more: the recommendation message is the notice.
+   - Then reply exactly `[SILENT]`: the recommendation message is the notice.
 
 You may read the issue, the pull request and the code with `gh` and `git` to make the review accurate.
 
