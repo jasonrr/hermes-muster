@@ -57,6 +57,23 @@ def worktrees_dir():
     return Path(config.settings["worktrees"]).expanduser()
 
 
+def log_path(name):
+    return config.data_dir() / "logs" / f"{name}.log"
+
+
+def log(name, line):
+    """One timestamped line, whitespace folded, in <data dir>/logs/<name>.log."""
+    path = log_path(name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a") as out:
+        out.write(f"{time.strftime('%Y-%m-%dT%H:%M:%S')} {' '.join(str(line).split())}\n")
+
+
+def lock_path(name):
+    """<data dir>/logs/<name>.lock: one tick, one cleanup at a time."""
+    return config.data_dir() / "logs" / f"{name}.lock"
+
+
 def hermes_home():
     return Path(os.environ["HERMES_HOME"])
 
@@ -75,6 +92,9 @@ def board_db():
     return root / "kanban.db" if board == "default" else root / "kanban" / "boards" / board / "kanban.db"
 
 
+SECRET = re.compile(r"\b(?:gh[pousr]_\w+|github_pat_\w+)")  # GitHub token shapes
+
+
 class CommandError(Exception):
     """A command exited non-zero; the message names the command and its exit code."""
 
@@ -89,9 +109,11 @@ def run(argv):
     try:
         result = subprocess.run(argv, capture_output=True, text=True, timeout=300, check=False)
     except subprocess.TimeoutExpired:
-        raise CommandError(f"{' '.join(argv[:3])}: no answer in 300 s") from None
+        raise CommandError(SECRET.sub("[redacted]", f"{' '.join(argv[:3])}: no answer in 300 s")) from None
     if result.returncode != 0:
-        raise CommandError(f"{' '.join(argv[:3])}: exit {result.returncode}\n{result.stderr.strip()}")
+        # Redacted here, where every CommandError is made: its text reaches card bodies and logs.
+        raise CommandError(SECRET.sub("[redacted]", f"{' '.join(argv[:3])}: exit {result.returncode}\n"
+                                                    f"{result.stderr.strip()}"))
     return result.stdout
 
 
@@ -108,8 +130,11 @@ def prepare_env():
 def board_exists():
     """The kanban board must exist before the first tick: a missing board is a CommandError on every call."""
     board = config.settings["board"]
-    boards = json.loads(run(["hermes", "kanban", "boards", "list", "--json"]))
-    if not any(b.get("slug") == board for b in boards):
+    try:
+        boards = [b.get("slug") for b in json.loads(run(["hermes", "kanban", "boards", "list", "--json"]))]
+    except (CommandError, ValueError, TypeError, AttributeError) as error:
+        raise config.ConfigError(f"muster: cannot list kanban boards: {' '.join(str(error).split())}") from None
+    if board not in boards:
         raise config.ConfigError(f"muster: kanban board {board!r} does not exist; "
                                  f"create it with `hermes kanban boards create`")
 
@@ -268,7 +293,10 @@ def save_json(path, data):
     """Write whole or not at all: a crash mid-write leaves the old file."""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(data))
+    with open(tmp, "w") as out:
+        out.write(json.dumps(data))
+        out.flush()
+        os.fsync(out.fileno())  # else a power cut after the rename can leave an empty file
     os.replace(tmp, path)
 
 
@@ -294,13 +322,12 @@ def setup_trouble(step, error):
 #   name, model, settings, env, tab                 the agent and its tab
 #   step                                            the side effect last begun: worktree|tab|agent|prompt|done
 #   phase                                           the step being checked, for a failure's words
-#   text, sha256, version                           the exact startup prompt, fixed on first build
+#   text, sha256                                    the exact startup prompt, fixed on first build
 #   prompt {state, at, seq}                         sending|working|blocked|done|not-sent|unknown
 #   reused                                          what an adopted checkout already held
 #   evidence                                        the last diagnostics, newest last
 #   adopt, resend                                   set only by a person's --adopt / --resend
 
-LAUNCH_VERSION = 2
 AGENT_NAME = re.compile(r"[a-z][a-z0-9_-]{0,31}")  # herdr's rule for agent names
 READY = ("idle", "done")
 DELIVERED = ("working", "blocked", "done")
@@ -356,7 +383,7 @@ def plan(owner, repo, clone, branch, base, label, name, model, settings, tab, en
         raise LaunchFailure("refused", f"{branch!r} is not a valid branch name")
     if subprocess.run(["git", "check-ref-format", "--branch", base], capture_output=True, check=False).returncode:
         raise LaunchFailure("refused", f"{base!r} is not a valid base branch name")
-    return {"version": LAUNCH_VERSION, "owner": owner, "repo": repo, "clone": str(clone), "branch": branch,
+    return {"owner": owner, "repo": repo, "clone": str(clone), "branch": branch,
             "base": base, "path": worktree_path(clone, branch), "planned": worktree_path(clone, branch), "label": label, "name": name, "model": model,
             "settings": str(settings), "tab": tab, "env": list(env), "step": None, "workspace": None,
             "pane": None, "prompt": None, "evidence": []}
@@ -412,17 +439,30 @@ def prompt_seen(directory, payload):
     """A UserPromptSubmit hook's evidence that a prompt reached Claude: its sha256, kept beside the record."""
     if not isinstance(payload, dict) or not isinstance(payload.get("prompt"), str):
         return
-    Path(directory).mkdir(parents=True, exist_ok=True)
-    with open(Path(directory) / "prompt-seen.jsonl", "a") as out:
-        out.write(json.dumps({"sha256": hashlib.sha256(payload["prompt"].encode()).hexdigest(),
-                              "at": int(time.time()), "session": payload.get("session_id")}) + "\n")
+    path = Path(directory) / "prompt-seen.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "ab+") as out:
+        out.seek(0, os.SEEK_END)
+        if out.tell():
+            out.seek(-1, os.SEEK_END)
+            torn = out.read(1) != b"\n"  # a crash mid-append: start a fresh line, never glue onto it
+        else:
+            torn = False
+        out.write(("\n" if torn else "").encode() + json.dumps({"sha256": hashlib.sha256(payload["prompt"].encode()).hexdigest(),
+                              "at": int(time.time()), "session": payload.get("session_id")}).encode() + b"\n")
 
 
 def seen(directory, sha):
     path = Path(directory) / "prompt-seen.jsonl"
     if not path.is_file():
         return False
-    return any(json.loads(line).get("sha256") == sha for line in path.read_text().splitlines() if line.strip())
+    for line in path.read_text().splitlines():
+        try:
+            if json.loads(line).get("sha256") == sha:
+                return True
+        except (ValueError, AttributeError):  # a line torn by a crash, or not a record: not evidence
+            continue
+    return False
 
 
 def owner_of(path):
@@ -472,7 +512,7 @@ def take_worktree(rec, save, known):
                             "--path", rec["path"], "--label", rec["label"], "--no-focus", "--trust-repository")
         rec["workspace"] = made["workspace"]["workspace_id"]
         git_dir, _ = owner_of(made["worktree"]["path"])
-        (git_dir / OWNER_FILE).write_text(json.dumps({"owner": rec["owner"], "branch": branch}))
+        save_json(git_dir / OWNER_FILE, {"owner": rec["owner"], "branch": branch})
         save(rec)
         return git_dir
     git_dir, owner = owner_of(rec["path"])
@@ -500,7 +540,7 @@ def take_worktree(rec, save, known):
         rec["reused"] = {"commits": ahead, "uncommitted": len(dirty)}
         note(rec, f"adopted {rec['path']} from {owner or prior or 'a person (--adopt)'}: {ahead} commits, "
                   f"{len(dirty)} uncommitted or untracked files kept")
-        (git_dir / OWNER_FILE).write_text(json.dumps({"owner": rec["owner"], "branch": branch, "previous": owner or prior}))
+        save_json(git_dir / OWNER_FILE, {"owner": rec["owner"], "branch": branch, "previous": owner or prior})
     workspace = here.get("open_workspace_id")
     if not workspace:
         rec["step"] = "worktree"
@@ -755,7 +795,7 @@ def intake_known(repo, number):
 
 def links(record, rec):
     return {"card": record["card"], "repo": record["repo"], "issue": record["issue"], "title": record["title"],
-            "pane": rec["pane"], "workspace": rec["workspace"], "worktree": rec["path"], "base": rec["base"],
+            "pane": rec["pane"], "workspace": rec["workspace"], "worktree": rec["path"], "base": rec["base"], "branch": rec["branch"],
             "launch_dir": str(intake_dir() / record["card"])}
 
 
@@ -834,21 +874,17 @@ def launch(repo, issue, card, event=None):
         return None
 
 
-def lock_path():
-    return config.data_dir() / "logs" / "tick.lock"
-
-
 def start():
     """What tick and recover do first: the env, the config, and the lock file's directory."""
     prepare_env()
     config.require()
-    lock_path().parent.mkdir(parents=True, exist_ok=True)
+    lock_path("tick").parent.mkdir(parents=True, exist_ok=True)
 
 
 def recover(args):
     """Resume a failed intake launch of one card, under its current approval. 0 once its brief is delivered."""
     start()
-    with open(lock_path(), "w") as lock:
+    with open(lock_path("tick"), "w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)  # never beside a cron tick: both may touch the issue branch
         board_exists()
         if (config.data_dir() / "runs" / args.card / "run.json").is_file():  # an issue card may have an outbox there
@@ -867,7 +903,12 @@ def recover_card(card, resend=False, adopt=False):
     at, record = {"step": "record"}, None
     try:
         with launch_lock(directory):
-            record = json.loads((directory / "launch.json").read_text())
+            loaded = json.loads((directory / "launch.json").read_text())
+            if not isinstance(loaded.get("launch"), dict):  # bound only once valid: the handler below reads it
+                print(f"recover {card}: {directory / 'launch.json'} has no launch record; remove and re-apply "
+                      f"{config.settings['label']}", file=sys.stderr)
+                return 1
+            record = loaded
             repo, number = record["repo"], record["issue"]
             at["step"] = "card"
             status = recoverable(card)
@@ -936,7 +977,9 @@ def intake(repo, dry=False):
             task = json.loads(run(card_argv(repo, issue, event)))
             # The create is idempotent: an existing card comes back with its old created_at,
             # and only a card made just now gets a pane.
-            if task["created_at"] < before:
+            # ...unless a tick was killed between that create and launch()'s first save.
+            if task["created_at"] < before and (task.get("status") != "ready"
+                                                or (intake_dir() / task["id"] / "launch.json").is_file()):
                 print(f"{repo}#{number} task {task['id']} ({task.get('status')}) card exists")
                 continue
             launched = launch(repo, issue, task["id"], event)
@@ -954,7 +997,7 @@ def intake(repo, dry=False):
 
 def tick(args):
     start()
-    with open(lock_path(), "w") as lock:
+    with open(lock_path("tick"), "w") as lock:
         # Kanban's idempotency check is not atomic, and a launch can outlast a minute:
         # a second tick must not race the first one's create.
         try:

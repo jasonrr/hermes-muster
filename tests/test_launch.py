@@ -89,7 +89,7 @@ def test_every_side_effect_is_preceded_by_a_saved_record_of_it(world):
     assert saved_before(world, herdr_calls(world, "agent", "start")[0])["step"] == "agent"
     before = saved_before(world, herdr_calls(world, "agent", "prompt")[0])
     assert before["step"] == "prompt" and before["prompt"]["state"] == "sending"
-    assert before["sha256"] and before["version"] == core.LAUNCH_VERSION
+    assert before["sha256"] and "version" not in before
 
 
 @pytest.mark.parametrize("text", ["line one\nline two\r\n", "tabs\tquotes ' \" ` $() ; \\ é →",

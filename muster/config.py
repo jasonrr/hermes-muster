@@ -39,13 +39,11 @@ def load(ctx):
 
 def require():
     missing = [k for k in ("approver_login", "repos") if not settings[k]]
-    try:
-        if int(settings["approver_id"]) <= 0:
-            missing.append("approver_id")
-    except (TypeError, ValueError):
+    approver = settings["approver_id"]  # an int: a quoted YAML id or a float is a typo, not an id
+    if not isinstance(approver, int) or isinstance(approver, bool) or approver <= 0:
         missing.append("approver_id")
-    if not isinstance(settings["branch_prefix"], str) or not settings["branch_prefix"]:
-        missing.append("branch_prefix")
+    missing += [k for k in ("label", "board", "branch_prefix")
+                if not isinstance(settings[k], str) or not settings[k].strip()]
     if missing:
         raise ConfigError(f"muster: set plugins.entries.muster.settings.{{{', '.join(missing)}}} in config.yaml")
     from . import claude
@@ -58,9 +56,15 @@ def require():
         raise ConfigError("muster: cannot run git to check branch_prefix") from None
     if not valid:
         raise ConfigError(f"muster: branch_prefix {settings['branch_prefix']!r} does not make a valid branch name")
-    for slug, (_, _, base) in repos().items():  # repos() raises on a malformed slug
+    names = {}
+    for slug, (clone, _, base) in repos().items():  # repos() raises on a malformed slug
         if base and subprocess.run(["git", "check-ref-format", "--branch", base], capture_output=True).returncode:
             raise ConfigError(f"muster: repos entry {slug}: @{base} is not a valid base branch name")
+        # herdr lays worktrees out by the clone's directory name (core.worktree_path); lower: APFS ignores case.
+        other = names.setdefault(clone.name.lower(), slug)
+        if other != slug:
+            raise ConfigError(f"repos {other} and {slug} share the clone directory name {clone.name}; "
+                              f"give one a path with repos: owner/name=/other/dir")
     wf = workflow_path()
     if not wf.is_file() or not wf.read_text().strip():
         raise ConfigError(f"muster: workflow prompt file missing or empty: {wf}")

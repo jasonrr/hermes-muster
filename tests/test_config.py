@@ -66,7 +66,7 @@ def test_require_names_missing_keys_for_defaults():
         assert key in str(e.value)
 
 
-@pytest.mark.parametrize("bad", ["x", -1])
+@pytest.mark.parametrize("bad", ["x", -1, "7", 7.0, True])
 def test_require_rejects_bad_approver_id(bad):
     config.settings.update(approver_login="me", repos=["o/a"], approver_id=bad)
     with pytest.raises(config.ConfigError, match="approver_id"):
@@ -120,3 +120,27 @@ def test_require_rejects_a_branch_prefix_that_is_not_a_valid_ref(prefix):
     config.settings.update(approver_login="me", repos=["o/a"], approver_id=7, branch_prefix=prefix)
     with pytest.raises(config.ConfigError, match="branch_prefix"):
         config.require()
+
+
+@pytest.mark.parametrize("key, bad", [("label", ""), ("label", "  "), ("label", None), ("board", 5), ("board", "")])
+def test_require_rejects_a_label_or_board_that_is_not_a_non_empty_string(key, bad):
+    config.settings.update(approver_login="me", repos=["o/a"], approver_id=7, **{key: bad})
+    with pytest.raises(config.ConfigError, match=key):
+        config.require()
+
+
+@pytest.mark.parametrize("second", ["b/tools", "b/Tools=/elsewhere/Tools"])
+def test_require_rejects_two_repos_whose_clone_directories_share_a_name(tmp_path, second):
+    """herdr's worktree layout is <worktrees>/<clone name>/<branch>: the two would share every worktree."""
+    config.settings.update(approver_login="me", repos=["a/tools", second], approver_id=7, clone_root=str(tmp_path))
+    name = second.split("=")[-1].rsplit("/", 1)[-1]
+    with pytest.raises(config.ConfigError) as e:
+        config.require()
+    assert str(e.value) == (f"repos a/tools and {second.split('=')[0]} share the clone directory name {name}; "
+                            f"give one a path with repos: owner/name=/other/dir")
+
+
+def test_require_accepts_same_named_repos_cloned_under_different_names(tmp_path):
+    config.settings.update(approver_login="me", repos=["a/tools", "b/tools=/x/b-tools"], approver_id=7,
+                           clone_root=str(tmp_path))
+    config.require()

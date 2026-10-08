@@ -77,7 +77,7 @@ def board(tmp_path, monkeypatch):
             return ""
         # unblock: only a recover, once, of a launch-failure block (see the contract test)
         assert verb in ("block", "archive", "complete", "unblock"), argv
-        card = argv[7] if verb == "block" else argv[5]
+        card = argv[-2] if verb == "block" else argv[5]  # block ... [--] <card> <reason>
         allowed = {"block": ("ready",), "archive": ("ready", "blocked", "done"), "complete": ("ready", "blocked"),
                    "unblock": ("blocked",)}
         if cards[card] not in allowed[verb]:
@@ -115,7 +115,7 @@ def calls(state, verb):
 
 
 def block_text(state, card):
-    return next(c[8] for c in calls(state, "block") if c[7] == card)
+    return next(c[-1] for c in calls(state, "block") if c[-2] == card)
 
 
 def files(run_dir, box):
@@ -717,3 +717,60 @@ def test_core_recover_dispatches_to_runs(board, run1, monkeypatch):
     (runs.run_dir("t_issue") / "outbox").mkdir(parents=True)  # an issue card's hook outbox is not a run
     assert core.recover(argparse.Namespace(card="t_issue", resend=False, adopt=False)) == 0
     assert seen == [(CARD, True, False), ("core", "t_issue")]
+
+
+# A file cut short by a crash, or not an event at all, is dropped with a log line: it never wedges the card.
+
+
+@pytest.mark.parametrize("raw", ['{"ev', "[]", '{"detail": "no event"}'])
+def test_an_unreadable_outbox_entry_is_dropped_and_the_next_is_delivered(board, run1, monkeypatch, raw):
+    (run1 / "outbox").mkdir()
+    (run1 / "outbox" / "1-notification.json").write_text(raw)
+    runs.enqueue(CARD, "notification", "Which repo?")
+    runs.flush()
+    assert board["cards"]["t_wait1"] == "blocked" and files(run1, "outbox") == []
+    assert "1-notification.json: unreadable, dropped" in runs.log_path().read_text()
+
+
+def test_an_unreadable_sent_entry_is_dropped(board, run1):
+    (run1 / "sent").mkdir()
+    (run1 / "sent" / "1-notification.json").write_text('{"ev')
+    runs.flush()
+    assert files(run1, "sent") == [] and "unreadable, dropped" in runs.log_path().read_text()
+
+
+@pytest.mark.parametrize("raw", ['{"se', "[]"])
+def test_an_unreadable_idle_file_restarts_the_idle_clock(board, run1, raw):
+    board["agent"] = "idle"
+    (run1 / "idle.json").write_text(raw)
+    runs.flush()
+    assert json.loads((run1 / "idle.json").read_text())["seq"] == board["agent_seq"]
+
+
+def test_a_torn_prompt_seen_line_neither_hides_nor_swallows_evidence(run1):
+    sha = __import__("hashlib").sha256(b"the brief").hexdigest()
+    (run1 / "prompt-seen.jsonl").write_text('{"sha256": "x", "at"')  # a crash mid-append
+    core.prompt_seen(run1, {"prompt": "the brief"})
+    assert core.seen(run1, sha)
+    (run1 / "prompt-seen.jsonl").write_text(json.dumps({"sha256": sha}) + "\n" + '[1]\n{"sha2')
+    assert core.seen(run1, sha)
+
+
+def test_save_json_syncs_before_it_replaces(tmp_path, monkeypatch):
+    synced = []
+    monkeypatch.setattr(core.os, "fsync", lambda fd: synced.append(fd))
+    core.save_json(tmp_path / "a.json", {"x": 1})
+    assert synced and json.loads((tmp_path / "a.json").read_text()) == {"x": 1}
+
+
+def test_flush_marks_a_run_closed_only_under_its_launch_lock(board, run1):
+    """relaunch saves run.json under launch.lock: a flush must not write over a record saved meanwhile."""
+    board.update(agent="idle", prs=[PR])
+    runs.flush()
+    board["cursor"] = board["seq"]
+    with core.launch_lock(run1):
+        runs.flush()
+    assert json.loads((run1 / "run.json").read_text()).get("closed") is None
+    assert "another launch or recover" in runs.log_path().read_text()
+    runs.flush()
+    assert json.loads((run1 / "run.json").read_text())["closed"] is True

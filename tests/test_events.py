@@ -25,12 +25,17 @@ def board(tmp_path, monkeypatch):
     git_dir.mkdir()
     (git_dir / core.CARD_FILE).write_text(json.dumps(LINKS))
     state = {"cards": {"t_abc123": "ready"}, "blocks": {}, "keys": {}, "calls": [], "flaky": 0, "git_dir": git_dir,
-             "fail": {}, "on_create": None}
+             "fail": {}, "on_create": None, "head": "muster/397"}
 
     def fake_run(argv):
         state["calls"].append(argv)
         if argv[0] == "git":
             return f"{git_dir}\n"
+        if argv[:3] == ["gh", "pr", "view"]:
+            assert argv[3].startswith("https://github.com/") and argv[4:] == ["--json", "headRefName"], argv
+            if state["head"] is None:
+                raise core.CommandError("gh pr view: exit 1\nHTTP 502")
+            return json.dumps({"headRefName": state["head"]})
         verb, cards = argv[4], state["cards"]
         if verb == "show":
             return json.dumps({"task": {"id": argv[5], "status": cards[argv[5]]}})
@@ -53,7 +58,7 @@ def board(tmp_path, monkeypatch):
         if verb == "notify-subscribe":
             return ""
         assert verb in ("block", "archive", "complete"), argv  # never unblock: see the contract test
-        card = argv[7] if verb == "block" else argv[5]
+        card = argv[-2] if verb == "block" else argv[5]  # block ... [--] <card> <reason>
         allowed = {"block": ("ready",), "archive": ("ready", "blocked", "done"), "complete": ("ready", "blocked")}
         if cards[card] not in allowed[verb]:
             raise core.CommandError(f"hermes kanban --board: exit 1\ncannot {verb} {card}")
@@ -89,8 +94,8 @@ def test_a_wait_opens_a_subscribed_blocked_wait_card_and_leaves_the_ledger_alone
     assert verbs(board) == ["create", "notify-subscribe", "block"]
     assert board["cards"] == {"t_abc123": "ready", "t_wait1": "blocked"}
     block = next(c for c in board["calls"] if c[4:5] == ["block"])
-    assert block[5:8] == ["--kind", "needs_input", "t_wait1"]
-    assert block[8] == "Claude is waiting for your input\nReply in Herdr pane p_agent."
+    assert block[5:9] == ["--kind", "needs_input", "--", "t_wait1"]
+    assert block[9] == "Claude is waiting for your input\nReply in Herdr pane p_agent."
     create = next(c for c in board["calls"] if c[4:5] == ["create"])
     assert create[create.index("--idempotency-key") + 1].startswith("t_abc123:wait:")
     assert "ledger t_abc123" in create[create.index("--body") + 1]
@@ -102,13 +107,19 @@ def test_a_long_question_is_kept_whole(board, monkeypatch):
     """The gateway shows the whole reason (human_notices); a cut here would end a question mid-sentence."""
     question = "The brief says no PR, but the tracker closes only on a PR. " * 8 + "Which do you want?"
     hook(monkeypatch, "notification", message=question)
-    assert next(c for c in board["calls"] if c[4:5] == ["block"])[8] == f"{question}\nReply in Herdr pane p_agent."
+    assert next(c for c in board["calls"] if c[4:5] == ["block"])[-1] == f"{question}\nReply in Herdr pane p_agent."
 
 
 def test_an_empty_message_still_says_what_to_do(board, monkeypatch):
     hook(monkeypatch, "notification", message="")
-    assert next(c for c in board["calls"] if c[4:5] == ["block"])[8] == (
+    assert next(c for c in board["calls"] if c[4:5] == ["block"])[-1] == (
         "The agent is waiting for you.\nReply in Herdr pane p_agent.")
+
+
+def test_a_question_that_starts_like_a_flag_is_passed_as_the_reason(board, monkeypatch):
+    hook(monkeypatch, "notification", message="--kind=capability please")
+    block = next(c for c in board["calls"] if c[4:5] == ["block"])
+    assert block[-3:] == ["--", "t_wait1", "--kind=capability please\nReply in Herdr pane p_agent."]
 
 
 def test_a_second_wait_while_one_is_open_makes_no_card(board, monkeypatch):
@@ -154,7 +165,7 @@ def test_clear_ends_a_session_but_does_not_block(board, monkeypatch):
 def test_session_end_blocks_a_ready_ledger_only(board, monkeypatch):
     assert hook(monkeypatch, "session-end", reason="prompt_input_exit") == 0
     assert board["cards"]["t_abc123"] == "blocked"
-    assert next(c for c in board["calls"] if c[4:5] == ["block"])[8] == (
+    assert next(c for c in board["calls"] if c[4:5] == ["block"])[-1] == (
         "The agent's session ended before it opened a pull request.\nCheck Herdr pane p_agent.")
     board["cards"]["t_abc123"], board["calls"] = "done", []
     assert hook(monkeypatch, "session-end") == 0
@@ -190,6 +201,27 @@ def test_done_refuses_a_url_that_is_not_a_pull_request_of_this_repository(board,
     assert done("not a url") == 2
     assert done(None) == 2
     assert verbs(board) == []
+
+
+def test_done_refuses_a_pull_request_from_another_branch(board, monkeypatch, capsys):
+    board["head"] = "fix/other"
+    assert done(PR) == 1
+    assert f"done: {PR} is from fix/other, not muster/397" in capsys.readouterr().err
+    assert board["cards"]["t_abc123"] == "ready" and verbs(board) == []
+    assert "is from fix/other" in events.log_path().read_text()
+
+
+def test_done_fails_when_github_cannot_name_the_head_branch(board, monkeypatch, capsys):
+    board["head"] = None
+    assert done(PR) == 1
+    assert "HTTP 502" in capsys.readouterr().err and board["cards"]["t_abc123"] == "ready"
+
+
+def test_done_checks_the_branch_the_links_file_names(board, monkeypatch):
+    (board["git_dir"] / core.CARD_FILE).write_text(json.dumps({**LINKS, "branch": "work/397"}))
+    board["head"] = "work/397"
+    assert done(PR) == 0
+    assert board["cards"]["t_abc123"] == "done"
 
 
 def test_outside_a_muster_worktree_nothing_happens(tmp_path, monkeypatch):
@@ -228,6 +260,22 @@ def test_a_hook_that_keeps_failing_is_logged_and_never_fails_the_agent(board, mo
     assert hook(monkeypatch, "notification") == 0
     assert "notification card t_abc123" in events.log_path().read_text()
     assert not (board["git_dir"] / core.WAIT_KIND).exists()
+
+
+def test_a_type_error_is_logged_like_any_other_failure(board, monkeypatch, capsys):
+    def broken(*args):
+        raise TypeError("'NoneType' object is not subscriptable")
+    monkeypatch.setattr(events, "move", broken)
+    assert hook(monkeypatch, "notification") == 0
+    assert done(PR) == 1
+    assert events.log_path().read_text().count("not subscriptable") == 2
+    assert "not subscriptable" in capsys.readouterr().err
+
+
+def test_every_muster_log_line_starts_with_its_time(board, monkeypatch):
+    board["flaky"] = 5
+    hook(monkeypatch, "notification")
+    assert __import__("re").match(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d notification card", events.log_path().read_text())
 
 
 def test_hook_events_point_hermes_at_the_configured_home(board, monkeypatch):
@@ -305,7 +353,7 @@ def test_an_askuserquestion_wait_names_the_question(board, monkeypatch):
     hook(monkeypatch, "notification", message=None, hook_event_name="PreToolUse", tool_name="AskUserQuestion",
          tool_input={"questions": [{"question": "Which repo?"}]})
     block = next(c for c in board["calls"] if c[4:5] == ["block"])
-    assert block[8] == "Which repo?\nReply in Herdr pane p_agent."
+    assert block[-1] == "Which repo?\nReply in Herdr pane p_agent."
 
 
 def test_a_rejected_question_closes_its_wait_so_the_corrected_one_pages(board, monkeypatch):
@@ -315,7 +363,7 @@ def test_a_rejected_question_closes_its_wait_so_the_corrected_one_pages(board, m
     assert hook(monkeypatch, "prompt") == 0
     hook(monkeypatch, "notification", message=None, tool_input={"questions": [{"question": "Which repo?"}]})
     assert board["cards"]["t_wait1"] == "archived" and board["cards"]["t_wait2"] == "blocked"
-    assert [c[8] for c in board["calls"] if c[4:5] == ["block"]][-1] == "Which repo?\nReply in Herdr pane p_agent."
+    assert [c[-1] for c in board["calls"] if c[4:5] == ["block"]][-1] == "Which repo?\nReply in Herdr pane p_agent."
 
 
 def test_a_full_session_pages_once_per_real_wait(board, monkeypatch):
@@ -380,10 +428,10 @@ def test_a_stop_without_a_card_does_nothing_at_all(board, monkeypatch):
 def test_core_and_events_agree_on_card_file(board, tmp_path):
     """The marker core writes at launch is the one events reads."""
     record = {"card": "t_abc123", "repo": "acme/app", "issue": 397, "title": "T"}
-    rec = {"pane": "p_agent", "workspace": "w_1", "path": "/wt", "base": "main"}
+    rec = {"pane": "p_agent", "workspace": "w_1", "path": "/wt", "base": "main", "branch": "muster/397"}
     (board["git_dir"] / core.CARD_FILE).write_text(json.dumps(core.links(record, rec)))
     git_dir, link = events.context("/wt")
-    assert git_dir == board["git_dir"] and link["card"] == "t_abc123"
+    assert git_dir == board["git_dir"] and link["card"] == "t_abc123" and link["branch"] == "muster/397"
 
 
 def test_hook_with_card_delegates_to_runs(monkeypatch):

@@ -12,6 +12,10 @@
 
 - A config suffix on a free-form path (`owner/name=/path@base`) → any `@` already in the path parses as a branch that `check-ref-format` accepts, so the clone path is silently cut; exempt only the unambiguous form (`/@`), document the rest, and validate every git ref argument (`--base -x` reached `git fetch` as an option) in the one function all launches route through (`core.plan`).
 
+## hardening (issue #7, 2026-10-07)
+
+- Free text passed as an argparse positional after options (`kanban block --kind K <card> <reason>`) → a reason starting with `--kind=` is parsed as the option and the block fails with exit 2; put `--` before the positionals whenever any of them is agent- or human-written.
+
 ## 2026-10-07 carried from rc-intake docs/learnings.md
 
 - A hermes call without `HERMES_HOME` set → it reads another home's board; set it before any `hermes` call. Do not pin `HERMES_KANBAN_HOME` to it: hermes shares one board root across profiles (`kanban_home()`), so pinning forks the board away from the gateway; ask `hermes_cli.kanban_db.kanban_db_path` for the db path.

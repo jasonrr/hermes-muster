@@ -220,7 +220,7 @@ def test_an_approved_issue_gets_one_card_one_subscription_and_one_agent_pane(tmp
     links = json.loads((git_dir / core.CARD_FILE).read_text())
     assert links == {"card": "t_abc123", "repo": REPO, "issue": 397, "title": "Add a unit test",
                      "pane": "w1:p2", "workspace": "w1",
-                     "worktree": str(worktree), "base": "main", "launch_dir": str(core.intake_dir() / "t_abc123")}
+                     "worktree": str(worktree), "base": "main", "branch": "muster/397", "launch_dir": str(core.intake_dir() / "t_abc123")}
     record = json.loads((core.intake_dir() / "t_abc123" / "launch.json").read_text())
     assert record["event"] == 407 and record["bug"] is False
     assert record["launch"]["prompt"]["state"] == "working" and record["launch"]["step"] == "done"
@@ -291,10 +291,22 @@ def test_no_origin_head_and_no_suffix_launches_from_main_and_records_why(tmp_pat
 def test_an_existing_card_launches_nothing(tmp_path, monkeypatch, capsys):
     calls = []
     monkeypatch.setattr(core, "run", fake_world(tmp_path, calls, card_age=60)[0])
+    core.save_json(core.intake_dir() / "t_abc123" / "launch.json", {"card": "t_abc123"})  # its launch began
     assert tick() == 0
     assert not any(c[0] == "herdr" for c in calls)
     assert not any(c[:2] == ["hermes", "kanban"] and c[4] == "notify-subscribe" for c in calls)
     assert f"{REPO}#397 task t_abc123 (ready) card exists" in capsys.readouterr().out
+
+
+def test_a_ready_card_a_killed_tick_left_without_a_launch_is_launched(tmp_path, monkeypatch, capsys):
+    """A tick killed between `kanban create` and launch(): the next tick sees "card exists", no record."""
+    calls = []
+    monkeypatch.setattr(core, "run", fake_world(tmp_path, calls, card_age=60)[0])
+    assert tick() == 0
+    assert len([c for c in calls if c[:3] == ["herdr", "agent", "prompt"]]) == 1
+    assert (core.intake_dir() / "t_abc123" / "launch.json").is_file()
+    out = capsys.readouterr().out
+    assert "card exists" not in out and "task t_abc123 pane w1:p2" in out
 
 
 def test_gate_skips_missing_clone(tmp_path, monkeypatch, capsys):
@@ -409,8 +421,8 @@ def test_a_missing_bot_gh_config_blocks_the_card(tmp_path, monkeypatch):
 def test_a_held_lock_means_another_tick_is_running_and_this_one_does_nothing(tmp_path, monkeypatch):
     calls = []
     monkeypatch.setattr(core, "run", fake_world(tmp_path, calls)[0])
-    core.lock_path().parent.mkdir(parents=True, exist_ok=True)
-    with open(core.lock_path(), "w") as held:
+    core.lock_path("tick").parent.mkdir(parents=True, exist_ok=True)
+    with open(core.lock_path("tick"), "w") as held:
         fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
         assert tick() == 0
     assert calls == []
@@ -434,6 +446,21 @@ def test_tick_refuses_missing_board(tmp_path, monkeypatch):
     with pytest.raises(config.ConfigError, match="muster"):
         tick()
     assert not any(c[4:5] == ["create"] for c in calls)
+
+
+@pytest.mark.parametrize("out", ["boom", "not json", "5"])
+def test_a_board_list_that_fails_or_is_not_json_is_a_config_error(tmp_path, monkeypatch, out):
+    base = fake_world(tmp_path, [])[0]
+
+    def run(argv):
+        if argv[:4] == ["hermes", "kanban", "boards", "list"]:
+            if out == "boom":
+                raise core.CommandError("hermes kanban boards: exit 1\ndatabase is locked")
+            return out
+        return base(argv)
+    monkeypatch.setattr(core, "run", run)
+    with pytest.raises(config.ConfigError, match="cannot list kanban boards"):
+        tick()
 
 
 def test_a_failing_repository_is_reported_and_the_rest_still_run(tmp_path, monkeypatch, capsys):
@@ -636,6 +663,14 @@ def test_recover_of_a_card_without_a_launch_record_says_how_to_relaunch(tmp_path
     assert "re-apply agent-ready" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize("record", [{"card": "t_x", "repo": REPO, "issue": 397}, {"card": "t_x", "launch": []}])
+def test_recover_of_a_record_without_a_launch_says_so_without_a_traceback(tmp_path, monkeypatch, capsys, record):
+    monkeypatch.setattr(core, "run", fake_world(tmp_path, [])[0])
+    core.save_json(core.intake_dir() / "t_x" / "launch.json", record)
+    assert recover("t_x") == 1
+    assert "has no launch record; remove and re-apply agent-ready" in capsys.readouterr().err
+
+
 def test_a_new_label_reuses_the_checkout_an_earlier_card_of_the_issue_left(tmp_path, monkeypatch):
     """An earlier card's launch failed and left muster/<n>; the approver labels again."""
     calls, world = [], World(tmp_path)
@@ -705,3 +740,11 @@ def test_the_issue_query_url_encodes_the_label(tmp_path, monkeypatch):
     monkeypatch.setattr(core, "run", lambda argv: calls.append(argv) or "")
     core.intake(REPO)
     assert "labels=ready%20%26%20go&" in calls[0][-1]
+
+
+def test_a_command_error_never_carries_a_token():
+    """CommandError text reaches card bodies (setup_trouble) and logs: a token gh or git echoes is cut first."""
+    with pytest.raises(core.CommandError) as e:
+        core.run(["sh", "-c", "echo ghp_ABCDEF0123 github_pat_11AB_cd >&2; exit 1", "ghs_inargv9"])
+    assert "ghp_" not in str(e.value) and "github_pat_" not in str(e.value) and "[redacted]" in str(e.value)
+    assert core.SECRET.sub("[redacted]", "highs_x token=ghp_abc") == "highs_x token=[redacted]"
