@@ -364,7 +364,11 @@ from `{run['branch']}` into `{run['base']}` has your HEAD as its head and no tra
 uncommitted changes. Then the human is told, with the pull request's link.
 
 When you need a decision or a fact you cannot read, ask the human with the AskUserQuestion tool and
-wait: that pings them. A question in plain text does not. Never push to {run['base']}, merge, deploy
+wait: that pings them. A question in plain text does not. Before you ask the human to approve a design
+or plan, write all of it to a file (approach, scope and non-goals, safety boundaries, trade-offs, the
+test plan, the decision you need; no secrets) and run
+`{config.hermes_bin()} muster hook --card {run['card']} propose <file>`, again after every revision:
+the human reviews from the cards, not your pane. Never push to {run['base']}, merge, deploy
 or force-push.
 """
 
