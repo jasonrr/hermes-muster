@@ -9,6 +9,7 @@ DEFAULTS = {
     "bug_label": "bug",  # issues with it are briefed as bugs
     "approver_login": "",  # REQUIRED: GitHub login whose label event authorizes work (compared case-insensitively)
     "approver_id": 0,  # REQUIRED: that account's numeric id (login can be renamed; id cannot)
+    "auto_approvers": [],  # [{login, id, label?, repos}]: bots whose own label starts work (core.automatic)
     "repos": [],  # REQUIRED: ["owner/name", "owner/name=/abs/clone/path", ...]
     "clone_root": "~/Code",  # clone = clone_root/<name> when no =path given
     "board": "muster",  # hermes kanban board slug; give muster its own board (idempotency keys are per board)
@@ -25,6 +26,7 @@ DEFAULTS = {
     "worktrees": "~/.herdr/worktrees",
 }
 settings = dict(DEFAULTS)  # module-level; cli.main fills it; tests assign into it
+AUTO_LABEL = "automatic-approval"  # an auto_approvers entry's label when it names none
 SLUG = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 
 
@@ -39,8 +41,7 @@ def load(ctx):
 
 def require():
     missing = [k for k in ("approver_login", "repos") if not settings[k]]
-    approver = settings["approver_id"]  # an int: a quoted YAML id or a float is a typo, not an id
-    if not isinstance(approver, int) or isinstance(approver, bool) or approver <= 0:
+    if not is_id(settings["approver_id"]):
         missing.append("approver_id")
     missing += [k for k in ("label", "board", "branch_prefix")
                 if not isinstance(settings[k], str) or not settings[k].strip()]
@@ -65,11 +66,33 @@ def require():
         if other != slug:
             raise ConfigError(f"repos {other} and {slug} share the clone directory name {clone.name}; "
                               f"give one a path with repos: owner/name=/other/dir")
+    # plugin.yaml cannot type list entries: this is the only check of their shape.
+    auto = settings["auto_approvers"]
+    if not isinstance(auto, list):
+        raise ConfigError("muster: auto_approvers must be a list of {login, id, label, repos}")
+    known = {slug.lower() for slug in repos()}
+    for i, entry in enumerate(auto):
+        what = (
+            "is not a mapping" if not isinstance(entry, dict)
+            else "needs a login" if not isinstance(entry.get("login"), str) or not entry["login"].strip()
+            else "needs an integer id" if not is_id(entry.get("id"))
+            else "needs a non-empty list of repos" if not isinstance(entry.get("repos"), list) or not entry["repos"]
+            else "names a repo not in repos" if not {str(r).lower() for r in entry["repos"]} <= known
+            else "has an empty label" if "label" in entry and (not isinstance(entry["label"], str)
+                                                               or not entry["label"].strip())
+            else None)
+        if what:
+            raise ConfigError(f"muster: auto_approvers[{i}] {what}")
     wf = workflow_path()
     if not wf.is_file() or not wf.read_text().strip():
         raise ConfigError(f"muster: workflow prompt file missing or empty: {wf}")
     if not shutil.which("hermes") and not (Path.home() / ".local/bin/hermes").exists():
         raise ConfigError("muster: cannot find the hermes executable on PATH or in ~/.local/bin")
+
+
+def is_id(value):
+    """A GitHub account id: an int. A quoted YAML id or a float is a typo, not an id."""
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
 
 
 def data_dir() -> Path:

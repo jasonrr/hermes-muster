@@ -144,3 +144,26 @@ def test_require_accepts_same_named_repos_cloned_under_different_names(tmp_path)
     config.settings.update(approver_login="me", repos=["a/tools", "b/tools=/x/b-tools"], approver_id=7,
                            clone_root=str(tmp_path))
     config.require()
+
+
+SENTRY = {"login": "sentry[bot]", "id": 39604003, "repos": ["o/a"]}
+
+
+@pytest.mark.parametrize("auto", [[], [SENTRY], [{**SENTRY, "label": "auto-ok", "repos": ["O/A"]}]])
+def test_require_accepts_auto_approvers(auto):
+    config.settings.update(approver_login="me", repos=["o/a"], approver_id=7, auto_approvers=auto)
+    config.require()
+
+
+@pytest.mark.parametrize("auto", [
+    None, SENTRY, ["sentry[bot]"],
+    [{k: v for k, v in SENTRY.items() if k != "login"}], [{**SENTRY, "login": ""}],
+    [{k: v for k, v in SENTRY.items() if k != "id"}], [{**SENTRY, "id": "39604003"}], [{**SENTRY, "id": True}],
+    [{**SENTRY, "id": 0}],
+    [{k: v for k, v in SENTRY.items() if k != "repos"}], [{**SENTRY, "repos": []}], [{**SENTRY, "repos": "o/a"}],
+    [{**SENTRY, "repos": ["o/b"]}], [{**SENTRY, "label": ""}], [{**SENTRY, "label": 5}],
+])
+def test_require_rejects_a_malformed_auto_approver(auto):
+    config.settings.update(approver_login="me", repos=["o/a"], approver_id=7, auto_approvers=auto)
+    with pytest.raises(config.ConfigError, match="auto_approvers"):
+        config.require()
