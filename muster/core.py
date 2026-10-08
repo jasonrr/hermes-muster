@@ -471,6 +471,30 @@ def pull_requests(repo, branch):
     return [pr["url"] for pr in prs if pr.get("state") in ("OPEN", "MERGED")]
 
 
+def project_status(repo, number):
+    """Set the issue's Status in the configured GitHub Project; one line saying what happened, or None when unset.
+    Ids are resolved every launch, never hard-coded."""
+    s = config.settings
+    if not (s["project_owner"] and s["project_number"]):
+        return None
+    where = [str(s["project_number"]), "--owner", s["project_owner"]]
+    project = json.loads(run(["gh", "project", "view", *where, "--format", "json"]))
+    fields = json.loads(run(["gh", "project", "field-list", *where, "-L", "100", "--format", "json"]))["fields"]
+    field = next((f for f in fields if f.get("name") == s["project_status_field"]), None)
+    option = next((o for o in (field or {}).get("options") or [] if o.get("name") == s["project_status_value"]), None)
+    if option is None:
+        return "field/option not found"
+    # ponytail: the first 300 items only, as rc_intake did; page with --limit if a Project outgrows it.
+    items = json.loads(run(["gh", "project", "item-list", *where, "-L", "300", "--format", "json"]))["items"]
+    url = f"https://github.com/{repo}/issues/{number}".lower()  # a draft item has no url
+    item = next((i for i in items if str((i.get("content") or {}).get("url", "")).lower() == url), None)
+    if item is None:
+        return f"not in Project #{s['project_number']}"
+    run(["gh", "project", "item-edit", "--project-id", project["id"], "--id", item["id"],
+         "--field-id", field["id"], "--single-select-option-id", option["id"]])
+    return s["project_status_value"]
+
+
 @contextlib.contextmanager
 def launch_lock(directory):
     """One launch or recover of a record at a time; a second one is refused, never queued."""
@@ -872,6 +896,15 @@ def relaunch(record, directory, at):
     state = ensure(record["launch"], save, directory, prepare, intake_known(repo, number))
     at["step"] = "links"
     kanban("comment", card, f"{LINKS_PREFIX} " + json.dumps(links(record, record["launch"])))
+    # Never fails the launch: what happened is one card comment and one log line.
+    try:
+        moved = project_status(repo, number)
+    except (CommandError, OSError, ValueError, KeyError, TypeError, AttributeError) as error:
+        moved = f"failed: {' '.join(str(error).split())}"
+    if moved:
+        print(f"{repo}#{number} project: {moved}")
+        with contextlib.suppress(CommandError, OSError):
+            kanban("comment", card, f"project: {moved}")
     return state, record["launch"]["pane"]
 
 
