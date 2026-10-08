@@ -761,3 +761,16 @@ def test_save_json_syncs_before_it_replaces(tmp_path, monkeypatch):
     monkeypatch.setattr(core.os, "fsync", lambda fd: synced.append(fd))
     core.save_json(tmp_path / "a.json", {"x": 1})
     assert synced and json.loads((tmp_path / "a.json").read_text()) == {"x": 1}
+
+
+def test_flush_marks_a_run_closed_only_under_its_launch_lock(board, run1):
+    """relaunch saves run.json under launch.lock: a flush must not write over a record saved meanwhile."""
+    board.update(agent="idle", prs=[PR])
+    runs.flush()
+    board["cursor"] = board["seq"]
+    with core.launch_lock(run1):
+        runs.flush()
+    assert json.loads((run1 / "run.json").read_text()).get("closed") is None
+    assert "another launch or recover" in runs.log_path().read_text()
+    runs.flush()
+    assert json.loads((run1 / "run.json").read_text())["closed"] is True

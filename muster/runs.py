@@ -345,7 +345,8 @@ def flush(args=None):
                 reconcile(load(card))
                 drain(card)
                 if closed(card):
-                    core.save_json(directory / "run.json", {**load(card), "closed": True})
+                    with core.launch_lock(directory):  # relaunch saves run.json under it; busy: the next flush
+                        core.save_json(directory / "run.json", {**load(card), "closed": True})
             except ERRORS as error:
                 log(f"{card} flush: {error}")
     return 0
