@@ -67,7 +67,7 @@ def test_question_request_is_created_with_everything_the_plan_lists(tmp_path):
     assert req["tool"] == {"name": "AskUserQuestion", "input_sha": sha(ASK["tool_input"])}
     assert req["proposal"] == {"version": 2, "sha": "abc"} and not (tmp_path / core.PIN_FILE).exists()
     assert req["run"] == {"repo": "o/r", "branch": "muster/5", "pane": "w_1:p2", "issue": 5, "kind": "issue"}
-    assert req["alive"] > 0
+    assert req["alive"] > 0 and req["blocked_seen"] is True  # the gateway may now read `not blocked` as answered
 
 
 def test_answered_question_prints_the_updated_input_and_marks_delivery(tmp_path, capsys):
@@ -92,7 +92,7 @@ def test_a_pane_that_never_blocks_stales_the_request_with_no_output(tmp_path, ca
     bridge.wait(tmp_path, LINK, ASK)
     assert out(capsys) is None
     req = only()
-    assert req["status"] == "stale" and "before muster could ask" in req["outcome"]
+    assert req["status"] == "stale" and "before muster could ask" in req["outcome"] and "blocked_seen" not in req
 
 
 def test_the_blocked_check_retries(tmp_path, monkeypatch):

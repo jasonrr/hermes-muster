@@ -139,6 +139,8 @@ def _touch():
 async def scan():
     """One pass: heartbeat, then each request in its own try block, then the ones that ended."""
     S.loop = asyncio.get_running_loop()
+    if not S.retry:
+        S.failing_since = None  # nothing is waiting on a failed send
     if not S.failing_since or time.monotonic() - S.failing_since < HEALTHY_FOR:
         await blocking(_touch)  # wait cards go wake-only on this; a gateway that cannot send must let Hermes ping
     reqs = await blocking(decisions.open_requests)
@@ -162,6 +164,9 @@ async def scan():
             await handle(req)
         except Exception as caught:  # noqa: BLE001 - one poisoned request must not stop the others
             log(f"request {req.get('id')}: {caught}")
+    for rid in list(S.retry):  # a request that ended unsent is no longer a failing send
+        if live.get(rid) != "open":
+            S.retry.pop(rid)
     for rid in list(S.cids):  # a request that left `open`: let its waiter threads exit
         if live.get(rid) != "open":
             release(rid)
@@ -193,7 +198,7 @@ async def handle(req):
         if time.time() - req.get("alive", req.get("created_at", 0)) > ALIVE_MAX:
             await end(rid, "The agent is no longer waiting")
             return
-        if kind == "permission" and req["status"] == "open" and await pane_gone(req):
+        if kind == "permission" and req["status"] == "open" and req.get("blocked_seen") and await pane_gone(req):
             await end(rid, "Answered in the pane")
             return
     if req.get("delivered_by_hook") and time.time() - req.get("alive", req.get("created_at", 0)) > SETTLE_MAX:

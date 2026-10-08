@@ -118,6 +118,7 @@ def wait(directory, link, payload):
         if not blocked(run["pane"]):
             decisions.transition(rid, ("open",), "stale", outcome="answered before muster could ask")
             return 0
+        decisions.update(rid, blocked_seen=True)  # from here on, the pane leaving `blocked` means it was answered there
         poll(rid, tool_input)
     except Exception as caught:  # noqa: BLE001 - a hook never fails the agent, and never allows on error
         log(f"permission {link.get('card')}: {' '.join(str(caught).split())}")

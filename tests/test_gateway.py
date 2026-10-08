@@ -43,7 +43,7 @@ def permission(**fields):
          "options": [{"label": "Allow once", "description": ""}, {"label": "Deny", "description": ""}]}
     return decisions.create("permission", "led1", questions=[q], choices=[["Allow once", "Deny"]],
                             tool={"name": "Bash", "input_sha": "y"}, run={"branch": "b", "pane": "p1"},
-                            alive=time.time(), **fields)
+                            alive=time.time(), **{"blocked_seen": True, **fields})
 
 
 def run(coro):
@@ -191,6 +191,19 @@ def test_the_heartbeat_stops_while_sends_keep_failing(hermes):
     assert gateway.S.failing_since is None
     run(gateway.scan())
     assert beat.stat().st_mtime > 0
+
+
+def test_the_heartbeat_resumes_when_the_failing_request_ends_unsent(hermes):
+    req = ask()
+    gateway.S.adapter.fail_sends = 99
+    run(gateway.scan())
+    gateway.S.failing_since -= gateway.HEALTHY_FOR + 1
+    decisions.transition(req["id"], ("open",), "stale", outcome="answered in the pane")
+    beat = decisions.root() / ".gateway"
+    run(gateway.scan())  # drops the ended request's retry
+    os.utime(beat, (0, 0))
+    run(gateway.scan())
+    assert gateway.S.failing_since is None and beat.stat().st_mtime > 0
 
 
 def test_the_backoff_doubles_up_to_a_minute():
@@ -571,6 +584,14 @@ def test_a_pane_working_again_means_the_dialog_was_answered_there(monkeypatch):
     run(gateway.scan())
     got = decisions.load(req["id"])
     assert (got["status"], got["outcome"]) == ("stale", "Answered in the pane")
+
+
+def test_a_fresh_request_survives_herdr_not_showing_its_dialog_yet(monkeypatch):
+    # the bridge has not seen the pane blocked yet (up to 5 s): `working` then is not an answer
+    req = permission(blocked_seen=False)
+    monkeypatch.setattr(core, "agent_at", lambda pane: {"agent_status": "working"})
+    run(gateway.scan())
+    assert decisions.load(req["id"])["status"] == "open"
 
 
 def test_an_answered_permission_is_not_staled_while_the_hook_picks_it_up(monkeypatch):
