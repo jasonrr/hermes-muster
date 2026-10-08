@@ -14,7 +14,7 @@ On a one-minute cron tick muster looks for issues carrying your approving label 
 
 ## Why not a bot
 
-- One named human approves. The label event must come from `approver_login` with `approver_id`; a label applied or re-applied by anyone else refuses the issue.
+- One named human approves. The label event must come from `approver_login` with `approver_id`; a label applied or re-applied by anyone else refuses the issue. The one exception is a bot you list in `auto_approvers` (empty by default), under your standing rule.
 - Local. It runs on your machine, in a visible pane you can type into. Nothing is hosted.
 - Your own agent CLI, your own `gh` login (or a bot login you name).
 - Per-repo memory. A production note per repository (where it runs, how to read logs, what the agent may not touch) is pasted into every brief.
@@ -43,6 +43,10 @@ plugins:
         approver_login: your-github-login
         approver_id: 123456      # gh api user --jq .id
         repos: ["you/app", "you/site=/srv/site"]
+        # auto_approvers:          # optional: a monitoring bot whose own issues start work
+        #   - login: "sentry[bot]"
+        #     id: 39604003
+        #     repos: ["you/app"]
         board: muster
         agent_model: opus
 ```
@@ -78,6 +82,7 @@ Set under `plugins.entries.muster.settings`. Required: `approver_login`, `approv
 | `bug_label` | `bug` | Issues carrying it are briefed as bugs, others as features. |
 | `approver_login` | (required) | GitHub login allowed to approve. Compared case-insensitively, but `approver_id` is what authorizes. |
 | `approver_id` | (required) | The approver's numeric GitHub id (`gh api user --jq .id`), unquoted: an integer. A login can be renamed; an id cannot. |
+| `auto_approvers` | `[]` | Bots that may approve without you. Each entry is `{login, id, label, repos}`. `login` and `id` are required: a `[bot]` login belongs to exactly one GitHub App. `label` is optional and defaults to `automatic-approval`. `repos` is required and must be a subset of `repos`. An issue is approved automatically when its repo is in the entry's `repos`, the entry's login and id opened it, it still carries the entry's `label`, and the newest `label` event and the newest event for the entry's label were both made by that account. Entries are tried in order and the first match wins; when none matches, only you can approve. An automatic approval is briefed as a bug, and the brief and card say the bot approved it, never you. A bot re-applying `label` makes a new card, as a relabel by you does; re-applying only its own label does not. |
 | `repos` | (required) | List of `owner/name` (clone at `clone_root/<name>`) or `owner/name=/abs/clone/path`, each with an optional `@base` suffix (`you/app@develop`, `you/site=/srv/site@master`): the branch worktrees are cut from and pull requests target. Without it, muster reads `origin/HEAD` in the clone (running `git remote set-head origin -a` once if unset), else uses `main` and notes that in the launch record. An `@` right after `/` belongs to the path (`node_modules/@scope`); any other `@` in a path is read as the suffix, so give such a path an explicit `@base`. `launch --base` overrides it for an ad-hoc run. Two clones may not share a directory name (herdr names worktrees `<worktrees>/<clone dir name>/<branch>`): give one an explicit path. |
 | `clone_root` | `~/Code` | Where clones live when no path is given. |
 | `board` | `muster` | Hermes kanban board slug. Give muster its own board; idempotency keys are per board. It must exist before the first tick. |

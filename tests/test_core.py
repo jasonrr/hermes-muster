@@ -65,6 +65,69 @@ def test_approver_login_case_insensitive():
     assert core.approval([labeled({"login": "JASONRR", "id": 2}, 17, "2026-09-16T10:00:00Z")]) is None
 
 
+SENTRY = {"login": "sentry[bot]", "id": 39604003}
+WHO = {**SENTRY, "label": "automatic-approval"}
+
+
+def bot_issue(user=SENTRY, labels=("agent-ready", "automatic-approval")):
+    return {"number": 397, "title": "Add a unit test", "state": "open", "user": user,
+            "labels": [{"name": name} for name in labels]}
+
+
+def bot_events(main=SENTRY, auto=SENTRY):
+    return [labeled(main, 407, "2026-09-16T10:00:00Z"),
+            labeled(auto, 408, "2026-09-16T10:00:01Z", name="automatic-approval")]
+
+
+@pytest.fixture
+def sentry_rule(monkeypatch):
+    monkeypatch.setitem(config.settings, "auto_approvers", [{**SENTRY, "repos": [REPO.lower()]}])
+
+
+def test_a_bot_opened_issue_with_both_labels_is_approved_by_its_main_label_event(sentry_rule):
+    event, who = core.automatic(REPO, bot_issue(), bot_events())
+    assert event["id"] == 407 and who == WHO  # the main label's event, which recover checks the card against
+
+
+@pytest.mark.parametrize("case", ["relabeled-by-human", "repo-not-listed", "opened-by-someone-else",
+                                  "entry-label-gone", "id-mismatch", "main-label-by-human"])
+def test_an_automatic_approval_is_refused(sentry_rule, monkeypatch, case):
+    issue, events, repo = bot_issue(), bot_events(), REPO
+    if case == "relabeled-by-human":
+        events.append(labeled(JASON, 409, "2026-09-17T10:00:00Z", name="automatic-approval"))
+    elif case == "repo-not-listed":
+        repo = "Radical-Candor-LLC/radicalcandorwebsite"
+    elif case == "opened-by-someone-else":
+        issue = bot_issue(user=OTHER)
+    elif case == "entry-label-gone":
+        issue = bot_issue(labels=("agent-ready",))
+    elif case == "id-mismatch":
+        issue, events = bot_issue(user={**SENTRY, "id": 1}), bot_events({**SENTRY, "id": 1}, {**SENTRY, "id": 1})
+    else:
+        events.append(labeled(OTHER, 409, "2026-09-17T10:00:00Z"))
+    assert core.automatic(repo, issue, events) is None
+    assert core.approve(repo, issue, events) == (None, None)
+
+
+def test_the_second_entry_that_matches_is_the_approver(monkeypatch):
+    other = {"login": "other[bot]", "id": 5, "repos": [REPO]}
+    monkeypatch.setitem(config.settings, "auto_approvers", [other, {**SENTRY, "label": "Sentry-OK", "repos": [REPO]}])
+    events = bot_events()[:1] + [labeled(SENTRY, 408, "2026-09-16T10:00:01Z", name="sentry-ok")]
+    assert core.automatic(REPO, bot_issue(labels=("agent-ready", "sentry-ok")), events)[1] == {**SENTRY, "label": "Sentry-OK"}
+
+
+def test_a_bot_relabel_after_the_human_is_an_automatic_approval(sentry_rule):
+    events = [labeled(JASON, 300, "2026-09-15T10:00:00Z")] + bot_events()
+    assert core.approve(REPO, bot_issue(), events) == (events[1], WHO)
+
+
+def test_no_auto_approvers_leaves_the_human_rule_alone():
+    assert config.settings["auto_approvers"] == []
+    assert core.approve(REPO, bot_issue(), bot_events()) == (None, None)
+    human = [labeled(JASON, 10, "2026-09-16T10:00:00Z")]
+    assert core.approve(REPO, {"number": 1, "labels": []}, human) == (human[0], None)
+
+
 def test_card_argv_is_an_unassigned_card_on_the_board_keyed_by_the_label_event():
     argv = core.card_argv(REPO, {"number": 397, "title": "-Add a unit test"}, {"id": 10})
     assert argv[:5] == ["hermes", "kanban", "--board", "muster", "create"]
@@ -561,12 +624,12 @@ def assert_auto_mode(agent_args):
 class Recovery:
     """One intake card whose first launch failed (no agent appeared), on a board that keeps state."""
 
-    def __init__(self, tmp_path, monkeypatch):
+    def __init__(self, tmp_path, monkeypatch, issue=None, events=None):
         self.calls, self.world = [], World(tmp_path)
         self.world.start = "none"
         self.cards, self.kinds = {"t_abc123": "ready"}, {}
-        self.issue = {"number": 397, "title": "Add a unit test", "state": "open", "labels": [{"name": "agent-ready"}]}
-        self.events = [labeled(JASON, 407, "2026-09-16T10:00:00Z")]
+        self.issue = issue or {"number": 397, "title": "Add a unit test", "state": "open", "labels": [{"name": "agent-ready"}]}
+        self.events = events or [labeled(JASON, 407, "2026-09-16T10:00:00Z")]
         base = fake_world(tmp_path, self.calls, world=self.world)[0]
 
         def run(argv):
@@ -586,6 +649,9 @@ class Recovery:
             if argv[:2] == ["gh", "api"] and "/issues/397/timeline" in argv[-1]:
                 self.calls.append(argv)
                 return "\n".join(json.dumps(e) for e in self.events) + "\n"
+            if issue and argv[:2] == ["gh", "api"] and f"repos/{REPO}/issues?" in argv[-1]:
+                self.calls.append(argv)
+                return json.dumps(self.issue) + "\n"
             return base(argv)
         monkeypatch.setattr(core, "run", run)
         monkeypatch.setattr(core, "block_kind", lambda card: self.kinds.get(card))
@@ -748,3 +814,77 @@ def test_a_command_error_never_carries_a_token():
         core.run(["sh", "-c", "echo ghp_ABCDEF0123 github_pat_11AB_cd >&2; exit 1", "ghs_inargv9"])
     assert "ghp_" not in str(e.value) and "github_pat_" not in str(e.value) and "[redacted]" in str(e.value)
     assert core.SECRET.sub("[redacted]", "highs_x token=ghp_abc") == "highs_x token=[redacted]"
+
+
+# auto_approvers: a listed bot's own issue launches, briefed as a bug and never attributed to the approver
+
+
+def test_an_automatic_brief_and_card_say_the_bot_approved_it():
+    text = core.brief(REPO, 397, True, auto=WHO)
+    assert (f"Issue {REPO}#397 was approved automatically. sentry[bot] (id 39604003) opened it with labels "
+            f"`agent-ready` and `automatic-approval`, under jasonrr's standing rule. jasonrr did not label it.") in text
+    assert "jasonrr approved" not in text and "This issue is a bug." in text
+    body = core.card_argv(REPO, {"number": 397, "title": "t"}, {"id": 10}, WHO)
+    body = body[body.index("--body") + 1]
+    assert "approved automatically" in body and "Label event 10." in body and body.endswith(core.PROVENANCE)
+    plain = core.card_argv(REPO, {"number": 397, "title": "t"}, {"id": 10})
+    assert "approved automatically" not in plain[plain.index("--body") + 1]
+
+
+def bot_world(tmp_path, calls, issue=None):
+    """fake_world, but issue 397 is the Sentry bot's, labeled by it with both labels."""
+    issue = issue or bot_issue()
+    base = fake_world(tmp_path, calls)[0]
+
+    def run(argv):
+        if argv[:2] == ["gh", "api"] and f"repos/{REPO}/issues?" in argv[-1]:
+            calls.append(argv)
+            return json.dumps(issue) + "\n"
+        if argv[:2] == ["gh", "api"] and "/issues/397/timeline" in argv[-1]:
+            calls.append(argv)
+            return "\n".join(json.dumps(e) for e in bot_events()) + "\n"
+        return base(argv)
+    run.world = base.world
+    return run
+
+
+def test_a_bot_approved_issue_launches_as_a_bug_attributed_to_the_bot(tmp_path, monkeypatch, sentry_rule, capsys):
+    calls = []
+    run = bot_world(tmp_path, calls)
+    monkeypatch.setattr(core, "run", run)
+    assert tick() == 0
+    brief = json.loads(run.world.submitted[0].split("(JSON): ", 1)[1])
+    assert "was approved automatically" in brief and "This issue is a bug." in brief
+    record = json.loads((core.intake_dir() / "t_abc123" / "launch.json").read_text())
+    assert record["auto"] == WHO and record["bug"] is True and record["event"] == 407
+    create = next(c for c in calls if c[:2] == ["hermes", "kanban"] and c[4] == "create")
+    assert "Label event 407." in create[create.index("--body") + 1]
+    assert create[create.index("--idempotency-key") + 1] == f"{REPO}#397@407"
+
+
+def test_dry_run_says_an_issue_would_launch_automatically(tmp_path, monkeypatch, sentry_rule, capsys):
+    monkeypatch.setattr(core, "run", bot_world(tmp_path, []))
+    assert tick(dry_run=True) == 0
+    assert f"{REPO}#397 would launch automatically: {REPO}#397@407 (bug)" in capsys.readouterr().out
+
+
+def test_without_a_rule_the_bot_issue_is_skipped(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(core, "run", bot_world(tmp_path, []))
+    assert tick() == 0
+    assert "no auto_approvers entry approves it" in capsys.readouterr().out
+
+
+
+def test_recover_of_an_automatic_launch_keeps_the_bot_attribution(tmp_path, monkeypatch, sentry_rule, capsys):
+    failed = Recovery(tmp_path, monkeypatch, issue=bot_issue(), events=bot_events())
+    record = json.loads((core.intake_dir() / "t_abc123" / "launch.json").read_text())
+    assert record["auto"] == WHO
+    assert recover("t_abc123") == 0
+    brief = json.loads(failed.world.submitted[0].split("(JSON): ", 1)[1])
+    assert "was approved automatically" in brief and "This issue is a bug." in brief
+
+
+def test_recover_refuses_an_automatic_launch_a_human_relabeled(tmp_path, monkeypatch, sentry_rule, capsys):
+    failed = Recovery(tmp_path, monkeypatch, issue=bot_issue(), events=bot_events())
+    failed.events.append(labeled(JASON, 999, "2026-09-17T10:00:00Z", name="automatic-approval"))
+    assert recover("t_abc123") == 1 and failed.world.submitted == []
