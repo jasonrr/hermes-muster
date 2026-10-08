@@ -45,7 +45,10 @@ from . import claude, config, core
 
 STALE_CLAIM = 120  # s: an empty wait marker this old is from a hook killed at its 30 s timeout
 PR_URL = re.compile(r"https://github\.com/([\w.-]+/[\w.-]+)/pull/\d+")
-PROPOSAL_MAX = 64 * 1024  # bytes: the text rides in one argv, twice (ledger comment, wait card body)
+# Bytes. Each text rides in one argv (the ledger comment, the wait card body), and Linux caps one argument at
+# 128 KB: a body over it would fail every retry and hold the run's queue. 48 + 16 previews x 2 KB stays under.
+PROPOSAL_MAX = 48 * 1024
+PREVIEW_MAX = 2 * 1024
 
 
 def log_path():
@@ -93,13 +96,13 @@ def open_wait(git_dir, link, detail, key, ask=None, proposal=None):
             card = path.read_text().strip()
             stale = not card and time.time() - path.stat().st_mtime > STALE_CLAIM
         except FileNotFoundError:  # another hook just reclaimed it
-            return open_wait(git_dir, link, detail, key)
+            return open_wait(git_dir, link, detail, key, ask, proposal)
         if stale:
             # The hook that claimed it was killed (hook timeout) before recording a card.
             # ponytail: two hooks reclaiming the same stale marker within milliseconds can open two wait cards;
             # rename-to-unique and re-check if that is ever seen.
             path.unlink(missing_ok=True)
-            return open_wait(git_dir, link, detail, key)
+            return open_wait(git_dir, link, detail, key, ask, proposal)
         # An empty marker is another hook mid-create. A recorded card still ready is one whose
         # subscribe or block failed: finish it rather than open a second.
         if not card or status(card) != "ready":
@@ -168,7 +171,9 @@ def asked(questions):
             if isinstance(option, dict):
                 lines.append(f"\n- {option.get('label', '')}: {option.get('description', '')}")
                 if option.get("preview"):
-                    lines.append("\n" + "\n".join("    " + line for line in str(option["preview"]).splitlines()))
+                    preview = str(option["preview"])
+                    cut = "\n[preview cut at 2 KB; the whole of it is in the pane]" if len(preview) > PREVIEW_MAX else ""
+                    lines.append("\n" + "\n".join("    " + line for line in (preview[:PREVIEW_MAX] + cut).splitlines()))
     return "".join(lines)
 
 
@@ -220,6 +225,8 @@ def propose(card, file, **issue):
     """
     from . import runs  # lazy: runs imports events at module level
     try:
+        if not file:
+            raise ValueError("usage: hermes muster hook propose <file>")
         raw = Path(file).read_bytes()
         if len(raw) > PROPOSAL_MAX:
             raise ValueError(f"{file} is {len(raw)} bytes, over {PROPOSAL_MAX}: shorten it")

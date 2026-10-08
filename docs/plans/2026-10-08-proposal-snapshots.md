@@ -72,7 +72,7 @@ issue forbids it), new kanban fields or a snapshot card, anything from #17's dec
 - One owner: `events.propose(card, file, **issue)` serves both run kinds; `runs.hook` calls it before
   reading stdin, and `events.hook` routes `propose` before its stdin read too (a tty stdin would hang).
 - The text is read from the file (relative to the hook's cwd), refused (stderr, exit 1) when missing,
-  empty, not UTF-8 or over 64 KB, and passed through `core.SECRET` (the GitHub token redactor) before
+  empty, not UTF-8 or over 48 KB (option previews on the card cut at 2 KB: Linux caps one argv string at 128 KB), and passed through `core.SECRET` (the GitHub token redactor) before
   it is hashed or stored. cli.main exits 1 for `propose` failures, as for `done`.
 - Versioning compares with the latest version only (v1, v2, then v1's text again is v3: a revert is a
   new revision). Allocation, the `v<n>.md` write and the enqueue run under the run's `lock` file, released

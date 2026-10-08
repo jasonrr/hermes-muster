@@ -649,3 +649,26 @@ def test_propose_on_an_archived_ledger_says_it_was_not_posted(board, tmp_path, c
     board["cards"]["t_abc123"] = "archived"
     assert propose(tmp_path, "the plan") == 1
     assert "archived: not posted" in capsys.readouterr().err and "t_abc123" not in board["comments"]
+
+
+def test_a_wait_reopened_past_a_stale_claim_still_carries_the_question_and_proposal(board, monkeypatch, tmp_path):
+    """The retry for a hook killed at its timeout: the pin and the questions must survive it."""
+    propose(tmp_path, "the plan")
+    marker = board["git_dir"] / core.WAIT_KIND
+    marker.write_text("")
+    os.utime(marker, (1, 1))
+    ask(monkeypatch)
+    body = board["bodies"]["t_wait1"]
+    assert "Proposal v1" in body and "- Approve (Recommended)" in body and body.endswith("the plan")
+
+
+def test_a_long_preview_is_cut_and_says_so(board, monkeypatch):
+    big = dict(QUESTION, options=[{"label": "A", "description": "d", "preview": "p" * (events.PREVIEW_MAX + 50)}])
+    ask(monkeypatch, big)
+    assert "p" * (events.PREVIEW_MAX + 1) not in board["bodies"]["t_wait1"]
+    assert "[preview cut at 2 KB; the whole of it is in the pane]" in board["bodies"]["t_wait1"]
+
+
+def test_propose_without_a_file_prints_its_usage(board, capsys):
+    assert events.hook(ns("propose")) == 1
+    assert "usage: hermes muster hook propose <file>" in capsys.readouterr().err
