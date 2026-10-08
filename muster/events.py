@@ -6,7 +6,8 @@ Telegram ping for the human and a queued agent turn.
 
   notification   open a WAIT card (subscribed notify+wake, blocked "<message>\\nReply in Herdr pane P.")
                  for a permission prompt or an AskUserQuestion (hook matchers in claude.hook_settings)
-                 unless one is open or the ledger is done or archived; its id is kept in <git dir>/muster-wait
+                 unless one is open or the ledger is archived (after done the pull request is in
+                 review, so questions still page); its id is kept in <git dir>/muster-wait
   prompt         archive the open wait card (silent): the human answered, or (via PostToolUse,
                  registered on the same event) the agent resumed on its own
   session-end    block the ledger card, if it is still ready (not on /clear)
@@ -74,7 +75,7 @@ def where(link):
 
 def open_wait(git_dir, link, detail, key):
     ledger = status(link["card"])
-    if ledger not in ("ready", "blocked"):
+    if ledger not in ("ready", "blocked", "done"):  # done: its pull request is in review, questions still page
         return f"notification: ledger {link['card']} is {ledger}, no wait card"
     path = git_dir / core.WAIT_KIND
     try:
