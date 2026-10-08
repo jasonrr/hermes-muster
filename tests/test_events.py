@@ -793,16 +793,6 @@ def test_permission_outside_a_muster_worktree_prints_nothing(board, monkeypatch,
     assert capsys.readouterr().out == ""
 
 
-def test_prompt_settles_before_its_early_return_and_session_end_stales(board, monkeypatch):
-    import muster.bridge as bridge
-    calls = []
-    monkeypatch.setattr(bridge, "settle", lambda directory, payload: calls.append(("settle", directory, payload["x"])))
-    monkeypatch.setattr(bridge, "session_end", lambda directory: calls.append(("end", directory)))
-    hook(monkeypatch, "prompt", x=1)  # nothing open: the early return
-    hook(monkeypatch, "session-end")
-    assert calls == [("settle", board["git_dir"], 1), ("end", board["git_dir"])]
-
-
 def test_an_ask_leaves_its_pin_for_the_bridge_and_another_notification_does_not(board, monkeypatch):
     git_dir = board["git_dir"]
     core.save_json(events.proposals("t_abc123") / "armed", {"version": 1, "sha": "aaa"})
@@ -824,18 +814,25 @@ def test_an_approval_ask_writes_the_armed_pin(board, monkeypatch):
 
 # --- wait mode: wake only when muster itself can deliver the page (#17 task 4) ---
 
-def bridge_ready(board, link=LINKS, gateway_age=0, hook_key="PermissionRequest"):
-    """Everything wake mode needs: the pane's settings carry the hook, the gateway touched its heartbeat."""
+GATEWAY = {"up": False}
+
+
+@pytest.fixture(autouse=True)
+def hermes_gateway(monkeypatch):
+    """decisions.gateway_up reads Hermes's gateway.status, which tests do not have: a switch stands in."""
+    GATEWAY["up"] = False
+    monkeypatch.setattr(decisions, "gateway_up", lambda: GATEWAY["up"])
+
+
+def bridge_ready(board, link=LINKS, gateway_up=True, hook_key="PermissionRequest"):
+    """Everything wake mode needs: the pane's settings carry the hook, Hermes reports its gateway up."""
     if "issue" in link:
         settings = core.intake_dir() / link["card"] / core.SETTINGS_FILE
     else:
         settings = board["git_dir"] / "settings.json"
     settings.parent.mkdir(parents=True, exist_ok=True)
     settings.write_text(json.dumps({"hooks": {hook_key: []}}))
-    beat = decisions.root() / ".gateway"
-    beat.parent.mkdir(parents=True, exist_ok=True)
-    beat.touch()
-    os.utime(beat, (time.time() - gateway_age,) * 2)
+    GATEWAY["up"] = gateway_up
 
 
 def wait_mode(board):
@@ -857,16 +854,14 @@ def test_an_ask_is_paged_by_muster_without_the_bridged_flag(board):
     assert wait_mode(board) == "none"
 
 
-@pytest.mark.parametrize("spoil", ["not bridged", "platform", "no hook", "no settings", "stale gateway", "no gateway"])
+@pytest.mark.parametrize("spoil", ["not bridged", "platform", "no hook", "no settings", "gateway down"])
 def test_each_missing_condition_keeps_notify_wake(board, monkeypatch, spoil):
-    bridge_ready(board, gateway_age=60 if spoil == "stale gateway" else 0,
+    bridge_ready(board, gateway_up=spoil != "gateway down",
                  hook_key="Notification" if spoil == "no hook" else "PermissionRequest")
     if spoil == "platform":
         monkeypatch.setitem(config.settings, "notify_platform", "slack")
     if spoil == "no settings":
         (core.intake_dir() / LINKS["card"] / core.SETTINGS_FILE).unlink()
-    if spoil == "no gateway":
-        (decisions.root() / ".gateway").unlink()
     events.open_wait(board["git_dir"], LINKS, "why", "k1", bridged=spoil != "not bridged")
     assert wait_mode(board) == "notify+wake"
 

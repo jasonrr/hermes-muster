@@ -10,16 +10,9 @@ from muster import config, core, decisions, events, runs
 
 def test_create_and_load():
     req = decisions.create("question", "t_1", questions=[{"text": "Q"}])
-    assert len(req["id"]) == 10 and req["status"] == "open" and req["ledger"] == "t_1"
+    assert len(req["id"]) == 16 and req["status"] == "open" and req["ledger"] == "t_1"
     assert req["audit"][0]["step"] == "open" and req["audit"][0]["result"] == "created"
     assert decisions.load(req["id"]) == req
-
-
-def test_create_retries_a_colliding_id(monkeypatch):
-    first = decisions.create("question", "t_1")
-    ids = iter([first["id"], "ffffffffff"])
-    monkeypatch.setattr(decisions.secrets, "token_hex", lambda n: next(ids))
-    assert decisions.create("question", "t_1")["id"] == "ffffffffff"
 
 
 def test_transition_success_and_refusal():
@@ -724,3 +717,24 @@ def test_recover_an_executing_send_back_build_creates_its_feedback_once(world):
     req = executing(world, "send-back")
     decisions.recover(req)
     assert state(req["id"])[0] == "done" and feedback_of(req["id"])["status"] == "open"
+
+
+def test_gateway_up_reads_hermess_runtime_status(monkeypatch):
+    import sys
+    import types
+    assert decisions.gateway_up() is False  # no Hermes gateway.status here
+    rec = {"platforms": {"telegram": {"state": "connected"}}}
+    status = types.ModuleType("gateway.status")
+    status.read_runtime_status = lambda: rec
+    status.runtime_status_is_stale = lambda r: False
+    status.runtime_status_pid_is_live = lambda r: True
+    package = types.ModuleType("gateway")
+    package.status = status
+    monkeypatch.setitem(sys.modules, "gateway", package)
+    monkeypatch.setitem(sys.modules, "gateway.status", status)
+    assert decisions.gateway_up() is True
+    rec["platforms"]["telegram"]["state"] = "disconnected"
+    assert decisions.gateway_up() is False
+    rec["platforms"]["telegram"]["state"] = "connected"
+    status.runtime_status_is_stale = lambda r: True
+    assert decisions.gateway_up() is False

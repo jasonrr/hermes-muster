@@ -1,6 +1,5 @@
 """bridge: a PermissionRequest hook that waits for an answer from the channel and settles on what Claude did."""
 
-import hashlib
 import json
 import os
 import signal
@@ -49,12 +48,6 @@ def only():
     return decisions.for_ledger("t_led")[0]
 
 
-def sha(tool_input):
-    """The fingerprint: an AskUserQuestion's questions only (PostToolUse adds fields to its input), else all of it."""
-    asked = tool_input.get("questions") if "questions" in tool_input else tool_input
-    return hashlib.sha256(json.dumps(asked, sort_keys=True).encode()).hexdigest()
-
-
 def test_question_request_is_created_with_everything_the_plan_lists(tmp_path):
     (tmp_path / core.WAIT_KIND).write_text("t_wait")
     core.save_json(tmp_path / core.PIN_FILE, {"version": 2, "sha": "abc"})
@@ -66,27 +59,26 @@ def test_question_request_is_created_with_everything_the_plan_lists(tmp_path):
     assert req["questions"] == [{"text": "Which db?", "header": "DB", "multi": False, "options": [
         {"label": "pg", "description": "Postgres"}, {"label": "pg", "description": "again"}]}]
     assert req["choices"] == [["pg", "pg (2)"]]
-    assert req["tool"] == {"name": "AskUserQuestion", "input_sha": sha(ASK["tool_input"])}
+    assert req["tool"] == {"name": "AskUserQuestion"} and "card" not in req
     assert req["proposal"] == {"version": 2, "sha": "abc"} and not (tmp_path / core.PIN_FILE).exists()
     assert req["run"] == {"repo": "o/r", "branch": "muster/5", "pane": "w_1:p2", "issue": 5, "kind": "issue"}
     assert req["alive"] > 0
 
 
-def test_answered_question_prints_the_updated_input_and_marks_delivery(tmp_path, capsys):
+def test_answered_question_prints_the_updated_input_and_is_done(tmp_path, capsys):
     thread = answer_when_open(answer={"Which db?": "free text"})
     assert bridge.wait(tmp_path, LINK, ASK) == 0
     thread.join()
     assert out(capsys) == {"hookSpecificOutput": {"hookEventName": "PermissionRequest", "decision": {
         "behavior": "allow", "updatedInput": {**ASK["tool_input"], "answers": {"Which db?": "free text"}}}}}
-    req = only()
-    assert req["status"] == "answered" and req["delivered_by_hook"] is True
+    assert (only()["status"], only()["outcome"]) == ("done", "Delivered ✓")
 
 
-def test_a_marker_per_request_is_written_before_the_wait(tmp_path):
+def test_the_hook_leaves_no_marker_files(tmp_path):
     thread = answer_when_open(answer={"Which db?": "pg"})
     bridge.wait(tmp_path, LINK, ASK)
     thread.join()
-    assert [p.name for p in (tmp_path / "muster-decisions").iterdir()] == [only()["id"]]
+    assert not (tmp_path / "muster-decisions").exists()
 
 
 def test_sigterm_from_claude_means_the_pane_answered(tmp_path, capsys):
@@ -101,7 +93,6 @@ def test_sigterm_from_claude_means_the_pane_answered(tmp_path, capsys):
     thread.join()
     req = only()
     assert out(capsys) is None and req["status"] == "stale" and req["outcome"] == "Answered in the pane"
-    assert not list((tmp_path / "muster-decisions").iterdir())
 
 
 def test_the_pane_is_read_from_the_launch_for_an_adhoc_run(tmp_path):
@@ -112,17 +103,48 @@ def test_the_pane_is_read_from_the_launch_for_an_adhoc_run(tmp_path):
     assert only()["run"]["pane"] == "w_9:p1" and only()["run"]["kind"] == "adhoc"
 
 
-def test_a_permission_prompt_is_one_synthetic_question_with_redacted_input(tmp_path, capsys):
-    payload = {**BASH, "tool_input": {"command": "echo ghp_abcdef123456"}}
+def test_a_permission_request_carries_the_card_and_no_questions(tmp_path, capsys):
+    payload = {**BASH, "tool_input": {"command": "echo ghp_abcdef123456", "description": "Say hi"}}
     thread = answer_when_open(answer={"decision": "allow"})
     bridge.wait(tmp_path, LINK, payload)
     thread.join()
     req = only()
-    assert req["kind"] == "permission" and req["choices"] == [["Allow once", "Deny"]]
-    text = req["questions"][0]["text"]
-    assert text.startswith("Allow Bash?") and "ghp_abcdef123456" not in text and "echo" in text
+    assert req["kind"] == "permission" and req["tool"] == {"name": "Bash"}
+    assert "questions" not in req and "choices" not in req
+    assert req["card"] == {"command": "echo [redacted]", "why": "Say hi", "session": True}
     assert out(capsys) == {"hookSpecificOutput": {"hookEventName": "PermissionRequest",
                                                   "decision": {"behavior": "allow"}}}
+
+
+def test_approval_card_for_each_kind_of_tool():
+    assert bridge.approval_card("Bash", {"command": "ls"}) == {"command": "ls", "why": "Claude wants to use Bash",
+                                                              "session": True}
+    edit = bridge.approval_card("Edit", {"file_path": "/a", "token": "ghp_abcdef123456"}, sub="Explore")
+    assert edit["session"] is False and "/a" in edit["command"] and "ghp_abcdef123456" not in edit["command"]
+    assert edit["why"] == "Claude wants to use Edit (the Explore subagent)"
+    assert bridge.approval_card("Bash", None)["session"] is False  # no command: no session rule
+
+
+def test_allow_for_this_session_adds_a_session_rule_for_the_exact_command(tmp_path, capsys):
+    thread = answer_when_open(answer={"decision": "allow", "scope": "session"})
+    bridge.wait(tmp_path, LINK, BASH)
+    thread.join()
+    assert out(capsys)["hookSpecificOutput"]["decision"] == {"behavior": "allow", "updatedPermissions": [{
+        "type": "addRules", "rules": [{"toolName": "Bash", "ruleContent": "rm -rf build"}],
+        "behavior": "allow", "destination": "session"}]}
+    assert only()["outcome"] == "Allowed for this session ✓"
+
+
+def test_a_session_scope_on_another_tool_is_a_plain_allow():
+    req = {"kind": "permission", "tool": {"name": "Edit"}, "answer": {"decision": "allow", "scope": "session"}}
+    assert bridge.decision(req, {"file_path": "/a"}) == {"behavior": "allow"}
+
+
+def test_allow_once_is_done_as_allowed(tmp_path):
+    thread = answer_when_open(answer={"decision": "allow"})
+    bridge.wait(tmp_path, LINK, BASH)
+    thread.join()
+    assert (only()["status"], only()["outcome"]) == ("done", "Allowed ✓")
 
 
 def test_deny_with_typed_text_carries_the_message(tmp_path, capsys):
@@ -130,9 +152,7 @@ def test_deny_with_typed_text_carries_the_message(tmp_path, capsys):
     bridge.wait(tmp_path, LINK, BASH)
     thread.join()
     assert out(capsys)["hookSpecificOutput"]["decision"] == {"behavior": "deny", "message": "use make"}
-    # a deny runs no tool, so no PostToolUse will settle it: the hook finishes it and drops its marker
-    assert only()["status"] == "done" and only()["outcome"] == "Denied ✓: use make"
-    assert not list((tmp_path / "muster-decisions").iterdir())
+    assert (only()["status"], only()["outcome"]) == ("done", "Denied ✓: use make")
 
 
 def test_plain_deny_has_no_message(tmp_path, capsys):
@@ -143,14 +163,12 @@ def test_plain_deny_has_no_message(tmp_path, capsys):
     assert only()["outcome"] == "Denied ✓"
 
 
-def test_a_long_input_offers_only_deny(tmp_path):
-    payload = {**BASH, "tool_input": {"command": "x" * 4000}}
-    thread = answer_when_open(answer={"decision": "deny"})
-    bridge.wait(tmp_path, LINK, payload)
+def test_hermess_timeout_deny_is_reported_as_no_answer_in_time(tmp_path, capsys):
+    thread = answer_when_open(answer={"decision": "deny", "timeout": True, "message": "No answer in time."})
+    bridge.wait(tmp_path, LINK, BASH)
     thread.join()
-    req = only()
-    assert req["choices"] == [["Deny"]] and "too long" in req["questions"][0]["text"]
-    assert "xxxx" not in req["questions"][0]["text"]
+    assert out(capsys)["hookSpecificOutput"]["decision"] == {"behavior": "deny", "message": "No answer in time."}
+    assert only()["outcome"] == "No answer in time: denied"
 
 
 @pytest.mark.parametrize("status", ["stale", "done", "failed"])
@@ -207,29 +225,30 @@ def test_a_permission_prompt_waits_only_ten_minutes_then_is_denied(tmp_path, cap
     assert req["status"] == "stale" and req["outcome"] == "No answer in 10 min: denied"
 
 
-def gateway_heartbeat(age=0):
-    beat = decisions.root() / ".gateway"
-    beat.parent.mkdir(parents=True, exist_ok=True)
-    beat.touch()
-    os.utime(beat, (time.time() - age, time.time() - age))
-
-
-def test_a_subagent_prompt_is_sent_when_the_gateway_is_up(tmp_path, capsys):
-    gateway_heartbeat()
+def test_a_subagent_prompt_is_sent_when_the_gateway_is_up(tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr(decisions, "gateway_up", lambda: True)
     thread = answer_when_open(answer={"decision": "allow"})
     bridge.wait(tmp_path, LINK, {**BASH, "agent_id": "a1", "agent_type": "general-purpose"})
     thread.join()
     req = only()
     assert out(capsys)["hookSpecificOutput"]["decision"] == {"behavior": "allow"}
     assert req["subagent"] == "general-purpose"
-    assert req["questions"][0]["text"].startswith("Allow Bash (from the general-purpose subagent)?")
+    assert req["card"]["why"] == "Claude wants to use Bash (the general-purpose subagent)"
 
 
-def test_a_subagent_prompt_with_the_gateway_down_goes_straight_to_the_pane(tmp_path, capsys):
-    gateway_heartbeat(age=decisions.GATEWAY_FRESH + 5)
+def test_a_subagent_prompt_with_the_gateway_down_goes_straight_to_the_pane(tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr(decisions, "gateway_up", lambda: False)
     assert bridge.wait(tmp_path, LINK, {**BASH, "agent_id": "a1", "agent_type": "Explore"}) == 0
     assert out(capsys) is None and decisions.for_ledger("t_led") == []
     assert "gateway down" in core.log_path("bridge").read_text()
+
+
+def test_a_main_agent_prompt_is_held_whatever_the_gateway_state(tmp_path, monkeypatch):
+    monkeypatch.setattr(decisions, "gateway_up", lambda: False)  # the pane can still answer it meanwhile
+    thread = answer_when_open(answer={"decision": "deny"})
+    bridge.wait(tmp_path, LINK, BASH)
+    thread.join()
+    assert only()["outcome"] == "Denied ✓"
 
 
 def test_an_answer_that_wins_the_deadline_race_is_used(tmp_path, capsys, monkeypatch):
@@ -262,134 +281,3 @@ def test_an_unreadable_answer_prints_nothing(tmp_path, capsys):
     bridge.wait(tmp_path, LINK, ASK)
     thread.join()
     assert out(capsys) is None
-
-
-# -- settle ---------------------------------------------------------------------------------------
-
-def post(base, event="PostToolUse", **extra):
-    return {"hook_event_name": event, "tool_name": base["tool_name"], "tool_input": base["tool_input"], **extra}
-
-
-def marked(tmp_path, base, **fields):
-    """A request as the hook leaves it: created, marked; `fields` set its state."""
-    req = decisions.create("question" if base["tool_name"] == "AskUserQuestion" else "permission", "t_led",
-                           tool={"name": base["tool_name"], "input_sha": sha(base["tool_input"])})
-    (tmp_path / "muster-decisions").mkdir(exist_ok=True)
-    (tmp_path / "muster-decisions" / req["id"]).write_text("")
-    if fields:
-        decisions.transition(req["id"], ("open",), fields.pop("status", "answered"), **fields)
-    return req["id"]
-
-
-def finished(rid):
-    req = decisions.load(rid)
-    return req["status"], req["outcome"]
-
-
-def test_settle_delivered_when_the_responses_match(tmp_path):
-    rid = marked(tmp_path, ASK, answer={"Which db?": "pg"}, delivered_by_hook=True)
-    bridge.settle(tmp_path, post(ASK, tool_response={"answers": {"Which  db?": " pg "}}))
-    assert finished(rid) == ("done", "Delivered ✓")
-    assert not (tmp_path / "muster-decisions" / rid).exists()
-
-
-def test_settle_answered_in_the_pane_when_they_differ(tmp_path):
-    rid = marked(tmp_path, ASK, answer={"Which db?": "pg"}, delivered_by_hook=True)
-    bridge.settle(tmp_path, post(ASK, tool_response={"answers": {"Which db?": "mysql"}}))
-    assert finished(rid) == ("done", "Answered in the pane: mysql")
-
-
-def test_settle_cannot_confirm_unreadable_answers(tmp_path):
-    rid = marked(tmp_path, ASK, answer={"Which db?": "pg"}, delivered_by_hook=True)
-    bridge.settle(tmp_path, post(ASK, tool_response="opaque"))
-    assert finished(rid) == ("done", "Answered; muster could not confirm where")
-
-
-def test_settle_an_open_request_was_answered_in_the_pane(tmp_path):
-    rid = marked(tmp_path, ASK)
-    bridge.settle(tmp_path, post(ASK, tool_response={"answers": {"Which db?": "pg"}}))
-    assert finished(rid) == ("done", "Answered in the pane")
-
-
-def test_settle_permission_outcomes(tmp_path):
-    allowed = marked(tmp_path, BASH, answer={"decision": "allow"}, delivered_by_hook=True)
-    bridge.settle(tmp_path, post(BASH))
-    assert finished(allowed) == ("done", "Allowed ✓")
-    denied = marked(tmp_path, BASH, answer={"decision": "deny"}, delivered_by_hook=True)
-    bridge.settle(tmp_path, post(BASH))
-    assert finished(denied) == ("done", "Allowed in the pane")
-    failed = marked(tmp_path, BASH, answer={"decision": "allow"}, delivered_by_hook=True)
-    bridge.settle(tmp_path, post(BASH, "PostToolUseFailure"))
-    assert finished(failed) == ("done", "Finished; muster could not confirm the decision")
-
-
-def test_settle_ignores_a_different_tool_or_input(tmp_path):
-    rid = marked(tmp_path, BASH, answer={"decision": "allow"}, delivered_by_hook=True)
-    bridge.settle(tmp_path, post({"tool_name": "Edit", "tool_input": BASH["tool_input"]}))
-    bridge.settle(tmp_path, post({"tool_name": "Bash", "tool_input": {"command": "ls"}}))
-    assert decisions.load(rid)["status"] == "answered"
-    assert (tmp_path / "muster-decisions" / rid).exists()
-
-
-def test_settle_ignores_other_events(tmp_path):
-    rid = marked(tmp_path, ASK)
-    bridge.settle(tmp_path, {**post(ASK), "hook_event_name": "UserPromptSubmit", "prompt": "hi"})
-    bridge.settle(tmp_path, {k: v for k, v in post(ASK).items() if k != "hook_event_name"})
-    assert decisions.load(rid)["status"] == "open"
-
-
-def test_settle_matches_an_ask_whose_input_gained_the_answers(tmp_path):
-    rid = marked(tmp_path, ASK, answer={"Which db?": "pg"}, delivered_by_hook=True)
-    shown = {**ASK, "tool_input": {**ASK["tool_input"], "answers": {"Which db?": "pg"}}}
-    bridge.settle(tmp_path, post(shown, tool_response={"answers": {"Which db?": "pg"}}))
-    assert finished(rid) == ("done", "Delivered ✓")
-
-
-def test_settle_matches_an_ask_whose_input_gained_other_fields(tmp_path):
-    # seen live: PostToolUse's tool_input carries more than the questions and answers
-    rid = marked(tmp_path, ASK, answer={"Which db?": "pg"}, delivered_by_hook=True)
-    shown = {**ASK, "tool_input": {**ASK["tool_input"], "answers": {"Which db?": "pg"}, "annotations": {"x": 1},
-                                   "metadata": {"source": "pane"}}}
-    bridge.settle(tmp_path, post(shown, tool_response={"answers": {"Which db?": "pg"}}))
-    assert finished(rid) == ("done", "Delivered ✓")
-
-
-def test_settle_with_no_markers_is_a_no_op(tmp_path):
-    bridge.settle(tmp_path, post(BASH))
-
-
-def test_settle_racing_the_hook_gives_one_outcome_and_no_output(tmp_path, capsys):
-    """The pane answers while the hook loops: settle finishes the request, the hook sees it and prints nothing."""
-    def pane():
-        for _ in range(500):
-            if (tmp_path / "muster-decisions").exists() and decisions.open_requests():
-                bridge.settle(tmp_path, post(ASK, tool_response={"answers": {"Which db?": "pane"}}))
-                return
-            time.sleep(0.01)
-    thread = threading.Thread(target=pane)
-    thread.start()
-    bridge.wait(tmp_path, LINK, ASK)
-    thread.join()
-    assert out(capsys) is None
-    assert finished(only()["id"]) == ("done", "Answered in the pane")
-
-
-def test_settle_never_raises(tmp_path, monkeypatch):
-    rid = marked(tmp_path, BASH)
-    monkeypatch.setattr(decisions, "load", lambda r: 1 / 0)
-    bridge.settle(tmp_path, post(BASH))
-    assert rid
-
-
-# -- session end ----------------------------------------------------------------------------------
-
-def test_session_end_stales_open_and_answered_requests_and_removes_the_markers(tmp_path):
-    a = marked(tmp_path, ASK)
-    b = marked(tmp_path, BASH, answer={"decision": "allow"})
-    bridge.session_end(tmp_path)
-    assert decisions.load(a)["status"] == decisions.load(b)["status"] == "stale"
-    assert not list((tmp_path / "muster-decisions").glob("*"))
-
-
-def test_session_end_with_nothing_is_a_no_op(tmp_path):
-    bridge.session_end(tmp_path)

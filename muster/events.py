@@ -110,7 +110,7 @@ def muster_pages(directory, link, bridged):
       idle, reconcile and other waits have none, so Hermes must ping them.
     - telegram: the gateway's buttons and replies exist only there.
     - the pane carries the PermissionRequest hook: an older pane never creates the request.
-    - decisions/.gateway is fresh: with the gateway down nothing would deliver the request.
+    - Hermes reports its gateway up with the platform connected: else nothing would deliver the request.
     """
     if not bridged or config.settings["notify_platform"] != "telegram":
         return False
@@ -458,10 +458,6 @@ def hook(args):
         return propose(link["card"], args.url, git_dir=str(git_dir), link=link)
     if event == "permission":  # before the gate and the outbox: it waits, and prints only a decision
         return bridge.wait(git_dir, link, payload)
-    if event == "prompt":
-        bridge.settle(git_dir, payload)
-    elif event == "session-end":
-        bridge.session_end(git_dir)
     if event == "prompt" and link.get("launch_dir"):
         with contextlib.suppress(OSError, ValueError):  # the launch's evidence that its brief arrived
             core.prompt_seen(link["launch_dir"], payload)

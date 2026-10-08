@@ -586,10 +586,7 @@ def hook(args):
             core.prepare_env()
             return bridge.wait(run_dir(card), load(card), payload)
         if event == "prompt":
-            bridge.settle(run_dir(card), payload)
             core.prompt_seen(run_dir(card), payload)  # the launch's evidence that its brief arrived
-        elif event == "session-end":
-            bridge.session_end(run_dir(card))
         if event == "prompt" and not (run_dir(card) / core.WAIT_KIND).exists() and not pending(card):
             return 0  # every PostToolUse lands here: nothing open, nothing queued, nothing to do
         core.prepare_env()

@@ -21,7 +21,6 @@ from . import config, core, events
 
 OPEN = ("open", "answered", "executing")
 TERMINAL = ("done", "failed", "stale")
-GATEWAY_FRESH = 30  # seconds: the gateway touches decisions/.gateway every scan
 
 
 def root():
@@ -29,25 +28,22 @@ def root():
 
 
 def gateway_up():
-    """True while the gateway's scan is touching decisions/.gateway: something will present a new request."""
+    """Hermes's own runtime status says its gateway runs with the notify platform connected
+    (gateway_state.json, re-stamped every 60 s by the gateway's housekeeping)."""
     try:
-        return time.time() - (root() / ".gateway").stat().st_mtime < GATEWAY_FRESH
-    except OSError:
+        from gateway import status
+    except ImportError:
         return False
+    rec = status.read_runtime_status()
+    platform = ((rec or {}).get("platforms") or {}).get(config.settings["notify_platform"]) or {}
+    return (not status.runtime_status_is_stale(rec) and status.runtime_status_pid_is_live(rec)
+            and platform.get("state") == "connected")
 
 
 def create(kind, ledger, **fields):
-    """Save a new `open` request and return it; the id is drawn again if its file exists."""
-    now = time.time()
-    while True:
-        rid = secrets.token_hex(5)
-        path = root() / f"{rid}.json"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            os.close(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL))
-        except FileExistsError:
-            continue
-        break
+    """Save a new `open` request and return it."""
+    now, rid = time.time(), secrets.token_hex(8)
+    path = root() / f"{rid}.json"
     req = {**fields, "id": rid, "kind": kind, "ledger": ledger, "status": "open", "created_at": now,
            "audit": [{"at": now, "step": "open", "result": "created"}]}
     core.save_json(path, req)

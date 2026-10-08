@@ -4,6 +4,7 @@ clarify_gateway mirrors hermes-agent/tools/clarify_gateway.py: register / wait_f
 entry) / resolve_gateway_clarify (False once resolved or unknown) / get_pending_for_session / mark_awaiting_text.
 """
 
+import json
 import sys
 import threading
 import types
@@ -68,9 +69,68 @@ def clarify_module():
                 entry.awaiting_text = True
             return entry is not None
 
+    def clear_session(session_key):
+        with mod._lock:
+            cancelled = 0
+            for entry in (mod._entries.pop(cid, None) for cid in list(mod._index.pop(session_key, []) or [])):
+                if entry is None or entry.event.is_set():
+                    continue
+                entry.response = mod.CANCELLED
+                entry.event.set()
+                cancelled += 1
+            return cancelled
+
+    def label(text, choices):
+        return next((str(c).strip() for c in choices if str(c).strip().casefold() == text.strip().casefold()), None)
+
+    def pick(token, choices):
+        if token.isdigit():
+            i = int(token) - 1
+            return str(choices[i]).strip() if 0 <= i < len(choices) else None
+        return label(token, choices)
+
+    def coerce(entry, text):
+        """(value, None) or (None, "invalid_selection" | "prose"), as the real _coerce_text_response_detailed."""
+        text = text.strip()
+        if not entry.choices:
+            return text, None
+        tokens = [t.strip() for t in text.split(",") if t.strip()] if "," in text else text.split()
+        numeric = all(t.isdigit() for t in tokens) and bool(tokens)
+        if entry.multi_select:
+            picked = [pick(t, entry.choices) for t in (tokens if "," in text or numeric else [text])]
+            got = None if not picked or None in picked else list(dict.fromkeys(picked))
+            coerced = json.dumps(got) if got else None
+            shaped = numeric or "," in text
+        else:
+            shaped = text.lstrip("-").isdigit()
+            i = int(text) - 1 if shaped else -1
+            coerced = str(entry.choices[i]).strip() if 0 <= i < len(entry.choices) else label(text, entry.choices)
+        if coerced is not None:
+            return coerced, None
+        if entry.awaiting_text:
+            return text, None
+        return None, "invalid_selection" if shaped else "prose"
+
+    def attempt_text_response_for_session(session_key, response):
+        entry = get_pending_for_session(session_key, include_choice_prompts=True)
+        if entry is None:
+            return mod.TEXT_NO_PENDING
+        value, reason = coerce(entry, response)
+        if value is None:
+            return mod.TEXT_REJECTED_SELECTION if reason == "invalid_selection" else mod.TEXT_REJECTED_PROSE
+        return mod.TEXT_RESOLVED if resolve_gateway_clarify(entry.clarify_id, value) else mod.TEXT_NO_PENDING
+
+    def resolve_text_response_for_session(session_key, response):
+        return attempt_text_response_for_session(session_key, response) == mod.TEXT_RESOLVED
+
+    mod.TEXT_RESOLVED, mod.TEXT_REJECTED_PROSE = "resolved", "rejected_prose"
+    mod.TEXT_REJECTED_SELECTION, mod.TEXT_NO_PENDING = "rejected_selection", "no_pending"
+    mod.CANCELLED = "\x00cancelled"
     mod.register, mod.wait_for_response = register, wait_for_response
     mod.resolve_gateway_clarify, mod.get_pending_for_session = resolve_gateway_clarify, get_pending_for_session
-    mod.mark_awaiting_text = mark_awaiting_text
+    mod.mark_awaiting_text, mod.clear_session = mark_awaiting_text, clear_session
+    mod.attempt_text_response_for_session = attempt_text_response_for_session
+    mod.resolve_text_response_for_session = resolve_text_response_for_session
     return mod
 
 
@@ -236,3 +296,15 @@ def install(monkeypatch):
                       ("telegram.ext", ext)):
         monkeypatch.setitem(sys.modules, name, mod)
     return clarify
+
+
+class Gateway:
+    """The Hermes gateway runner as far as muster asks: `_is_user_authorized` (allowlists), true for user 4242."""
+
+    def _is_user_authorized(self, source):
+        return str(source.user_id) == "4242"
+
+
+def spawn_task(coro, name=None):
+    import asyncio
+    return asyncio.get_running_loop().create_task(coro)

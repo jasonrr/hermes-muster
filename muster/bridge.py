@@ -2,25 +2,22 @@
 
 Claude Code runs a PermissionRequest hook in parallel with the pane's own dialog, and takes whichever
 answers first. `wait` records the dialog as a request (muster.decisions), polls until the gateway has
-answered it, and prints that answer as the hook's decision. Printing nothing leaves the dialog to decide,
-so every failure path prints nothing: muster never allows on error. A permission prompt nobody answers in
-PERMISSION_DEADLINE gets an explicit deny.
+answered it, prints that answer as the hook's decision and closes the request. Printing nothing leaves the
+dialog to decide, so every failure path prints nothing: muster never allows on error. A permission prompt
+nobody answers in PERMISSION_DEADLINE gets an explicit deny (Hermes's own approvals.timeout usually denies first).
 
-When the pane answers first, Claude sends the hook SIGTERM (seen live, 2.1.295): that, not herdr's
-screen-read pane status, is how the request learns it was answered there.
+How a request ends without a channel answer, all from Claude itself:
+- the pane answers first (or the session stops): Claude sends the hook SIGTERM (seen live, 2.1.295);
+- the hook dies outright: it stops writing `alive`, and the gateway stales the request after ALIVE_MAX.
 
 A subagent's prompt (the payload names `agent_id`) differs: Claude shows its dialog only after this hook
 returns (seen live), so the pane cannot answer it while we wait. It is sent only when the gateway is up;
-otherwise the hook returns at once and the dialog shows. `settle` (a PostToolUse hook) finishes
-the request from what Claude actually did, and `session_end` stales whatever is still waiting.
+otherwise the hook returns at once and the dialog shows.
 
-Files under the run's directory (<git dir> for an issue run, runs/<card> for an ad-hoc run):
-  muster-decisions/<request id>   one marker per request in flight
-  muster-pin                      the proposal an AskUserQuestion approval carried (written by the
-                                  PreToolUse hook; consumed here)
+`muster-pin` under the run's directory holds the proposal an AskUserQuestion approval carried (written by
+the PreToolUse hook; consumed here).
 """
 
-import hashlib
 import json
 import os
 import signal
@@ -33,21 +30,11 @@ POLL = 1  # s between looks at the request
 ALIVE_EVERY = 5  # s between `alive` writes
 DEADLINE = 86340  # s a question waits: just inside the hook's 86400 s timeout
 PERMISSION_DEADLINE = 600  # s a permission prompt waits for the channel; then muster denies it
-MARKERS = "muster-decisions"
 ASKED = "AskUserQuestion"
-SHOWN_MAX = 3000
 
 
 def log(line):
     core.log("bridge", line)
-
-
-def fingerprint(name, tool_input):
-    """sha256 of the tool input. For an AskUserQuestion only its `questions`: Claude adds `answers` and other
-    fields to the input PostToolUse reports (seen live), and the questions are what was asked."""
-    if name == ASKED and isinstance(tool_input, dict):
-        tool_input = tool_input.get("questions")
-    return hashlib.sha256(json.dumps(tool_input, sort_keys=True).encode()).hexdigest()
 
 
 def pane_of(link):
@@ -94,15 +81,6 @@ def approval_card(name, tool_input, sub=None):
     return {"command": core.SECRET.sub("[redacted]", command), "why": f"{why}{who}", "session": bash}
 
 
-def permission_question(name, tool_input, sub=None):
-    shown = core.SECRET.sub("[redacted]", json.dumps(tool_input, indent=2, sort_keys=True))
-    options = [{"label": "Allow once", "description": ""}, {"label": "Deny", "description": ""}]
-    if len(shown) > SHOWN_MAX:
-        shown, options = "(the input is too long to show here; allow in the pane)", options[1:]
-    who = f" (from the {sub} subagent)" if sub else ""
-    return {"text": f"Allow {name}{who}?\n{shown}", "header": "Permission", "options": options, "multi": False}
-
-
 TERMINATED = []  # set by SIGTERM: Claude closed the dialog (answered in the pane) or is stopping
 
 
@@ -128,9 +106,10 @@ def wait(directory, link, payload):
             except (OSError, ValueError):
                 pin = None
             with_pin.unlink(missing_ok=True)
+            fields = {"questions": questions, "choices": [labels(q["options"]) for q in questions]}
             kind = "question"
         else:
-            questions, kind = [permission_question(name, tool_input, sub)], "permission"
+            fields, kind = {"card": approval_card(name, tool_input, sub)}, "permission"
         try:
             wait_card = (directory / core.WAIT_KIND).read_text().strip() or None
         except OSError:
@@ -138,17 +117,9 @@ def wait(directory, link, payload):
         run = {"repo": link["repo"], "pane": pane_of(link), "kind": "issue" if "issue" in link else "adhoc",
                "branch": link.get("branch") or config.settings["branch_prefix"] + str(link.get("issue", "")),
                **({"issue": link["issue"]} if "issue" in link else {})}
-        rid = decisions.create(
-            kind, link["card"], questions=questions, choices=[labels(q["options"]) for q in questions],
-            tool={"name": name, "input_sha": fingerprint(name, tool_input)}, proposal=pin, wait=wait_card,
-            run=run, alive=time.time(), **({"subagent": sub} if sub else {}),
-            **({"card": approval_card(name, tool_input, sub)} if kind == "permission" else {}))["id"]
-        markers = directory / MARKERS
-        markers.mkdir(parents=True, exist_ok=True)
-        (markers / rid).write_text("")
+        rid = decisions.create(kind, link["card"], tool={"name": name}, proposal=pin, wait=wait_card, run=run,
+                               alive=time.time(), **fields, **({"subagent": sub} if sub else {}))["id"]
         poll(rid, tool_input)
-        if decisions.load(rid)["status"] in decisions.TERMINAL:
-            (markers / rid).unlink(missing_ok=True)
     except Exception as caught:  # noqa: BLE001 - a hook never fails the agent, and never allows on error
         log(f"permission {link.get('card')}: {' '.join(str(caught).split())}")
         if rid:
@@ -218,86 +189,18 @@ def deliver(req, tool_input):
         log(f"request {req['id']}: answer not usable, left to the pane")
         return
     emit(chosen)
-    decisions.update(req["id"], delivered_by_hook=True)
-    if chosen["behavior"] == "deny" and req["kind"] == "permission":  # a deny runs no tool, so no PostToolUse settles it
-        said = (req["answer"].get("message") or "").strip()
-        outcome = "No answer in time: denied" if req["answer"].get("timeout") else "Denied ✓" + (f": {said}" if said else "")
-        decisions.transition(req["id"], ("answered",), "done", outcome=outcome)
+    # Claude applies the first answer; had the pane answered first, SIGTERM would have ended the wait.
+    answer = req["answer"]
+    if req["kind"] == "question":
+        outcome = "Delivered ✓"
+    elif answer.get("timeout"):
+        outcome = "No answer in time: denied"
+    elif chosen["behavior"] == "deny":
+        outcome = "Denied ✓" + (f": {answer['message']}" if answer.get("message") else "")
+    else:
+        outcome = "Allowed for this session ✓" if answer.get("scope") == "session" else "Allowed ✓"
+    decisions.transition(req["id"], ("answered",), "done", outcome=outcome)
 
 
 def emit(chosen):
     print(json.dumps({"hookSpecificOutput": {"hookEventName": "PermissionRequest", "decision": chosen}}), flush=True)
-
-
-# -- what Claude did ------------------------------------------------------------------------------
-
-def squash(text):
-    return " ".join(str(text).split())
-
-
-def readable(response):
-    """The answers an AskUserQuestion's tool_response carries, whitespace-normalized, or None."""
-    answers = response.get("answers") if isinstance(response, dict) else None
-    if not isinstance(answers, dict) or not answers:
-        return None
-    return {squash(k): squash(v) for k, v in answers.items()}
-
-
-def outcome(req, event, payload):
-    if req["status"] == "open":
-        return "Answered in the pane"
-    if req["kind"] == "question":
-        seen = readable(payload.get("tool_response")) if event == "PostToolUse" else None
-        if seen is None:
-            return "Answered; muster could not confirm where"
-        ours = {squash(k): squash(v) for k, v in (req.get("answer") or {}).items()}
-        if req.get("delivered_by_hook") and seen == ours:
-            return "Delivered ✓"
-        return f"Answered in the pane: {'; '.join(seen.values())}"
-    if event == "PostToolUseFailure":
-        return "Finished; muster could not confirm the decision"
-    answer = req.get("answer") or {}
-    if answer.get("decision") == "deny":
-        return "Allowed in the pane"
-    return "Allowed for this session ✓" if answer.get("scope") == "session" else "Allowed ✓"
-
-
-def settle(directory, payload):
-    """Finish the request whose tool just ran (or failed). Never raises."""
-    event = payload.get("hook_event_name")
-    if event not in ("PostToolUse", "PostToolUseFailure"):
-        return
-    try:
-        name, now = payload.get("tool_name"), fingerprint(payload.get("tool_name"), payload.get("tool_input"))
-        for marker in sorted((directory / MARKERS).glob("*")):
-            try:
-                req = decisions.load(marker.name)
-            except FileNotFoundError:
-                marker.unlink(missing_ok=True)
-                continue
-            if req.get("tool") != {"name": name, "input_sha": now}:
-                log(f"settle: {event} of {name} does not match request {req['id']} ({req.get('tool', {}).get('name')})")
-                continue
-            marker.unlink(missing_ok=True)
-            for _ in range(3):  # the outcome reads the state it then moves from; a change in between asks again
-                if req["status"] not in ("open", "answered"):
-                    break
-                req, ok = decisions.transition(req["id"], (req["status"],), "done", outcome=outcome(req, event, payload))
-                if ok:
-                    break
-            return
-    except Exception as caught:  # noqa: BLE001
-        log(f"settle: {' '.join(str(caught).split())}")
-
-
-def session_end(directory):
-    """The agent's session ended: nothing is waiting any more. Never raises."""
-    try:
-        for marker in sorted((directory / MARKERS).glob("*")):
-            try:
-                decisions.transition(marker.name, ("open", "answered"), "stale", outcome="The agent session ended")
-            except FileNotFoundError:
-                pass
-            marker.unlink(missing_ok=True)
-    except Exception as caught:  # noqa: BLE001
-        log(f"session-end: {' '.join(str(caught).split())}")

@@ -1,6 +1,4 @@
 import asyncio
-import os
-import fcntl
 import importlib.util
 import sys
 import threading
@@ -21,33 +19,57 @@ DM = "4242"  # TELEGRAM_HOME_CHANNEL in the sandbox .env
 @pytest.fixture(autouse=True)
 def hermes(monkeypatch):
     clarify = fh.install(monkeypatch)
+    from tools import approval, approval_gateway_wait
+    monkeypatch.setattr(approval_gateway_wait, "TIMEOUT", 2)  # a stuck approval wait ends by itself
     monkeypatch.setattr(gateway, "S", gateway.State())
-    monkeypatch.setattr(gateway, "CTX", types.SimpleNamespace(get_config=lambda k, d: config.settings.get(k, d)))
+    monkeypatch.setattr(gateway, "CTX", types.SimpleNamespace(
+        get_config=lambda k, d: config.settings.get(k, d), spawn_task=fh.spawn_task))
     gateway.S.configured = True
     gateway.S.adapter = fh.Adapter()
-    return clarify
+    before = set(threading.enumerate())
+    LOOP.append(asyncio.new_event_loop())  # one loop per test: waiter threads hand answers back to the loop of the scan
+    yield clarify
+    for rid in [*gateway.S.shown, *gateway.S.approvals]:  # waiter threads block in the fakes: release them all
+        gateway.release(rid)
+    for key in list(clarify._index):
+        clarify.clear_session(key)
+    for key, queue in list(approval._gateway_queues.items()):
+        for entry in list(queue):
+            approval.withdraw_gateway_approval(key, entry.data.get("request_id"), "test over")
+    loop = LOOP.pop()
+    for task in asyncio.all_tasks(loop):
+        task.cancel()
+    loop.run_until_complete(asyncio.sleep(0))
+    loop.run_until_complete(loop.shutdown_default_executor())  # to_thread's pool threads
+    loop.close()
+    for t in set(threading.enumerate()) - before:
+        t.join(3)
+        assert not t.is_alive(), f"thread {t.name} outlived its test"
+
+
+LOOP = []
+
+
+def question(text="Which?", labels=("Alpha", "Beta"), multi=False):
+    return {"text": text, "header": "H", "multi": multi,
+            "options": [{"label": label, "description": f"about {label}"} for label in labels]}
 
 
 def ask(text="Which?", labels=("Alpha", "Beta"), multi=False, **fields):
-    q = {"text": text, "header": "H", "multi": multi,
-         "options": [{"label": label, "description": f"about {label}"} for label in labels]}
-    fields = {"questions": [q], "choices": [list(labels)], "tool": {"name": "AskUserQuestion", "input_sha": "x"},
+    fields = {"questions": [question(text, labels, multi)], "choices": [list(labels)], "tool": {"name": "AskUserQuestion"},
               "wait": "w1", "run": {"repo": "o/r", "issue": 7, "branch": "muster/7", "pane": "p1", "kind": "issue"},
               "alive": time.time(), **fields}
     return decisions.create("question", "led1", **fields)
 
 
 def permission(**fields):
-    q = {"text": "Allow Bash?\n{}", "header": "Permission", "multi": False,
-         "options": [{"label": "Allow once", "description": ""}, {"label": "Deny", "description": ""}]}
-    return decisions.create("permission", "led1", questions=[q], choices=[["Allow once", "Deny"]],
-                            tool={"name": "Bash", "input_sha": "y"}, run={"branch": "b", "pane": "p1"},
-                            card={"command": "touch x", "why": "Create x", "session": True},
-                            alive=time.time(), **fields)
+    fields = {"tool": {"name": "Bash"}, "run": {"branch": "b", "pane": "p1"}, "alive": time.time(),
+              "card": {"command": "touch x", "why": "Create x", "session": True}, **fields}
+    return decisions.create("permission", "led1", **fields)
 
 
 def run(coro):
-    return asyncio.run(coro)
+    return LOOP[0].run_until_complete(coro)
 
 
 async def until(check, seconds=2):
@@ -61,13 +83,16 @@ def sent():
     return gateway.S.adapter.sent
 
 
-# -- 1. the factory ---------------------------------------------------------------------------------
+def status(req):
+    return decisions.load(req["id"])["status"]
 
-def test_factory_registers_the_guard_and_one_scan_task(monkeypatch):
+
+# -- the factory ------------------------------------------------------------------------------------
+
+def test_factory_registers_ask_for_text_and_one_scan_task(monkeypatch):
     monkeypatch.setattr(gateway, "SCAN_EVERY", 0.01)
     prepared = []
     monkeypatch.setattr(core, "prepare_env", lambda: prepared.append(1))
-    monkeypatch.setitem(config.settings, "board", "from-ctx")
     app, other = fh.Application(), fh.Application()
 
     async def go():
@@ -75,49 +100,21 @@ def test_factory_registers_the_guard_and_one_scan_task(monkeypatch):
         first = gateway.S.task
         new = fh.Adapter()
         gateway.telegram_factory(other, new)  # an app rebuild
-        assert gateway.S.task is first and gateway.S.adapter is new
-        await until(lambda: (decisions.root() / ".gateway").exists())
+        assert gateway.S.task is first and gateway.S.adapter is new and gateway.S.bot is other.bot
         first.cancel()
 
     run(go())
-    assert [(g, h.pattern, h.callback) for h, g in app.handlers] == [
-        (-1, r"^cl:mu", gateway.guard), (-1, r"^ea:", gateway.approval_guard)]
+    ((handler, group),) = app.handlers
+    assert (group, handler.pattern, handler.callback, handler.block) == (
+        -1, r"^cl:mu[0-9a-f]+q\d+:other$", gateway.ask_for_text, False)
     assert other.handlers and prepared == [1, 1]
 
 
-def test_a_second_process_holding_the_lock_does_not_scan():
-    path = decisions.root() / ".gateway.lock"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    held = open(path, "w")
-    fcntl.flock(held, fcntl.LOCK_EX)
-
-    async def go():
-        gateway.telegram_factory(fh.Application(), fh.Adapter())
-        assert gateway.S.task is None and gateway.S.lock_fd is None
-
-    run(go())
-    held.close()
-
-
-def test_the_factory_logs_a_group_without_a_user_id_once(monkeypatch):
-    monkeypatch.setitem(config.settings, "notify_chat_id", "-100")
-    monkeypatch.setitem(config.settings, "notify_user_id", "")
-    monkeypatch.setattr(gateway, "SCAN_EVERY", 0.01)
-
-    async def go():
-        for _ in range(2):
-            gateway.telegram_factory(fh.Application(), fh.Adapter())
-        gateway.S.task.cancel()
-
-    run(go())
-    assert core.log_path("gateway").read_text().count("notify_user_id is empty") == 1
-
-
-# -- 2. the scan ------------------------------------------------------------------------------------
-
-def test_scan_touches_the_heartbeat():
-    run(gateway.scan())
-    assert (decisions.root() / ".gateway").exists()
+def test_the_pattern_matches_only_muster_other_taps():
+    import re
+    pattern = r"^cl:mu[0-9a-f]+q\d+:other$"
+    assert re.match(pattern, "cl:mu0a1b2q0:other") and re.match(pattern, "cl:mu0a1bq12:other")
+    assert not re.match(pattern, "cl:mu0a1bq0:1") and not re.match(pattern, "cl:abc123q0:other")
 
 
 def test_a_poisoned_request_does_not_stop_the_others():
@@ -128,7 +125,7 @@ def test_a_poisoned_request_does_not_stop_the_others():
     assert "request" in core.log_path("gateway").read_text()
 
 
-# -- 3. presenting ----------------------------------------------------------------------------------
+# -- presenting -------------------------------------------------------------------------------------
 
 def test_an_open_request_is_presented_once(hermes):
     req = ask(proposal={"version": 2, "sha": "abcdef123456"})
@@ -136,14 +133,20 @@ def test_an_open_request_is_presented_once(hermes):
     run(gateway.scan())
     (msg,) = sent()
     assert (msg["chat"], msg["cid"], msg["session"], msg["choices"]) == (
-        DM, f"mu{req['id']}q0", f"muster:{req['id']}", ["Alpha", "Beta"])
+        DM, f"mu{req['id']}q0", f"muster:{req['id']}:0", ["Alpha", "Beta"])
     for part in ("o/r #7", "Which?", "• Alpha: about Alpha", "Proposal v2 abcdef12", "full text on ledger led1",
                  "Herdr pane p1 (optional)", "reply to this message"):
         assert part in msg["text"]
     assert "1. Alpha" not in msg["text"]  # Hermes numbers the options under the text, matching its buttons
-    saved = decisions.load(req["id"])
-    assert saved["presented"] == {"boot": gateway.BOOT, "messages": {"0": [msg["mid"]]}}
-    assert f"mu{req['id']}q0" in hermes._entries
+    assert decisions.load(req["id"])["presented"] == {"boot": gateway.BOOT, "messages": {"0": [msg["mid"]]}}
+    assert hermes.get_pending_for_session(f"muster:{req['id']}:0", include_choice_prompts=True)
+
+
+def test_each_question_has_its_own_session():
+    two = [question(f"Q{i}") for i in range(2)]
+    req = ask(questions=two, choices=[["Alpha", "Beta"]] * 2)
+    run(gateway.scan())
+    assert [m["session"] for m in sent()] == [f"muster:{req['id']}:0", f"muster:{req['id']}:1"]
 
 
 def test_two_concurrent_scans_present_once():
@@ -166,7 +169,8 @@ def test_a_send_failure_leaves_it_unpresented_then_succeeds_later(hermes):
     req = ask()
     gateway.S.adapter.fail_sends = 1
     run(gateway.scan())
-    assert not sent() and "presented" not in decisions.load(req["id"])
+    assert not sent() and "boot" not in decisions.load(req["id"])["presented"]
+    assert hermes._entries == {} or all(e.event.is_set() for e in hermes._entries.values())  # released
     run(gateway.scan())  # inside the backoff: no new attempt
     assert not sent() and gateway.S.retry[req["id"]][1] == 2
     gateway.S.retry[req["id"]] = (0, 2)
@@ -175,36 +179,14 @@ def test_a_send_failure_leaves_it_unpresented_then_succeeds_later(hermes):
     assert gateway.S.retry == {}
 
 
-def test_the_heartbeat_stops_while_sends_keep_failing(hermes):
-    ask()
-    beat = decisions.root() / ".gateway"
-    gateway.S.adapter.fail_sends = 99
-    run(gateway.scan())
-    first = beat.stat().st_mtime
-    gateway.S.failing_since -= gateway.HEALTHY_FOR + 1
-    os.utime(beat, (0, 0))
-    run(gateway.scan())
-    assert beat.stat().st_mtime == 0 and first  # wait cards fall back to Hermes's own ping
-    gateway.S.adapter.fail_sends = 0
-    for rid in list(gateway.S.retry):
-        gateway.S.retry[rid] = (0, 2)
-    run(gateway.scan())  # a send works again
-    assert gateway.S.failing_since is None
-    run(gateway.scan())
-    assert beat.stat().st_mtime > 0
-
-
-def test_the_heartbeat_resumes_when_the_failing_request_ends_unsent(hermes):
+def test_a_request_that_ends_unsent_stops_retrying():
     req = ask()
-    gateway.S.adapter.fail_sends = 99
+    gateway.S.adapter.fail_sends = 1
     run(gateway.scan())
-    gateway.S.failing_since -= gateway.HEALTHY_FOR + 1
-    decisions.transition(req["id"], ("open",), "stale", outcome="answered in the pane")
-    beat = decisions.root() / ".gateway"
-    run(gateway.scan())  # drops the ended request's retry
-    os.utime(beat, (0, 0))
+    assert req["id"] in gateway.S.retry
+    decisions.transition(req["id"], ("open",), "done", outcome="Answered in the pane")
     run(gateway.scan())
-    assert gateway.S.failing_since is None and beat.stat().st_mtime > 0
+    assert gateway.S.retry == {}
 
 
 def test_the_backoff_doubles_up_to_a_minute():
@@ -233,34 +215,6 @@ def test_a_description_that_repeats_its_label_is_not_shown():
     assert "•" not in sent()[0]["text"]
 
 
-def test_other_sends_a_force_reply_bound_to_the_question(hermes):
-    req, mid = presented(hermes)
-    app = fh.Application()
-    gateway.S.bot = app.bot
-    run(gateway.guard(fh.update(4242, 4242, data=f"cl:mu{req['id']}q0:other"), None))
-    (prompt,) = app.bot.sent
-    assert isinstance(prompt["markup"], fh.ForceReply) and prompt["markup"].selective
-    assert "reply to this message" in prompt["text"] and "tg://user?id=4242" in prompt["text"]
-    assert decisions.load(req["id"])["presented"]["replies"] == {"0": [str(prompt["mid"])]}
-    hermes.mark_awaiting_text(f"mu{req['id']}q0")  # what Hermes's own handler does next
-
-    async def go():
-        got = await gateway.on_dispatch(event=fh.event("typed words", "4242", "4242", reply=str(prompt["mid"])))
-        await until(lambda: decisions.load(req["id"])["status"] == "answered")
-        return got
-
-    assert run(go()) == {"action": "skip"}
-    assert decisions.load(req["id"])["answer"] == {"Which?": "typed words"}
-
-
-def test_a_plain_tap_sends_no_force_reply(hermes):
-    req, _ = presented(hermes)
-    app = fh.Application()
-    gateway.S.bot = app.bot
-    run(gateway.guard(fh.update(4242, 4242, data=f"cl:mu{req['id']}q0:1"), None))
-    assert app.bot.sent == []
-
-
 def test_long_descriptions_are_cut_first():
     ask(labels=("A", "B"), questions=[{"text": "Which?", "header": "", "multi": False, "options": [
         {"label": "A", "description": "d" * 2000}, {"label": "B", "description": "e" * 2000}]}])
@@ -269,30 +223,63 @@ def test_long_descriptions_are_cut_first():
     assert len(text) <= gateway.CAP and "d" * 100 not in text and "wait card w1" in text
 
 
-# -- 5. answers -------------------------------------------------------------------------------------
+def presented(hermes, **fields):
+    req = ask(**fields)
+    run(gateway.scan())
+    return req, sent()[-1]["mid"]
 
-@pytest.mark.parametrize("text,multi,expect", [
-    ("2", False, "Beta"), (" 1 ", False, "Alpha"), ("beta", False, "Beta"), ("ALPHA", False, "Alpha"),
-    ("9", False, "9"), ("0", False, "0"), ("1,2", False, "1,2"), ("1,2", True, "Alpha, Beta"),
-    ("2 , 1", True, "Beta, Alpha"), ("1,9", True, "1,9"), ("something else", False, "something else"),
-    ("  Spaced words ", False, "  Spaced words "),
+
+# -- Other: a ForceReply ----------------------------------------------------------------------------
+
+def test_other_sends_a_force_reply_bound_to_the_question(hermes):
+    req, mid = presented(hermes)
+    app = fh.Application()
+    gateway.S.bot = app.bot
+
+    async def go():
+        await gateway.ask_for_text(fh.update(4242, 4242, data=f"cl:mu{req['id']}q0:other"), None)
+        (prompt,) = app.bot.sent
+        assert isinstance(prompt["markup"], fh.ForceReply) and prompt["markup"].selective
+        assert "reply to this message" in prompt["text"] and "tg://user?id=4242" in prompt["text"]
+        assert decisions.load(req["id"])["presented"]["replies"] == {"0": [str(prompt["mid"])]}
+        hermes.mark_awaiting_text(f"mu{req['id']}q0")  # what Hermes's own handler does next
+        got = await gateway.on_dispatch(event=fh.event("typed words", "4242", "4242", reply=str(prompt["mid"])),
+                                        gateway=fh.Gateway())
+        await until(lambda: status(req) == "answered")
+        return got
+
+    assert run(go()) == {"action": "skip"}
+    assert decisions.load(req["id"])["answer"] == {"Which?": "typed words"}
+    assert (DM, mid, "Received ✓: typed words") not in gateway.S.adapter.edits  # the prompt's own message is edited
+    assert gateway.S.adapter.edits[-1][2] == "Received ✓: typed words"
+
+
+def test_ask_for_text_without_a_bot_or_on_foreign_data_sends_nothing():
+    app = fh.Application()
+    run(gateway.ask_for_text(fh.update(4242, 4242, data="cl:mu00q0:other"), None))  # no bot yet
+    gateway.S.bot = app.bot
+    run(gateway.ask_for_text(fh.update(4242, 4242, data="cl:other"), None))
+    assert app.bot.sent == []
+
+
+# -- answers ----------------------------------------------------------------------------------------
+
+@pytest.mark.parametrize("value,multi,expect", [
+    ("Beta", False, ("Beta", [1])), ("Alpha", True, ("Alpha", [0])),
+    ('["Beta", "Alpha"]', True, ("Beta, Alpha", [1, 0])), ('["Alpha", "nope"]', True, ('["Alpha", "nope"]', None)),
+    ('["Alpha"]', False, ('["Alpha"]', None)),  # a JSON array is only a multi-select answer
+    ("something else", False, ("something else", None)), ("2", False, ("2", None)),
 ])
-def test_typed_text_maps_back_by_index(text, multi, expect):
-    req = ask(multi=multi)
-    req["questions"][0]["multi"] = multi
-    assert gateway.shape(req, 0, text)[0] == expect
+def test_shape_maps_labels_to_indexes_and_anything_else_is_free_text(value, multi, expect):
+    assert gateway.shape(ask(multi=multi), 0, value) == expect
 
 
-@pytest.mark.parametrize("tapped", ["2", "3", "5"])
-def test_a_tapped_numeric_label_is_that_option_not_an_index(tapped):
+def test_a_tapped_numeric_label_is_that_option_not_an_index():
     # Hermes resolves a tap with the label itself: "3" is the option labelled 3, not the third option
-    req = ask(labels=("2", "3", "5"))
-    assert gateway.shape(req, 0, tapped)[0] == tapped
+    assert gateway.shape(ask(labels=("2", "3", "5")), 0, "3") == ("3", [1])
 
 
-
-
-def test_a_tap_answers_the_request_and_marks_it_received(hermes, monkeypatch):
+def test_a_tap_answers_the_request(hermes, monkeypatch):
     called = []
     monkeypatch.setattr(gateway, "on_answered", called.append)
     req = ask()
@@ -301,19 +288,17 @@ def test_a_tap_answers_the_request_and_marks_it_received(hermes, monkeypatch):
     async def go():
         await gateway.scan()
         assert hermes.resolve_gateway_clarify(f"mu{rid}q0", "Beta")  # what Hermes's callback does
-        await until(lambda: decisions.load(rid)["status"] == "answered")
+        await until(lambda: status(req) == "answered")
 
     run(go())
-    got = decisions.load(rid)
-    assert got["answer"] == {"Which?": "Beta"} and [c["id"] for c in called] == [rid]
-    assert (DM, sent()[0]["mid"], "Received ✓") in gateway.S.adapter.edits
+    assert decisions.load(rid)["answer"] == {"Which?": "Beta"} and [c["id"] for c in called] == [rid]
+    assert gateway.S.adapter.edits == []  # Hermes edits the message on a tap, not muster
 
 
-def test_every_question_must_be_answered_and_a_double_answer_counts_once(hermes, monkeypatch):
+def test_every_question_must_be_answered_and_a_double_answer_counts_once(monkeypatch):
     called = []
     monkeypatch.setattr(gateway, "on_answered", called.append)
-    two = [{"text": f"Q{i}", "header": "", "multi": False, "options": [{"label": "Yes", "description": ""}]}
-           for i in range(2)]
+    two = [question(f"Q{i}", ("Yes",)) for i in range(2)]
     req = ask(questions=two, choices=[["Yes"], ["Yes"]])
     rid = req["id"]
 
@@ -321,7 +306,7 @@ def test_every_question_must_be_answered_and_a_double_answer_counts_once(hermes,
         await gateway.scan()
         assert len(sent()) == 2
         await gateway.answered(rid, 0, "Yes")
-        assert decisions.load(rid)["status"] == "open"
+        assert status(req) == "open"
         await gateway.answered(rid, 1, "free")
         assert decisions.load(rid)["answer"] == {"Q0": "Yes", "Q1": "free"}
         await gateway.answered(rid, 1, "again")
@@ -331,30 +316,12 @@ def test_every_question_must_be_answered_and_a_double_answer_counts_once(hermes,
     assert len(called) == 1
 
 
-def test_permission_answers():
-    async def one(text):
-        req = permission()
-        await gateway.scan()
-        await gateway.answered(req["id"], 0, text)
-        return decisions.load(req["id"])["answer"]
-
-    assert run(one("Allow once")) == {"decision": "allow"}
-    assert run(one("1")) == {"decision": "allow"}
-    assert run(one("Deny")) == {"decision": "deny"}
-    assert run(one("not now, please")) == {"decision": "deny", "message": "not now, please"}
-
-
 def test_build_answers_carry_the_action(monkeypatch):
     monkeypatch.setattr(gateway, "on_answered", lambda req: None)
-    q = {"text": "Merge?", "header": "", "multi": False,
-         "options": [{"label": "Merge (squash)", "description": ""}, {"label": "Do nothing", "description": ""}]}
-    req = decisions.create("build", "led1", questions=[q], choices=[["Merge (squash)", "Do nothing"]],
+    labels = ["Merge (squash)", "Do nothing"]
+    req = decisions.create("build", "led1", questions=[question("Merge?", labels)], choices=[labels],
                            actions=["merge", "nothing"], run={"branch": "b"})
-
-    async def go():
-        await gateway.answered(req["id"], 0, "2")
-
-    run(go())
+    run(gateway.answered(req["id"], 0, "Do nothing"))
     assert decisions.load(req["id"])["answer"] == {"action": "nothing"}
 
 
@@ -364,115 +331,58 @@ def test_a_leaving_request_releases_its_clarifies(hermes):
     entry = hermes._entries[f"mu{req['id']}q0"]
     decisions.transition(req["id"], ("open",), "done", outcome="Answered in the pane")
     run(gateway.scan())
-    assert entry.response == gateway.STALE
-    assert gateway.S.cids == {}
+    assert entry.response == hermes.CANCELLED and gateway.S.shown == {}
+    assert hermes._entries == {} or f"mu{req['id']}q0" not in hermes._entries
 
 
-# -- 6. settling the messages -----------------------------------------------------------------------
-
-def test_a_finished_request_edits_its_newest_message_to_the_outcome():
+def test_a_cancelled_waiter_answers_nothing(hermes):
     req = ask()
     run(gateway.scan())
-    decisions.transition(req["id"], ("open",), "done", outcome="Delivered ✓")
-    run(gateway.scan())
-    assert (DM, sent()[0]["mid"], "Delivered ✓") in gateway.S.adapter.edits
-    assert decisions.load(req["id"])["edited"] is True
-    n = len(gateway.S.adapter.edits)
-    run(gateway.scan())
-    assert len(gateway.S.adapter.edits) == n
+    gateway.release(req["id"])
+    time.sleep(0.2)
+    assert status(req) == "open" and "answer" not in decisions.load(req["id"])
 
 
-def test_a_failed_edit_is_retried_once_then_dropped():
-    req = ask()
-    run(gateway.scan())
-    decisions.transition(req["id"], ("open",), "done", outcome="Delivered ✓")
-    gateway.S.adapter.fail_edits = 2
-    run(gateway.scan())
-    assert not decisions.load(req["id"]).get("edited") and req["id"] in gateway.S.watch
-    run(gateway.scan())  # the retry also fails: dropped
-    assert decisions.load(req["id"])["edited"] is True and req["id"] not in gateway.S.watch
-    assert gateway.S.adapter.edits == []
+# -- typed replies ----------------------------------------------------------------------------------
+
+def dispatch(text, user=4242, chat=4242, reply=None, platform="telegram", gw=None):
+    return run(gateway.on_dispatch(event=fh.event(text, user, chat, reply, platform), gateway=gw or fh.Gateway()))
 
 
-def test_a_request_that_ended_while_the_gateway_was_down_is_edited_on_the_first_scan():
-    req = ask()
-    run(gateway.scan())
-    decisions.transition(req["id"], ("open",), "stale", outcome="The agent session ended")
-    gateway.S = gateway.State()  # a restarted gateway
-    gateway.S.adapter, gateway.S.configured = fh.Adapter(), True
-    run(gateway.scan())
-    assert gateway.S.adapter.edits == [(DM, "101", "The agent session ended")]
-
-
-# -- 7. the guard -----------------------------------------------------------------------------------
-
-def tap(user, chat):
-    update = fh.update(user, chat)
-    try:
-        run(gateway.guard(update, None))
-    except fh.ApplicationHandlerStop:
-        return "stopped", update.callback_query.answers
-    return "passed", update.callback_query.answers
-
-
-def test_the_guard_in_a_dm_by_default():
-    assert tap(4242, 4242) == ("passed", [])  # ints from Telegram compare as strings
-    assert tap(999, 4242) == ("stopped", ["Not authorized"])
-    assert tap(4242, 999) == ("stopped", ["Not authorized"])
-
-
-def test_the_guard_in_a_group_needs_both_ids(monkeypatch):
-    monkeypatch.setitem(config.settings, "notify_chat_id", -100123)
-    monkeypatch.setitem(config.settings, "notify_user_id", "55")
-    assert tap(55, -100123) == ("passed", [])
-    assert tap(56, -100123)[0] == "stopped"  # another group member
-    assert tap(55, 4242)[0] == "stopped"     # the right user, the wrong chat
-    assert "refused a tap" in core.log_path("gateway").read_text()
-
-
-def test_a_group_without_a_user_id_authorizes_nobody(monkeypatch):
-    monkeypatch.setitem(config.settings, "notify_chat_id", -100123)
-    monkeypatch.setitem(config.settings, "notify_user_id", "")
-    assert tap(55, -100123)[0] == "stopped"
-    assert tap(-100123, -100123)[0] == "stopped"
-
-
-# -- 8. typed replies -------------------------------------------------------------------------------
-
-def dispatch(text, user=4242, chat=4242, reply=None, platform="telegram"):
-    return run(gateway.on_dispatch(event=fh.event(text, user, chat, reply, platform), gateway=None))
-
-
-def presented(hermes, **fields):
-    req = ask(**fields)
-    run(gateway.scan())
-    return req, sent()[-1]["mid"]
-
-
-def test_a_reply_resolves_the_pending_question(hermes):
-    req, mid = presented(hermes)
-
+def reply_and_wait(req, text, mid, user="4242", chat="4242"):
     async def go():
-        got = await gateway.on_dispatch(event=fh.event("beta", "4242", "4242", reply=mid))
-        await until(lambda: decisions.load(req["id"])["status"] == "answered")
+        got = await gateway.on_dispatch(event=fh.event(text, user, chat, reply=mid), gateway=fh.Gateway())
+        await until(lambda: status(req) == "answered")
         return got
 
-    assert run(go()) == {"action": "skip"}
-    assert decisions.load(req["id"])["answer"] == {"Which?": "Beta"}
+    return run(go())
 
 
-def test_a_reply_to_an_already_resolved_question_says_so(hermes):
+def test_a_reply_by_label_or_number_resolves_the_question(hermes):
+    for text, expect in (("beta", "Beta"), ("1", "Alpha")):
+        req, mid = presented(hermes)
+        assert reply_and_wait(req, text, mid) == {"action": "skip"}
+        assert decisions.load(req["id"])["answer"] == {"Which?": expect}
+        assert gateway.S.adapter.edits[-1] == (DM, mid, f"Received ✓: {text}")
+
+
+def test_a_reply_to_a_multi_select_takes_numbers(hermes):
+    req, mid = presented(hermes, labels=("Alpha", "Beta", "Gamma"), multi=True)
+    assert reply_and_wait(req, "1,3", mid) == {"action": "skip"}
+    assert decisions.load(req["id"])["answer"] == {"Which?": "Alpha, Gamma"}
+
+
+def test_a_reply_that_is_no_option_is_free_text(hermes):
+    req, mid = presented(hermes)
+    assert reply_and_wait(req, "neither, do X", mid) == {"action": "skip"}
+    assert decisions.load(req["id"])["answer"] == {"Which?": "neither, do X"}
+
+
+def test_a_reply_to_an_already_resolved_question_passes_through(hermes):
     req, mid = presented(hermes)
     hermes.resolve_gateway_clarify(f"mu{req['id']}q0", "Alpha")
-    assert dispatch("beta", reply=mid) == {"action": "skip"}
-    assert gateway.S.adapter.edits[-1] == (DM, mid, "already handled: answer received")
-
-
-def test_a_reply_to_a_request_that_is_not_open_says_the_outcome(hermes):
-    req, mid = presented(hermes)
-    decisions.transition(req["id"], ("open",), "done", outcome="Delivered ✓")
-    assert dispatch("x", reply=mid) == {"action": "skip"}
-    assert gateway.S.adapter.edits[-1] == (DM, mid, "already handled: Delivered ✓")
+    assert dispatch("beta", reply=mid) is None
+    assert gateway.S.adapter.edits == []
 
 
 def test_a_reply_to_something_else_passes_through(hermes):
@@ -486,8 +396,8 @@ def test_no_reply_goes_to_the_only_question_awaiting_text(hermes):
     hermes.mark_awaiting_text(f"mu{req['id']}q0")
 
     async def go():
-        got = await gateway.on_dispatch(event=fh.event("my words", "4242", "4242"))
-        await until(lambda: decisions.load(req["id"])["status"] == "answered")
+        got = await gateway.on_dispatch(event=fh.event("my words", "4242", "4242"), gateway=fh.Gateway())
+        await until(lambda: status(req) == "answered")
         return got
 
     assert run(go()) == {"action": "skip"}
@@ -498,13 +408,7 @@ def test_after_other_a_reply_to_some_other_message_is_still_the_answer(hermes):
     # seen live: the human tapped Other, then replied to the Hermes agent's message, not the question's
     req, _ = presented(hermes)
     hermes.mark_awaiting_text(f"mu{req['id']}q0")
-
-    async def go():
-        got = await gateway.on_dispatch(event=fh.event("hello from Telegram", "4242", "4242", reply="228"))
-        await until(lambda: decisions.load(req["id"])["status"] == "answered")
-        return got
-
-    assert run(go()) == {"action": "skip"}
+    assert reply_and_wait(req, "hello from Telegram", "228") == {"action": "skip"}
     assert decisions.load(req["id"])["answer"] == {"Which?": "hello from Telegram"}
 
 
@@ -516,14 +420,16 @@ def test_two_questions_awaiting_text_never_guess(hermes):
     assert dispatch("words") is None
 
 
-def test_dispatch_ignores_other_platforms_and_other_people(hermes):
+def test_dispatch_refuses_another_platform_chat_or_unauthorized_user(hermes):
     req, mid = presented(hermes)
     hermes.mark_awaiting_text(f"mu{req['id']}q0")
     assert dispatch("words", platform="slack") is None
-    assert dispatch("words", user=999) is None
+    assert dispatch("words", user=999) is None  # Hermes does not authorize this user
+    assert dispatch("words", user=999, reply=mid) is None
     assert dispatch("words", chat=999, reply=mid) is None
     assert dispatch("   ") is None
-    assert hermes._entries[f"mu{req['id']}q0"].response is None
+    assert dispatch("words", gw=object()) is None  # no authorization check available: fail closed
+    assert hermes._entries[f"mu{req['id']}q0"].response is None and gateway.S.adapter.edits == []
 
 
 def test_dispatch_with_nothing_presented_passes_through():
@@ -531,49 +437,36 @@ def test_dispatch_with_nothing_presented_passes_through():
 
 
 def test_dispatch_errors_pass_through(monkeypatch):
-    async def boom(event):
+    async def boom(event, gateway):
         raise RuntimeError("x")
 
     monkeypatch.setattr(gateway, "_dispatch", boom)
     assert dispatch("words") is None
 
 
-# -- 9. restart -------------------------------------------------------------------------------------
+# -- restart ----------------------------------------------------------------------------------------
 
 def test_a_request_from_an_earlier_boot_is_represented(hermes):
     req = ask(presented={"boot": "old", "messages": {"0": ["7"]}})
     run(gateway.scan())
     (msg,) = sent()
-    assert (DM, "7", "Superseded: see the newer message") in gateway.S.adapter.edits
+    assert gateway.S.adapter.edits == []  # the old message is left for Hermes to answer as expired
     assert decisions.load(req["id"])["presented"] == {"boot": gateway.BOOT, "messages": {"0": ["7", msg["mid"]]}}
 
 
-def test_a_reply_to_a_superseded_message_still_binds(hermes):
+def test_a_reply_to_an_old_boots_message_still_binds(hermes):
     req = ask(presented={"boot": "old", "messages": {"0": ["7"]}})
     run(gateway.scan())
-
-    async def go():
-        got = await gateway.on_dispatch(event=fh.event("Alpha", "4242", "4242", reply="7"))
-        await until(lambda: decisions.load(req["id"])["status"] == "answered")
-        return got
-
-    assert run(go()) == {"action": "skip"}
+    assert reply_and_wait(req, "Alpha", "7") == {"action": "skip"}
     assert decisions.load(req["id"])["answer"] == {"Which?": "Alpha"}
 
 
 def test_a_reply_to_an_old_message_before_re_presenting_passes_through():
-    req = ask(presented={"boot": "old", "messages": {"0": ["7"]}})
-
-    async def go():  # one scan that fails to present, so the old id is known but nothing is registered
-        gateway.S.adapter.fail_sends = 1
-        await gateway.scan()
-        return await gateway.on_dispatch(event=fh.event("Alpha", "4242", "4242", reply="7"))
-
-    assert run(go()) is None
-    assert decisions.load(req["id"])["status"] == "open"
+    ask(presented={"boot": "old", "messages": {"0": ["7"]}})
+    assert dispatch("Alpha", reply="7") is None
 
 
-# -- 10. liveness -----------------------------------------------------------------------------------
+# -- liveness ---------------------------------------------------------------------------------------
 
 def test_a_silent_hook_stales_the_request():
     req = ask(alive=time.time() - 31)
@@ -586,18 +479,17 @@ def test_a_silent_hook_stales_the_request():
 def test_a_recent_heartbeat_keeps_it():
     req = ask(alive=time.time() - 20)
     run(gateway.scan())
-    assert decisions.load(req["id"])["status"] == "open" and len(sent()) == 1
+    assert status(req) == "open" and len(sent()) == 1
 
 
-def test_an_answered_request_with_a_silent_hook_is_stale_unless_the_hook_delivered_it():
-    a, b = ask(alive=time.time() - 40), ask(alive=time.time() - 40)
-    for r in (a, b):
-        decisions.transition(r["id"], ("open",), "answered", answer={"Which?": "Alpha"})
-    decisions.update(b["id"], delivered_by_hook=True)
+def test_an_answered_request_with_a_silent_hook_is_stale():
+    req = ask(alive=time.time() - 40)
+    decisions.transition(req["id"], ("open",), "answered", answer={"Which?": "Alpha"})
     run(gateway.scan())
-    assert decisions.load(a["id"])["status"] == "stale"
-    assert decisions.load(b["id"])["status"] == "answered"  # settle will finish it
+    assert status(req) == "stale"
 
+
+# -- permission prompts: Hermes's approval card -----------------------------------------------------
 
 def approve(rid, choice, reason=None):
     from tools import approval
@@ -621,18 +513,28 @@ def test_a_permission_prompt_is_hermess_approval_card():
     run(go())
 
 
-def test_approval_choices_become_answers():
-    async def one(choice, reason=None):
+def test_a_non_bash_card_offers_no_session_button():
+    async def go():
+        permission(card={"command": "{}", "why": "x", "session": False})
+        return await card_for(None)
+    assert run(go())["session_button"] is False
+
+
+@pytest.mark.parametrize("choice,reason,expect", [
+    ("once", None, {"decision": "allow"}),
+    ("session", None, {"decision": "allow", "scope": "session"}),
+    ("deny", None, {"decision": "deny"}),
+    ("deny", "use make", {"decision": "deny", "message": "use make"}),
+])
+def test_approval_choices_become_answers(choice, reason, expect):
+    async def go():
         req = permission()
         await card_for(req)
         approve(req["id"], choice, reason)
-        await until(lambda: decisions.load(req["id"])["status"] == "answered")
+        await until(lambda: status(req) == "answered")
         return decisions.load(req["id"])["answer"]
 
-    assert run(one("once")) == {"decision": "allow"}
-    assert run(one("session")) == {"decision": "allow", "scope": "session"}
-    assert run(one("deny")) == {"decision": "deny"}
-    assert run(one("deny", "use make")) == {"decision": "deny", "message": "use make"}
+    assert run(go()) == expect
 
 
 def test_hermess_approval_timeout_denies(monkeypatch):
@@ -642,9 +544,9 @@ def test_hermess_approval_timeout_denies(monkeypatch):
     async def go():
         req = permission()
         await card_for(req)
-        await until(lambda: decisions.load(req["id"])["status"] == "answered")
-        got = decisions.load(req["id"])
-        assert got["answer"]["decision"] == "deny" and got["answer"]["timeout"] is True and got["by"] is None
+        await until(lambda: status(req) == "answered")
+        answer = decisions.load(req["id"])["answer"]
+        assert answer["decision"] == "deny" and answer["timeout"] is True and answer["message"]
     run(go())
 
 
@@ -652,10 +554,21 @@ def test_a_reply_to_the_card_denies_with_its_text():
     async def go():
         req = permission()
         card = await card_for(req)
-        got = await gateway.on_dispatch(event=fh.event("please use make", DM, DM, reply=card["mid"]))
+        got = await gateway.on_dispatch(event=fh.event("please use make", DM, DM, reply=card["mid"]),
+                                        gateway=fh.Gateway())
         assert got == {"action": "skip"}
-        await until(lambda: decisions.load(req["id"])["status"] == "answered")
+        await until(lambda: status(req) == "answered")
         assert decisions.load(req["id"])["answer"] == {"decision": "deny", "message": "please use make"}
+        assert gateway.S.adapter.edits[-1] == (DM, card["mid"], "Received ✓: please use make")
+    run(go())
+
+
+def test_a_reply_to_the_card_from_an_unauthorized_user_does_nothing():
+    async def go():
+        req = permission()
+        card = await card_for(req)
+        got = await gateway.on_dispatch(event=fh.event("no", 999, DM, reply=card["mid"]), gateway=fh.Gateway())
+        assert got is None and status(req) == "open" and gateway.S.approvals == {req["id"]}
     run(go())
 
 
@@ -665,7 +578,11 @@ def test_a_failed_card_send_is_retried_with_backoff():
         gateway.S.adapter.fail_sends = 1
         await gateway.scan()
         await until(lambda: req["id"] in gateway.S.retry)
-        assert decisions.load(req["id"])["status"] == "open" and req["id"] not in gateway.S.approvals
+        assert status(req) == "open" and req["id"] not in gateway.S.approvals
+        gateway.S.retry[req["id"]] = (0, 2)
+        await gateway.scan()
+        await until(lambda: req["id"] not in gateway.S.retry and gateway.S.approvals)
+        assert len(sent()) == 1
     run(go())
 
 
@@ -673,26 +590,25 @@ def test_an_ended_request_withdraws_its_card():
     async def go():
         req = permission()
         await card_for(req)
-        await gateway.end(req["id"], "The agent session ended")
-        await asyncio.sleep(0.1)
-        assert decisions.load(req["id"])["status"] == "stale"  # the withdrawn wait answers nothing
+        decisions.transition(req["id"], ("open",), "stale", outcome="Answered in the pane")
+        await gateway.scan()
+        assert gateway.S.approvals == set()
+        await asyncio.sleep(0.2)
+        assert status(req) == "stale" and "answer" not in decisions.load(req["id"])  # a withdrawn wait answers nothing
     run(go())
 
 
-def test_only_the_notify_user_taps_a_muster_card():
+def test_a_silent_hook_stales_a_permission_request_and_withdraws_it():
     async def go():
         req = permission()
-        card = await card_for(req)
-        data = f"ea:once:{card['mid']}"
-        with pytest.raises(fh.ApplicationHandlerStop):
-            await gateway.approval_guard(fh.update(999, 4242, data=data), None)
-        assert await gateway.approval_guard(fh.update(4242, 4242, data=data), None) is None
-        gateway.S.adapter._approval_state[1] = "agent:main:telegram"
-        assert await gateway.approval_guard(fh.update(999, 4242, data="ea:once:1"), None) is None  # Hermes's own card
+        await card_for(req)
+        decisions.update(req["id"], alive=time.time() - 40)
+        await gateway.scan()
+        assert status(req) == "stale" and gateway.S.approvals == set()
     run(go())
 
 
-# -- 11. registration -------------------------------------------------------------------------------
+# -- registration -----------------------------------------------------------------------------------
 
 def load_root(monkeypatch):
     name = "hermes_plugins.muster_gw"
@@ -729,25 +645,14 @@ def test_register_adds_the_gateway_pieces_only_when_hermes_has_them(monkeypatch)
         module.register(ctx)
         assert calls == [("telegram", "telegram_factory"), ("pre_gateway_dispatch", "on_dispatch")]
         gw = sys.modules["hermes_plugins.muster_gw.muster.gateway"]
-        assert gw.CTX is ctx and gw.S.task is None and gw.S.lock_fd is None  # nothing ran at register time
+        assert gw.CTX is ctx and gw.S.task is None  # nothing ran at register time
     finally:
         for key in [k for k in sys.modules if k.startswith("hermes_plugins.muster_gw.")]:
             sys.modules.pop(key, None)
 
 
-def test_plugin_yaml_discloses_the_gateway_pieces():
-    text = (ROOT / "plugin.yaml").read_text()
-    assert "Telegram callback guard" in text and "pre_gateway_dispatch" in text and "approver's click" in text
-
-
-def test_a_delivered_answer_claude_never_confirmed_is_closed_after_an_hour():
-    old, recent = ask(alive=time.time() - 3601), ask(alive=time.time() - 60)
-    for r in (old, recent):
-        decisions.transition(r["id"], ("open",), "answered", answer={"Which?": "Alpha"}, delivered_by_hook=True)
-    run(gateway.scan())
-    got = decisions.load(old["id"])
-    assert (got["status"], got["outcome"]) == ("done", "Answered; muster could not confirm where")
-    assert decisions.load(recent["id"])["status"] == "answered"
+def test_plugin_yaml_discloses_the_dispatch_hook():
+    assert "pre_gateway_dispatch" in (ROOT / "plugin.yaml").read_text()
 
 
 # -- executing build and feedback requests (task 6) -----------------------------------------------
