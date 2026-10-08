@@ -386,7 +386,8 @@ def launch_run(clone, branch, title, brief, base=None, model=None):
     configured = next((b for slug, (_, _, b) in config.repos().items() if slug.lower() == repo.lower()), None)
     base, why = core.base_of(clone, base or configured)
     # Every input is checked before the card: the plan refuses a bad branch or agent name.
-    plan = core.plan(None, repo, clone, branch, base, title[:40], core.agent_name("run", branch.split("/", 1)[1]),
+    name = core.agent_name("run", f"{repo.split('/', 1)[1]}-{branch.split('/', 1)[1]}")  # one branch, two repos
+    plan = core.plan(None, repo, clone, branch, base, title[:40], name,
                      model or config.settings["agent_model"], "", "run", core.pane_env())
     if why:
         core.note(plan, why)
@@ -460,7 +461,8 @@ def recover(card, resend=False, adopt=False):
             status = core.recoverable(card)
             if "launch" not in run:
                 # A run from before launch records: what it delivered is not recorded. Only a person may
-                # adopt it, and a live agent in its pane then counts as an unknown delivery.
+                # adopt it, and a live agent in its pane then counts as an unknown delivery. Such a run was
+                # named before names carried the repo.
                 if not adopt:
                     raise core.LaunchFailure("refused", f"run {card} predates launch records. Check its "
                                                         f"worktree and pane, then recover with --adopt")
