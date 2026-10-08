@@ -34,3 +34,7 @@
 
 - Saving an event only after its delivery failed (the design the issue proposed) → a hook killed mid-move still loses it; save first, deliver from the outbox, and make every move read state first so a replay never repeats one.
 - A routing check on "the directory exists" (`core.recover`: `runs/<card>/` means an ad-hoc run) → it misroutes as soon as another kind writes there (issue cards' outboxes); key on the record file (`run.json`), not its directory.
+
+## automatic approvers (issue #2, 2026-10-08)
+
+- A rule that requires "both labels" from one dict keyed by label name → an entry whose label equals the main label collapses it to one label event, silently weakening the rule; reject the collision in `config.require()`, and reject unknown entry keys so a typo (`lable`) cannot silently fall back to the default.

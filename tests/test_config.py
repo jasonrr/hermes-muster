@@ -162,6 +162,7 @@ def test_require_accepts_auto_approvers(auto):
     [{**SENTRY, "id": 0}],
     [{k: v for k, v in SENTRY.items() if k != "repos"}], [{**SENTRY, "repos": []}], [{**SENTRY, "repos": "o/a"}],
     [{**SENTRY, "repos": ["o/b"]}], [{**SENTRY, "label": ""}], [{**SENTRY, "label": 5}],
+    [{**SENTRY, "label": "Agent-Ready"}], [{**SENTRY, "lable": "x"}],
 ])
 def test_require_rejects_a_malformed_auto_approver(auto):
     config.settings.update(approver_login="me", repos=["o/a"], approver_id=7, auto_approvers=auto)

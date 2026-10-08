@@ -27,6 +27,7 @@ DEFAULTS = {
 }
 settings = dict(DEFAULTS)  # module-level; cli.main fills it; tests assign into it
 AUTO_LABEL = "automatic-approval"  # an auto_approvers entry's label when it names none
+AUTO_KEYS = {"login", "id", "label", "repos"}
 SLUG = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 
 
@@ -74,12 +75,15 @@ def require():
     for i, entry in enumerate(auto):
         what = (
             "is not a mapping" if not isinstance(entry, dict)
+            else f"has unknown keys {sorted(map(str, set(entry) - AUTO_KEYS))}" if set(entry) - AUTO_KEYS
             else "needs a login" if not isinstance(entry.get("login"), str) or not entry["login"].strip()
             else "needs an integer id" if not is_id(entry.get("id"))
             else "needs a non-empty list of repos" if not isinstance(entry.get("repos"), list) or not entry["repos"]
             else "names a repo not in repos" if not {str(r).lower() for r in entry["repos"]} <= known
             else "has an empty label" if "label" in entry and (not isinstance(entry["label"], str)
                                                                or not entry["label"].strip())
+            else "reuses label: it needs a label of its own" if str(entry.get("label", AUTO_LABEL)).lower()
+            == settings["label"].lower()
             else None)
         if what:
             raise ConfigError(f"muster: auto_approvers[{i}] {what}")
