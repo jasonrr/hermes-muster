@@ -53,13 +53,11 @@ def runs_dir():
 
 
 def log_path():
-    return config.data_dir() / "logs" / "runs.log"
+    return core.log_path("runs")
 
 
 def log(line):
-    log_path().parent.mkdir(parents=True, exist_ok=True)
-    with open(log_path(), "a") as out:
-        out.write(f"{time.strftime('%Y-%m-%dT%H:%M:%S')} {' '.join(str(line).split())}\n")
+    core.log("runs", line)
 
 
 def run_dir(card):

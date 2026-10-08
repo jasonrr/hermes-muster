@@ -57,6 +57,23 @@ def worktrees_dir():
     return Path(config.settings["worktrees"]).expanduser()
 
 
+def log_path(name):
+    return config.data_dir() / "logs" / f"{name}.log"
+
+
+def log(name, line):
+    """One timestamped line, whitespace folded, in <data dir>/logs/<name>.log."""
+    path = log_path(name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a") as out:
+        out.write(f"{time.strftime('%Y-%m-%dT%H:%M:%S')} {' '.join(str(line).split())}\n")
+
+
+def lock_path(name):
+    """<data dir>/logs/<name>.lock: one tick, one cleanup at a time."""
+    return config.data_dir() / "logs" / f"{name}.lock"
+
+
 def hermes_home():
     return Path(os.environ["HERMES_HOME"])
 
@@ -305,13 +322,12 @@ def setup_trouble(step, error):
 #   name, model, settings, env, tab                 the agent and its tab
 #   step                                            the side effect last begun: worktree|tab|agent|prompt|done
 #   phase                                           the step being checked, for a failure's words
-#   text, sha256, version                           the exact startup prompt, fixed on first build
+#   text, sha256                                    the exact startup prompt, fixed on first build
 #   prompt {state, at, seq}                         sending|working|blocked|done|not-sent|unknown
 #   reused                                          what an adopted checkout already held
 #   evidence                                        the last diagnostics, newest last
 #   adopt, resend                                   set only by a person's --adopt / --resend
 
-LAUNCH_VERSION = 2
 AGENT_NAME = re.compile(r"[a-z][a-z0-9_-]{0,31}")  # herdr's rule for agent names
 READY = ("idle", "done")
 DELIVERED = ("working", "blocked", "done")
@@ -367,7 +383,7 @@ def plan(owner, repo, clone, branch, base, label, name, model, settings, tab, en
         raise LaunchFailure("refused", f"{branch!r} is not a valid branch name")
     if subprocess.run(["git", "check-ref-format", "--branch", base], capture_output=True, check=False).returncode:
         raise LaunchFailure("refused", f"{base!r} is not a valid base branch name")
-    return {"version": LAUNCH_VERSION, "owner": owner, "repo": repo, "clone": str(clone), "branch": branch,
+    return {"owner": owner, "repo": repo, "clone": str(clone), "branch": branch,
             "base": base, "path": worktree_path(clone, branch), "planned": worktree_path(clone, branch), "label": label, "name": name, "model": model,
             "settings": str(settings), "tab": tab, "env": list(env), "step": None, "workspace": None,
             "pane": None, "prompt": None, "evidence": []}
@@ -858,21 +874,17 @@ def launch(repo, issue, card, event=None):
         return None
 
 
-def lock_path():
-    return config.data_dir() / "logs" / "tick.lock"
-
-
 def start():
     """What tick and recover do first: the env, the config, and the lock file's directory."""
     prepare_env()
     config.require()
-    lock_path().parent.mkdir(parents=True, exist_ok=True)
+    lock_path("tick").parent.mkdir(parents=True, exist_ok=True)
 
 
 def recover(args):
     """Resume a failed intake launch of one card, under its current approval. 0 once its brief is delivered."""
     start()
-    with open(lock_path(), "w") as lock:
+    with open(lock_path("tick"), "w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)  # never beside a cron tick: both may touch the issue branch
         board_exists()
         if (config.data_dir() / "runs" / args.card / "run.json").is_file():  # an issue card may have an outbox there
@@ -985,7 +997,7 @@ def intake(repo, dry=False):
 
 def tick(args):
     start()
-    with open(lock_path(), "w") as lock:
+    with open(lock_path("tick"), "w") as lock:
         # Kanban's idempotency check is not atomic, and a launch can outlast a minute:
         # a second tick must not race the first one's create.
         try:

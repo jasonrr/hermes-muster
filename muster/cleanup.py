@@ -65,7 +65,7 @@ def state_path():
 
 
 def lock_path():
-    return config.data_dir() / "logs" / "cleanup.lock"
+    return core.lock_path("cleanup")
 
 
 def owned_dir():

@@ -41,7 +41,7 @@ PR_URL = re.compile(r"https://github\.com/([\w.-]+/[\w.-]+)/pull/\d+")
 
 
 def log_path():
-    return config.data_dir() / "logs" / "events.log"
+    return core.log_path("events")
 
 
 def context(cwd):
@@ -185,10 +185,7 @@ def replay(entry):
 
 
 def log(line):
-    path = log_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "a") as out:
-        out.write(line + "\n")
+    core.log("events", line)
 
 
 def hook(args):

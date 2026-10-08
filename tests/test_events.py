@@ -272,6 +272,12 @@ def test_a_type_error_is_logged_like_any_other_failure(board, monkeypatch, capsy
     assert "not subscriptable" in capsys.readouterr().err
 
 
+def test_every_muster_log_line_starts_with_its_time(board, monkeypatch):
+    board["flaky"] = 5
+    hook(monkeypatch, "notification")
+    assert __import__("re").match(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d notification card", events.log_path().read_text())
+
+
 def test_hook_events_point_hermes_at_the_configured_home(board, monkeypatch):
     monkeypatch.delenv("HERMES_KANBAN_HOME")
     hook(monkeypatch, "prompt")

@@ -421,8 +421,8 @@ def test_a_missing_bot_gh_config_blocks_the_card(tmp_path, monkeypatch):
 def test_a_held_lock_means_another_tick_is_running_and_this_one_does_nothing(tmp_path, monkeypatch):
     calls = []
     monkeypatch.setattr(core, "run", fake_world(tmp_path, calls)[0])
-    core.lock_path().parent.mkdir(parents=True, exist_ok=True)
-    with open(core.lock_path(), "w") as held:
+    core.lock_path("tick").parent.mkdir(parents=True, exist_ok=True)
+    with open(core.lock_path("tick"), "w") as held:
         fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
         assert tick() == 0
     assert calls == []
