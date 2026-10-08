@@ -10,7 +10,8 @@ Telegram ping for the human and a queued agent turn.
   prompt         archive the open wait card (silent): the human answered, or (via PostToolUse,
                  registered on the same event) the agent resumed on its own
   session-end    block the ledger card, if it is still ready (not on /clear)
-  done <PR url>  complete the ledger card (from ready or blocked), archive any open wait card
+  done <PR url>  complete the ledger card (from ready or blocked), archive any open wait card;
+                 refused unless gh names the run's branch as the pull request's head
 
 Every block reason and completion summary is written for the human to read whole: the board's
 "human_notices" setting makes the gateway's Telegram ping lead with the card's title and show the
@@ -236,6 +237,17 @@ def hook(args):
         if not match or match.group(1).lower() != link["repo"].lower():
             print(f"usage: hermes muster hook done https://github.com/{link['repo']}/pull/<n>", file=sys.stderr)
             return 2
+        # A links file from before "branch" was recorded: the branch every intake launch uses.
+        branch = link.get("branch") or f"{config.settings['branch_prefix']}{link['issue']}"
+        try:
+            head = json.loads(core.run(["gh", "pr", "view", args.url, "--json", "headRefName"]))["headRefName"]
+            line = None if head == branch else f"done: {args.url} is from {head}, not {branch}"
+        except (core.CommandError, ValueError, KeyError, TypeError) as caught:
+            line = f"done: cannot read the head branch of {args.url}: {' '.join(str(caught).split())}"
+        if line:
+            log(line)
+            print(line, file=sys.stderr)
+            return 1
         detail = args.url
     else:
         detail = claude.detail(payload)

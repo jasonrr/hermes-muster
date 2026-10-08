@@ -220,7 +220,7 @@ def test_an_approved_issue_gets_one_card_one_subscription_and_one_agent_pane(tmp
     links = json.loads((git_dir / core.CARD_FILE).read_text())
     assert links == {"card": "t_abc123", "repo": REPO, "issue": 397, "title": "Add a unit test",
                      "pane": "w1:p2", "workspace": "w1",
-                     "worktree": str(worktree), "base": "main", "launch_dir": str(core.intake_dir() / "t_abc123")}
+                     "worktree": str(worktree), "base": "main", "branch": "muster/397", "launch_dir": str(core.intake_dir() / "t_abc123")}
     record = json.loads((core.intake_dir() / "t_abc123" / "launch.json").read_text())
     assert record["event"] == 407 and record["bug"] is False
     assert record["launch"]["prompt"]["state"] == "working" and record["launch"]["step"] == "done"

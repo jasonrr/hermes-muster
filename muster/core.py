@@ -779,7 +779,7 @@ def intake_known(repo, number):
 
 def links(record, rec):
     return {"card": record["card"], "repo": record["repo"], "issue": record["issue"], "title": record["title"],
-            "pane": rec["pane"], "workspace": rec["workspace"], "worktree": rec["path"], "base": rec["base"],
+            "pane": rec["pane"], "workspace": rec["workspace"], "worktree": rec["path"], "base": rec["base"], "branch": rec["branch"],
             "launch_dir": str(intake_dir() / record["card"])}
 
 

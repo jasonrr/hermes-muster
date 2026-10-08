@@ -25,12 +25,17 @@ def board(tmp_path, monkeypatch):
     git_dir.mkdir()
     (git_dir / core.CARD_FILE).write_text(json.dumps(LINKS))
     state = {"cards": {"t_abc123": "ready"}, "blocks": {}, "keys": {}, "calls": [], "flaky": 0, "git_dir": git_dir,
-             "fail": {}, "on_create": None}
+             "fail": {}, "on_create": None, "head": "muster/397"}
 
     def fake_run(argv):
         state["calls"].append(argv)
         if argv[0] == "git":
             return f"{git_dir}\n"
+        if argv[:3] == ["gh", "pr", "view"]:
+            assert argv[3].startswith("https://github.com/") and argv[4:] == ["--json", "headRefName"], argv
+            if state["head"] is None:
+                raise core.CommandError("gh pr view: exit 1\nHTTP 502")
+            return json.dumps({"headRefName": state["head"]})
         verb, cards = argv[4], state["cards"]
         if verb == "show":
             return json.dumps({"task": {"id": argv[5], "status": cards[argv[5]]}})
@@ -196,6 +201,27 @@ def test_done_refuses_a_url_that_is_not_a_pull_request_of_this_repository(board,
     assert done("not a url") == 2
     assert done(None) == 2
     assert verbs(board) == []
+
+
+def test_done_refuses_a_pull_request_from_another_branch(board, monkeypatch, capsys):
+    board["head"] = "fix/other"
+    assert done(PR) == 1
+    assert f"done: {PR} is from fix/other, not muster/397" in capsys.readouterr().err
+    assert board["cards"]["t_abc123"] == "ready" and verbs(board) == []
+    assert "is from fix/other" in events.log_path().read_text()
+
+
+def test_done_fails_when_github_cannot_name_the_head_branch(board, monkeypatch, capsys):
+    board["head"] = None
+    assert done(PR) == 1
+    assert "HTTP 502" in capsys.readouterr().err and board["cards"]["t_abc123"] == "ready"
+
+
+def test_done_checks_the_branch_the_links_file_names(board, monkeypatch):
+    (board["git_dir"] / core.CARD_FILE).write_text(json.dumps({**LINKS, "branch": "work/397"}))
+    board["head"] = "work/397"
+    assert done(PR) == 0
+    assert board["cards"]["t_abc123"] == "done"
 
 
 def test_outside_a_muster_worktree_nothing_happens(tmp_path, monkeypatch):
@@ -396,10 +422,10 @@ def test_a_stop_without_a_card_does_nothing_at_all(board, monkeypatch):
 def test_core_and_events_agree_on_card_file(board, tmp_path):
     """The marker core writes at launch is the one events reads."""
     record = {"card": "t_abc123", "repo": "acme/app", "issue": 397, "title": "T"}
-    rec = {"pane": "p_agent", "workspace": "w_1", "path": "/wt", "base": "main"}
+    rec = {"pane": "p_agent", "workspace": "w_1", "path": "/wt", "base": "main", "branch": "muster/397"}
     (board["git_dir"] / core.CARD_FILE).write_text(json.dumps(core.links(record, rec)))
     git_dir, link = events.context("/wt")
-    assert git_dir == board["git_dir"] and link["card"] == "t_abc123"
+    assert git_dir == board["git_dir"] and link["card"] == "t_abc123" and link["branch"] == "muster/397"
 
 
 def test_hook_with_card_delegates_to_runs(monkeypatch):
