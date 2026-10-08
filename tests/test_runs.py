@@ -26,7 +26,7 @@ def board(tmp_path, monkeypatch):
     """hermes, git, gh and herdr as the run sees them; hermes moves follow tests/test_kanban_contract.py."""
     state = {"cards": {}, "blocks": {}, "keys": {}, "calls": [], "fail": {}, "down": False, "events": {},
              "seq": 0, "cursor": 0, "head": "abc", "dirty": "", "prs": [], "gh_fail": 0, "agent": "working", "agent_seq": 1,
-             "created_at": {}, "kinds": {}}
+             "created_at": {}, "kinds": {}, "comments": {}, "bodies": {}}
     monkeypatch.setattr(runs, "last_event", lambda card: state["events"].get(card, 0))
     monkeypatch.setattr(core, "block_kind", lambda card: state["kinds"].get(card))
 
@@ -60,8 +60,9 @@ def board(tmp_path, monkeypatch):
         if state["fail"].get(verb):
             state["fail"][verb] -= 1
             raise core.CommandError(f"hermes kanban --board: exit 1\n{verb} failed")
-        if verb == "show":
-            return json.dumps({"task": {"id": argv[5], "status": cards[argv[5]]}})
+        if verb == "show":  # as the real CLI (test_kanban_contract): the body and every comment, whole
+            return json.dumps({"task": {"id": argv[5], "status": cards[argv[5]], "body": state["bodies"].get(argv[5])},
+                               "comments": [{"author": "default", "body": b} for b in state["comments"].get(argv[5], [])]})
         if verb == "notify-list":
             if cards[argv[5]] == "archived" or state.get("no_subs"):
                 return "[]"  # the notifier drops a card's subscriptions on archive
@@ -72,8 +73,13 @@ def board(tmp_path, monkeypatch):
             card = state["keys"].setdefault(key, f"t_wait{len(state['keys']) + 1}")
             state["created_at"].setdefault(card, int(time.time()))
             cards.setdefault(card, "ready")
+            state["bodies"].setdefault(card, argv[argv.index("--body") + 1])
             return json.dumps({"id": card, "status": cards[card], "created_at": state["created_at"][card]})
-        if verb in ("notify-subscribe", "comment"):
+        if verb == "comment":
+            text = argv[-1]  # `comment -- <card> <text>`, or the launch's links comment without "--"
+            state["comments"].setdefault(argv[-2], []).append(text)
+            return ""
+        if verb == "notify-subscribe":
             return ""
         # unblock: only a recover, once, of a launch-failure block (see the contract test)
         assert verb in ("block", "archive", "complete", "unblock"), argv

@@ -73,7 +73,7 @@ def enqueue(card, event, detail, **issue):
 
     An issue run's event (events.hook) has no run.json: it carries its git_dir and link instead.
     """
-    if not issue and not (run_dir(card) / "run.json").is_file():
+    if "git_dir" not in issue and not (run_dir(card) / "run.json").is_file():
         raise core.LaunchError(f"no run {card}")
     ns = time.time_ns()
     path = run_dir(card) / "outbox" / f"{ns}-{event}.json"
@@ -152,12 +152,15 @@ def deliver(run, entry):
     ledger = events.status(card)
     if ledger == "archived":
         return None
+    if event == "proposal":
+        events.post_proposal(card, entry["proposal"])
+        return None  # a comment is no notifier event: nothing to ack
     if event == "prompt":
         events.close_wait(directory, event)
         return None
     clear_dead_claim(directory)
     if event == "notification":
-        events.open_wait(directory, run, entry["detail"], entry["key"])
+        events.open_wait(directory, run, entry["detail"], entry["key"], entry.get("ask"), entry.get("proposal"))
         return wait_card(directory)
     if ledger == "done":
         return card  # a late hook, or a redelivery after a kill: its completion still needs its ack
@@ -543,6 +546,9 @@ def hook(args):
     if event == "done":  # an ad-hoc run finishes by its pull request; reading stdin here would hang
         print("done: an ad-hoc run is finished by its pull request, nothing to report", file=sys.stderr)
         return 1
+    if event == "propose":  # run by the agent from its shell: no hook payload on stdin
+        core.prepare_env()
+        return events.propose(card, args.url)
     try:
         try:
             payload = json.loads(sys.stdin.read() or "{}")
@@ -559,7 +565,7 @@ def hook(args):
         core.prepare_env()
         queued = pending(card)
         if not (event == "prompt" and queued and queued[-1].name.endswith("-prompt.json")):
-            enqueue(card, event, claude.detail(payload))  # one queued prompt is enough
+            events.enqueue(card, event, claude.detail(payload), payload)  # one queued prompt is enough
         drain(card)
     except Exception as error:  # a hook must never crash the agent; the flush retries what was saved
         with contextlib.suppress(Exception):

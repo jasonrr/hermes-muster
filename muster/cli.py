@@ -28,8 +28,8 @@ def setup(parser):
     p.add_argument("--model", default=None)
     sub.add_parser("flush", help="deliver hook events a pane could not")
     p = sub.add_parser("hook", help="agent hook entry point; reads the hook payload on stdin")
-    p.add_argument("event", choices=["notification", "prompt", "session-end", "stop", "done"])
-    p.add_argument("url", nargs="?")
+    p.add_argument("event", choices=["notification", "prompt", "session-end", "stop", "done", "propose"])
+    p.add_argument("url", nargs="?", help="done: the pull request URL; propose: the plan or design file")
     p.add_argument("--card", default=None)
     sub.add_parser("cleanup", help="close finished workspaces").add_argument("--dry-run", action="store_true")
     p = sub.add_parser("open", help="open an analysis workspace muster owns")
@@ -39,7 +39,8 @@ def setup(parser):
 
 def main(args, ctx):
     is_hook = args.muster_command == "hook"
-    failed = 1 if is_hook and args.event == "done" else 0  # `done` is run by the pane agent, which must see a failure
+    # `done` and `propose` are run by the pane agent, which must see a failure.
+    failed = 1 if is_hook and args.event in ("done", "propose") else 0
     try:
         config.load(ctx)
         module, fn = SUBCOMMANDS[args.muster_command]

@@ -54,6 +54,17 @@ def detail(payload: dict) -> str:
     return " ".join(str(payload.get("message") or asked).split())
 
 
+def ask(payload: dict) -> list | None:
+    """An AskUserQuestion's questions (each a dict: question, options, ...), as the agent wrote them."""
+    if payload.get("tool_name") != "AskUserQuestion":
+        return None
+    tool_input = payload.get("tool_input")
+    questions = tool_input.get("questions") if isinstance(tool_input, dict) else None
+    if not isinstance(questions, list):
+        return None
+    return [q for q in questions if isinstance(q, dict)] or None
+
+
 def get_adapter(kind: str):
     if kind != KIND:
         raise config.ConfigError(f"agent_kind {kind!r}: muster v1 supports claude only")

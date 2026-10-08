@@ -13,6 +13,9 @@ Telegram ping for the human and a queued agent turn.
   session-end    block the ledger card, if it is still ready (not on /clear)
   done <PR url>  complete the ledger card (from ready or blocked), archive any open wait card;
                  refused unless gh names the run's branch as the pull request's head
+  propose <file> save the agent's plan or design as the next version, Proposal v<n> <sha256[:12]>,
+                 in <data dir>/runs/<card>/proposals/ and as one ledger comment; the next
+                 AskUserQuestion's wait card carries that version, its full text and every option
 
 Every block reason and completion summary is written for the human to read whole: the board's
 "human_notices" setting makes the gateway's Telegram ping lead with the card's title and show the
@@ -23,11 +26,14 @@ unblock, block and complete all fail (tests/test_kanban_contract.py). The ledger
 at most once and completed once. Each event is saved to <data dir>/runs/<card>/outbox/ before any
 kanban call and delivered from there in order (runs.drain, then replay here); one that does not land
 in two tries stays queued, and the flush (runs.flush, every minute) delivers it. A hook never fails
-the agent: the error goes to <data dir>/logs/events.log and it exits 0. Only `done` prints, and only
-`done` can exit non-zero, because a UserPromptSubmit hook's stdout reaches the agent's context.
+the agent: the error goes to <data dir>/logs/events.log and it exits 0. Only `done` and `propose`
+(run by the agent, not by a hook) print or exit non-zero, because a UserPromptSubmit hook's stdout
+reaches the agent's context.
 """
 
 import contextlib
+import fcntl
+import hashlib
 import json
 import os
 import re
@@ -39,6 +45,7 @@ from . import claude, config, core
 
 STALE_CLAIM = 120  # s: an empty wait marker this old is from a hook killed at its 30 s timeout
 PR_URL = re.compile(r"https://github\.com/([\w.-]+/[\w.-]+)/pull/\d+")
+PROPOSAL_MAX = 64 * 1024  # bytes: the text rides in one argv, twice (ledger comment, wait card body)
 
 
 def log_path():
@@ -73,7 +80,7 @@ def where(link):
     return f"{link['repo']} {link['branch']}", f"branch {link['branch']}"
 
 
-def open_wait(git_dir, link, detail, key):
+def open_wait(git_dir, link, detail, key, ask=None, proposal=None):
     ledger = status(link["card"])
     if ledger not in ("ready", "blocked", "done"):  # done: its pull request is in review, questions still page
         return f"notification: ledger {link['card']} is {ledger}, no wait card"
@@ -105,7 +112,8 @@ def open_wait(git_dir, link, detail, key):
             card = json.loads(core.kanban(
                 "create", "--body",
                 f"Waiting for you. ledger {link['card']} | {ref} | pane {link['pane']} | "
-                f"worktree {link['worktree']}\n{link.get('provenance', core.PROVENANCE)}",
+                f"worktree {link['worktree']}\n{link.get('provenance', core.PROVENANCE)}"
+                + asked(ask) + attached(link["card"], proposal),
                 "--idempotency-key", key, "--created-by", core.CREATED_BY, "--json",
                 "--", title))["id"]
             # Recorded before subscribe and block, so a failure there is finished or archived later.
@@ -118,8 +126,9 @@ def open_wait(git_dir, link, detail, key):
     if status(card) == "ready":
         core.subscribe(card)
         # "--": the agent's question may start with "--" (e.g. "--kind=..."); argparse would read it as a flag.
+        seen = (f"\n{heading(proposal)}: full text on this card and ledger {link['card']}." if proposal else "")
         core.kanban("block", "--kind", "needs_input", "--", card,
-                    f"{detail or 'The agent is waiting for you.'}\nReply in Herdr pane {link['pane']}.")
+                    f"{detail or 'The agent is waiting for you.'}{seen}\nReply in Herdr pane {link['pane']}.")
     expect(card, "blocked", "notification")
     return f"notification: wait card {card} blocked"
 
@@ -140,10 +149,117 @@ def close_wait(git_dir, event):
     return f"{event}: wait card {card} archived"
 
 
-def move(event, git_dir, link, detail, key):
+def proposals(card):
+    """A ledger's proposal versions, v<n>.md, and `armed`: the version the next question carries.
+    In the data dir, not the git dir: a version must still resolve after cleanup removes the worktree."""
+    return config.data_dir() / "runs" / card / "proposals"
+
+
+def heading(proposal):
+    return f"Proposal v{proposal['version']} {proposal['sha']}"
+
+
+def asked(questions):
+    """Every question and option exactly as the agent wrote them, for the wait card body."""
+    lines = []
+    for q in questions or []:
+        lines.append(f"\n\n## {q.get('question', '')}" + (" (any number of options)" if q.get("multiSelect") else ""))
+        for option in q.get("options") or []:
+            if isinstance(option, dict):
+                lines.append(f"\n- {option.get('label', '')}: {option.get('description', '')}")
+                if option.get("preview"):
+                    lines.append("\n" + "\n".join("    " + line for line in str(option["preview"]).splitlines()))
+    return "".join(lines)
+
+
+def attached(ledger, proposal):
+    """The pinned version's full text for the wait card body; nothing when the question carries none."""
+    if not proposal:
+        return ""
+    text = (proposals(ledger) / f"v{proposal['version']}.md").read_text()
+    return f"\n\n# {heading(proposal)} (also on ledger {ledger}, the comment headed so)\n\n{text}"
+
+
+def post_proposal(ledger, proposal):
+    """One ledger comment per version, read back. A redelivery finds its header and posts nothing."""
+    head = heading(proposal)
+
+    def posted():
+        shown = json.loads(core.kanban("show", ledger, "--json"))
+        return any(str(c.get("body") or "").startswith(head + "\n") for c in shown.get("comments") or [])
+    if not posted():
+        text = (proposals(ledger) / f"v{proposal['version']}.md").read_text()
+        core.kanban("comment", "--", ledger, f"{head}\n\n{text}")
+        if not posted():
+            raise core.CommandError(f"proposal: {head} did not read back on ledger {ledger}")
+    return f"proposal: {head} on ledger {ledger}"
+
+
+def enqueue(card, event, detail, payload, **issue):
+    """Save one hook event. An AskUserQuestion also saves its questions and pins the armed proposal,
+    so a revision made later never changes what this question was asked about."""
+    from . import runs  # lazy: runs imports events at module level
+    questions = claude.ask(payload) if event == "notification" else None
+    armed = proposals(card) / "armed"
+    pinned = None
+    if questions and armed.is_file():
+        with contextlib.suppress(OSError, ValueError):
+            pinned = json.loads(armed.read_text())
+    path = runs.enqueue(card, event, detail, ask=questions, proposal=pinned, **issue)
+    if pinned:
+        armed.unlink(missing_ok=True)  # after the save: a kill in between pins it twice, not never
+    return path
+
+
+def propose(card, file, **issue):
+    """`hook propose <file>`: the agent's plan or design as the next version, posted on the ledger.
+
+    Run by the agent: prints its outcome, 0 once the comment is on the ledger, else 1. Only a text
+    unlike the latest version makes a new one (a revert is a new revision). Every call queues a post,
+    so running it again heals a kill between the save and the queue; the post skips a header it finds.
+    """
+    from . import runs  # lazy: runs imports events at module level
+    try:
+        raw = Path(file).read_bytes()
+        if len(raw) > PROPOSAL_MAX:
+            raise ValueError(f"{file} is {len(raw)} bytes, over {PROPOSAL_MAX}: shorten it")
+        text = core.SECRET.sub("[redacted]", raw.decode())
+        if not text.strip():
+            raise ValueError(f"{file} is empty")
+        sha = hashlib.sha256(text.encode()).hexdigest()[:12]
+        directory = proposals(card)
+        directory.mkdir(parents=True, exist_ok=True)
+        with open(runs.run_dir(card) / "lock", "w") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)  # released before the drain, which takes it again
+            versions = sorted(int(p.stem[1:]) for p in directory.glob("v*.md") if p.stem[1:].isdigit())
+            version = versions[-1] if versions else 0
+            if not version or (directory / f"v{version}.md").read_text() != text:
+                version += 1
+                (directory / f"v{version}.md").write_text(text)
+            proposal = {"version": version, "sha": sha}
+            core.save_json(directory / "armed", proposal)
+            path = runs.enqueue(card, "proposal", heading(proposal), proposal=proposal, **issue)
+        runs.drain(card, wait=True)
+        if path.exists():
+            error = json.loads(path.read_text()).get("error") or "not delivered"
+            raise core.CommandError(f"{error} (queued for the flush)")
+        if status(card) == "archived":
+            raise core.CommandError(f"ledger {card} is archived: not posted")
+    except Exception as caught:  # noqa: BLE001 - the agent reads the reason; nothing may crash it
+        line = f"propose card {card}: {' '.join(str(caught).split())}"
+        log(line)
+        print(line, file=sys.stderr)
+        return 1
+    print(f"proposal: {heading(proposal)} on ledger {card}")
+    return 0
+
+
+def move(event, git_dir, link, detail, key, ask=None, proposal=None):
     """This event's moves, each read back. Returns a report line; raises when a move did not land."""
+    if event == "proposal":
+        return post_proposal(link["card"], proposal)
     if event == "notification":
-        return open_wait(git_dir, link, detail, key)
+        return open_wait(git_dir, link, detail, key, ask, proposal)
     if event == "prompt":
         return close_wait(git_dir, event)
     card = link["card"]
@@ -178,7 +294,7 @@ def replay(entry):
         return  # the worktree is gone: no agent is left waiting
     for attempt in range(2):
         try:
-            move(event, git_dir, link, entry["detail"], entry["key"])
+            move(event, git_dir, link, entry["detail"], entry["key"], entry.get("ask"), entry.get("proposal"))
             return
         except (core.CommandError, core.LaunchError, OSError, ValueError, KeyError):
             if attempt:
@@ -197,7 +313,7 @@ def hook(args):
     if event == "stop":
         return 0  # fires at every turn end; an issue run has nothing to do with it
     payload = {}
-    if event != "done":
+    if event not in ("done", "propose"):  # run by the agent from its shell: stdin is no hook payload
         try:
             payload = json.loads(sys.stdin.read() or "{}")
         except ValueError:
@@ -214,19 +330,21 @@ def hook(args):
         # hook still must not crash the agent, and `done` still must not report false success.
         line = f"{event}: {' '.join(str(caught).split())}"
         log(line)
-        if event == "done":
+        if event in ("done", "propose"):
             print(line, file=sys.stderr)
             return 1
         return 0
     if found is None:
-        if event == "done":
+        if event in ("done", "propose"):
             cwd = payload.get("cwd") or os.getcwd()
-            line = f"done: not inside a muster worktree (cwd {cwd})"
+            line = f"{event}: not inside a muster worktree (cwd {cwd})"
             log(line)
             print(line, file=sys.stderr)
             return 1
         return 0
     git_dir, link = found
+    if event == "propose":
+        return propose(link["card"], args.url, git_dir=str(git_dir), link=link)
     if event == "prompt" and link.get("launch_dir"):
         with contextlib.suppress(OSError, ValueError):  # the launch's evidence that its brief arrived
             core.prompt_seen(link["launch_dir"], payload)
@@ -257,7 +375,7 @@ def hook(args):
         return 0  # every PostToolUse lands here: nothing open, or one queued prompt is enough
     try:
         # Saved before any move, so a hook killed mid-move leaves its event for the flush.
-        path = runs.enqueue(card, event, detail, git_dir=str(git_dir), link=link)
+        path = enqueue(card, event, detail, payload, git_dir=str(git_dir), link=link)
         drained = runs.drain(card, wait=event == "done")  # only done waits: the agent reads its answer
         if not path.exists():
             if event != "done":
