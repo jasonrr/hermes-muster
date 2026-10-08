@@ -814,3 +814,15 @@ def test_an_ad_hoc_approval_request_without_a_saved_proposal_is_denied(board, ru
     why = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["permissionDecisionReason"]
     assert why.startswith("No proposal is saved") and f"muster hook --card {CARD} propose <file>" in why
     assert "t_wait1" not in board["cards"] and files(run1, "outbox") == []
+
+
+def test_an_ad_hoc_approval_requests_posttooluse_closes_its_wait(board, run1, monkeypatch, tmp_path, capsys):
+    design = tmp_path / "design.md"
+    design.write_text("plan")
+    monkeypatch.setattr("sys.stdin", io.StringIO(""))
+    runs.hook(argparse.Namespace(card=CARD, event="propose", url=str(design)))
+    ask = {"tool_name": "AskUserQuestion", "tool_input": {"questions": [{"question": "Approve?", "header": "Approval"}]}}
+    fire(monkeypatch, "notification", message="", **ask)
+    capsys.readouterr()
+    fire(monkeypatch, "prompt", **ask)  # PostToolUse: the same payload, the human answered
+    assert capsys.readouterr().out == "" and board["cards"]["t_wait1"] == "archived"
