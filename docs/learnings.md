@@ -73,3 +73,6 @@
 - A subscription with `--chat-type forum` → the coordinator's wake gets session `…:forum:<chat>:<thread>` while the human's replies in that topic are `…:group:…` (the adapter builds inbound sources with "group"); keep the configured chat_type and add only `--thread-id`.
 - Presenting a request the moment its new topic exists, then running the repair that re-presents the run's open requests → the prompt was sent twice; hold presentation until the repair for that thread has run.
 
+## labelled buttons (issue #22, 2026-10-09)
+
+- Putting option labels on buttons cut to a phone-safe width → two labels sharing a long prefix (`… us-east-1` / `… us-west-2`) or a blank label give buttons the human cannot tell apart, which Hermes's numbered buttons never did; number the buttons (and their body lines) whenever plain labels would collide or be blank.

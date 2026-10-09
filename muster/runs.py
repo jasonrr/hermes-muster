@@ -184,8 +184,7 @@ def deliver(run, entry):
     events.close_wait(directory, event)
     if ledger == "ready":
         core.kanban("block", "--kind", "needs_input", card,
-                    f"The agent's session ended without a finished pull request: {why}.\n"
-                    f"Check Herdr pane {run['pane']}.")
+                    f"The agent's session ended without a finished pull request: {why}.")
         events.expect(card, "blocked", event)
     return card
 

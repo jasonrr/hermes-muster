@@ -125,12 +125,14 @@ def test_an_open_request_is_presented_once(hermes):
     run(gateway.scan())
     run(gateway.scan())
     (msg,) = sent()
-    assert (msg["chat"], msg["cid"], msg["session"], msg["choices"]) == (
-        DM, f"mu{req['id']}q0", f"muster:{req['id']}:0", ["Alpha", "Beta"])
-    for part in ("o/r #7", "Which?", "• Alpha: about Alpha", "Proposal v2 abcdef12", "full text on ledger led1",
-                 "Herdr pane p1 (optional)", "reply to this message"):
+    cid = f"mu{req['id']}q0"
+    assert (msg["chat"], msg["cid"], msg["session"], msg["parse_mode"]) == (DM, cid, f"muster:{req['id']}:0", "HTML")
+    assert msg["buttons"] == [("Alpha", f"cl:{cid}:0"), ("Beta", f"cl:{cid}:1"), (fh.OTHER, f"cl:{cid}:other")]
+    assert gateway.S.adapter._clarify_state == {cid: f"muster:{req['id']}:0"}  # Hermes's tap handler needs it
+    for part in ("❓ o/r #7", "Which?", "• Alpha: about Alpha", "Proposal v2 abcdef12", "full text on ledger led1",
+                 "reply to this message"):
         assert part in msg["text"]
-    assert "1. Alpha" not in msg["text"]  # Hermes numbers the options under the text, matching its buttons
+    assert "1. Alpha" not in msg["text"] and "pane" not in msg["text"]  # the buttons carry the labels
     assert decisions.load(req["id"])["presented"] == {"boot": gateway.BOOT, "messages": {"0": [msg["mid"]]}}
     assert hermes.get_pending_for_session(f"muster:{req['id']}:0", include_choice_prompts=True)
 
@@ -197,8 +199,8 @@ def test_oversize_text_is_capped_and_points_to_the_wait_card():
     ask(text="x" * 6000)
     run(gateway.scan())
     text = sent()[0]["text"]
-    assert len(text) <= gateway.CAP
-    assert "Full options on wait card w1" in text and "Herdr pane p1 (optional)" in text
+    assert len(text) <= gateway.CAP + len("❓ ")
+    assert "Full options on wait card w1" in text and "pane" not in text
 
 
 def test_a_description_that_repeats_its_label_is_not_shown():
@@ -213,7 +215,82 @@ def test_long_descriptions_are_cut_first():
         {"label": "A", "description": "d" * 2000}, {"label": "B", "description": "e" * 2000}]}])
     run(gateway.scan())
     text = sent()[0]["text"]
-    assert len(text) <= gateway.CAP and "d" * 100 not in text and "wait card w1" in text
+    assert len(text) <= gateway.CAP + len("❓ ") and "d" * 100 not in text and "wait card w1" in text
+
+
+def test_a_build_review_shows_its_actions_on_the_buttons():
+    labels = ["Merge (squash) (recommended)", "Send back", "Do nothing"]
+    q = {"text": "Review: fine", "header": "Build", "multi": False,
+         "options": [{"label": label, "description": ""} for label in labels]}
+    decisions.create("build", "led1", run={"repo": "o/r", "issue": 7, "pane": "p1"}, actions=["merge", "send-back", "nothing"],
+                     choices=[labels], questions=[q], head="h" * 40, base="main", pr="u", cycle=1)
+    run(gateway.scan())
+    (msg,) = sent()
+    assert [b for b, _ in msg["buttons"]] == [*labels, fh.OTHER]
+    assert "Merge (squash)" not in msg["text"] and "•" not in msg["text"]  # no legend: the buttons say it
+
+
+def test_a_long_label_is_cut_on_its_button_and_kept_whole_in_the_text():
+    long = "Use the shared config loader for every entry point"
+    ask(labels=(long, "Beta"), questions=[{"text": "Which?", "header": "", "multi": False, "options": [
+        {"label": long, "description": ""}, {"label": "Beta", "description": "about Beta"}]}])
+    run(gateway.scan())
+    (msg,) = sent()
+    button = msg["buttons"][0][0]
+    assert len(button) == gateway.LABEL_MAX and button == long[:gateway.LABEL_MAX - 1] + "…"
+    assert f"• {long}\n" in msg["text"] and "• Beta: about Beta" in msg["text"]
+
+
+def test_a_long_label_stays_whole_in_oversize_text():
+    long = "Use the shared config loader for every entry point"
+    ask(text="x" * 6000, labels=(long, "B"), questions=[{"text": "x" * 6000, "header": "", "multi": False, "options": [
+        {"label": long, "description": "d" * 500}, {"label": "B", "description": "e" * 500}]}])
+    run(gateway.scan())
+    text = sent()[0]["text"]
+    assert f"• {long}" in text and "d" * 100 not in text and len(text) <= gateway.CAP + len("❓ ")
+
+
+def test_cut_labels_that_would_look_alike_are_numbered_on_buttons_and_text():
+    east, west = "Deploy to production cluster us-east-1", "Deploy to production cluster us-west-2"
+    ask(labels=(east, west), questions=[{"text": "Where?", "header": "", "multi": False, "options": [
+        {"label": east, "description": ""}, {"label": west, "description": ""}]}])
+    run(gateway.scan())
+    (msg,) = sent()
+    first, second = (b for b, _ in msg["buttons"][:2])
+    assert first != second and first.startswith("1. ") and second.startswith("2. ")
+    assert f"• 1. {east}" in msg["text"] and f"• 2. {west}" in msg["text"]
+
+
+def test_a_blank_label_gets_a_number_not_an_empty_button():
+    ask(labels=("", "Beta"), questions=[{"text": "Which?", "header": "", "multi": False, "options": [
+        {"label": "", "description": ""}, {"label": "Beta", "description": ""}]}])
+    run(gateway.scan())
+    assert [b for b, _ in sent()[0]["buttons"][:2]] == ["1. ", "2. Beta"]
+
+
+def test_a_cut_choice_is_listed_whole_even_when_it_differs_from_its_option_label():
+    label = "y" * 30
+    ask(labels=(label, f"{label} (2)"), questions=[{"text": "Which?", "header": "", "multi": False, "options": [
+        {"label": label, "description": ""}, {"label": label, "description": ""}]}])
+    run(gateway.scan())
+    assert f"• {label} (2)" in sent()[0]["text"]
+
+
+def test_several_keep_their_numbers_on_the_buttons():
+    ask(multi=True, questions=[{"text": "Which?", "header": "", "multi": True, "options": [
+        {"label": "Alpha", "description": ""}, {"label": "Beta", "description": ""}]}])
+    run(gateway.scan())
+    assert [b for b, _ in sent()[0]["buttons"]][:2] == ["1. Alpha", "2. Beta"]
+    assert "•" not in sent()[0]["text"]  # numbered, not cut: nothing to repeat in the text
+
+
+def test_the_text_is_html_escaped_and_a_tap_maps_to_the_exact_choice(hermes):
+    req = ask(text="Use <b> & co?", labels=("<i>", "Beta"))
+    run(gateway.scan())
+    (msg,) = sent()
+    assert "Use &lt;b&gt; &amp; co?" in msg["text"] and msg["buttons"][0][0] == "<i>"
+    # Hermes's tap handler answers cl:<id>:<idx> with the registered choices[idx], never the button text
+    assert hermes._entries[msg["cid"]].choices == ["<i>", "Beta"] == decisions.load(req["id"])["choices"][0]
 
 
 def presented(hermes, **fields):
@@ -553,14 +630,14 @@ def test_representing_edits_the_earlier_messages_to_superseded(hermes):
 def test_a_failed_partial_send_supersedes_what_this_boot_sent():
     two = [question(f"Q{i}") for i in range(2)]
     ask(questions=two, choices=[["Alpha", "Beta"]] * 2)
-    adapter, real = gateway.S.adapter, gateway.S.adapter.send_clarify
+    adapter, real = gateway.S.adapter, gateway.S.adapter._send_prompt
 
     async def second_fails(*args, **kw):
         if adapter.sent:
             adapter.fail_sends = 1
         return await real(*args, **kw)
 
-    adapter.send_clarify = second_fails
+    adapter._send_prompt = second_fails
     run(gateway.scan())
     (first,) = sent()
     assert (DM, first["mid"], "Superseded: see the newer message") in adapter.edits
@@ -826,7 +903,7 @@ def test_build_free_text_becomes_a_feedback_request_that_the_next_scan_presents(
     (fb,) = decisions.for_ledger("led1", "feedback")
     assert fb["feedback"] == "Fix it.\n\nAdditional instructions from the human:\nplease also add docs"
     assert fb["choices"] == [["Send as written", "Don't send"]]
-    assert [m["choices"] for m in sent()] == [["Send as written", "Don't send"]]
+    assert [[b for b, _ in m["buttons"]] for m in sent()] == [["Send as written", "Don't send", fh.OTHER]]
 
 
 def test_the_first_scan_recovers_executing_requests_of_an_older_boot_once(monkeypatch):

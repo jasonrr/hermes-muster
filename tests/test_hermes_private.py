@@ -71,7 +71,6 @@ def test_the_adapter_methods_the_gateway_calls_exist():
     found = {n.name: [a.arg for a in n.args.args + n.args.kwonlyargs]
              for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
     assert {"chat_id", "command", "session_key", "allow_permanent", "allow_session"} <= set(found["send_exec_approval"])
-    assert {"chat_id", "question", "choices", "clarify_id", "session_key"} <= set(found["send_clarify"])
     assert {"chat_id", "message_id", "content"} <= set(found["edit_message"])
 
 
@@ -92,3 +91,18 @@ def test_approval_session_reads_the_adapters_state_and_returns_none_on_bad_data(
     assert hermes_private.approval_session(Adapter(), "ea:junk") is None
     assert hermes_private.approval_session(Adapter(), "ea:once:x") is None
     assert hermes_private.approval_session(object(), "ea:once:7") is None
+
+
+def test_send_labelled_clarify_still_matches_hermess_send_clarify():
+    path = "plugins/platforms/telegram/adapter.py"
+    source = (HERMES / path).read_text()
+    assert params(path, "_send_prompt") == (["self", "what", "chat_id", "metadata", "build"],
+                                            ["parse_mode", "thread_id", "reply_to_mode"])
+    clarify = ast.get_source_segment(source, next(
+        n for n in ast.walk(ast.parse(source)) if isinstance(n, ast.AsyncFunctionDef) and n.name == "send_clarify"))
+    for shape in ('callback_data=f"cl:{clarify_id}:{idx}"', 'callback_data=f"cl:{clarify_id}:other"',
+                  't("platform.telegram.prompt.other")', "self._clarify_state.__setitem__(clarify_id, session_key)",
+                  "self._send_prompt(", "parse_mode=ParseMode.HTML", "_html.escape(question)",
+                  "thread_id=self._metadata_thread_id(metadata)"):
+        assert shape in clarify, f"send_clarify changed ({shape}): hermes_private.send_labelled_clarify is stale"
+    assert "self._clarify_state: Dict[str, str] = {}" in source

@@ -216,7 +216,7 @@ class Application:
 
 
 class Adapter:
-    """send_clarify / edit_message as the Telegram adapter has them: failure is a result, not a raise."""
+    """The Telegram adapter's prompt sends and edit_message as muster uses them: failure is a result, not a raise."""
 
     def __init__(self):
         self.sent, self.edits = [], []
@@ -224,9 +224,15 @@ class Adapter:
         self.fail_edits = 0
         self._n = 100
         self._approval_state = {}  # approval id -> session key, as the Telegram adapter keeps it
+        self._clarify_state = {}  # clarify id -> session key, likewise
         self.bot = None  # the Bot whose forum the topics live in (Application.bot)
         self.creates = []  # scripted create_handoff_thread outcomes: "ok", "lost" (made, no reply) or "fail"
         self.notes = []  # send(): (chat, text, thread)
+
+    @staticmethod
+    def _metadata_thread_id(metadata):
+        thread = (metadata or {}).get("thread_id")
+        return str(thread) if thread else None
 
     def landing(self, metadata):
         """The thread a send lands in: Hermes resends to General (None) when the thread is gone."""
@@ -258,13 +264,19 @@ class Adapter:
                           "thread": self.landing(metadata)})
         return SimpleNamespace(success=True, message_id=str(self._n), error=None)
 
-    async def send_clarify(self, chat_id, question, choices, clarify_id, session_key, metadata=None):
+    async def _send_prompt(self, what, chat_id, metadata, build, *, parse_mode=None, thread_id=None, reply_to_mode=None):
+        """Hermes's control-prompt shell: build() -> (text, keyboard, on_sent), routed send, a failure as a result."""
         if self.fail_sends:
             self.fail_sends -= 1
             return SimpleNamespace(success=False, message_id=None, error="boom")
+        text, keyboard, on_sent = build()
         self._n += 1
-        self.sent.append({"chat": chat_id, "text": question, "choices": choices, "cid": clarify_id,
-                          "session": session_key, "mid": str(self._n), "thread": self.landing(metadata)})
+        on_sent(SimpleNamespace(message_id=self._n))
+        buttons = [(b.text, b.callback_data) for row in keyboard.inline_keyboard for b in row]
+        cid = buttons[0][1].split(":")[1]
+        self.sent.append({"chat": chat_id, "text": text, "buttons": buttons, "cid": cid, "parse_mode": parse_mode,
+                          "session": self._clarify_state[cid], "mid": str(self._n),
+                          "thread": self.landing({"thread_id": thread_id} if thread_id else metadata)})
         return SimpleNamespace(success=True, message_id=str(self._n), error=None)
 
     async def edit_message(self, chat_id, message_id, content, *, finalize=False, metadata=None):
@@ -327,6 +339,23 @@ class Bot:
         return True
 
 
+class InlineKeyboardButton:
+    def __init__(self, text, callback_data=None):
+        self.text, self.callback_data = text, callback_data
+
+
+class InlineKeyboardMarkup:
+    def __init__(self, inline_keyboard):
+        self.inline_keyboard = inline_keyboard
+
+
+OTHER = "✏️ Other (type answer)"  # Hermes's English platform.telegram.prompt.other
+
+
+def t(key, **kw):
+    return {"platform.telegram.prompt.other": OTHER}.get(key, key)
+
+
 class Query:
     def __init__(self, user, chat, data="cl:mu0q0:0", thread=None):
         self.from_user = SimpleNamespace(id=user, mention_html=lambda: f'<a href="tg://user?id={user}">J</a>')
@@ -366,7 +395,12 @@ def install(monkeypatch):
     ext.MessageHandler, ext.filters = MessageHandler, filters
     telegram = types.ModuleType("telegram")
     telegram.ext, telegram.ForceReply = ext, ForceReply
-    for name, mod in (("tools", tools), ("tools.clarify_gateway", clarify), ("tools.approval", approval),
+    telegram.InlineKeyboardButton, telegram.InlineKeyboardMarkup = InlineKeyboardButton, InlineKeyboardMarkup
+    constants = types.ModuleType("telegram.constants")
+    constants.ParseMode = SimpleNamespace(HTML="HTML", MARKDOWN_V2="MarkdownV2")
+    agent, i18n = types.ModuleType("agent"), types.ModuleType("agent.i18n")
+    agent.i18n, i18n.t = i18n, t
+    for name, mod in (("telegram.constants", constants), ("agent", agent), ("agent.i18n", i18n), ("tools", tools), ("tools.clarify_gateway", clarify), ("tools.approval", approval),
                       ("tools.approval_gateway_wait", wait), ("telegram", telegram),
                       ("telegram.ext", ext)):
         monkeypatch.setitem(sys.modules, name, mod)
