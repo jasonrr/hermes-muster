@@ -497,9 +497,9 @@ def test_the_approval_guard_covers_muster_cards_and_leaves_hermess_own():
 def test_a_finished_request_edits_its_newest_message_to_the_outcome():
     req = ask()
     run(gateway.scan())
-    decisions.transition(req["id"], ("open",), "done", outcome="Delivered ✓")
+    decisions.transition(req["id"], ("open",), "done", outcome="Sent to Claude")
     run(gateway.scan())
-    assert (DM, sent()[0]["mid"], "Delivered ✓") in gateway.S.adapter.edits
+    assert (DM, sent()[0]["mid"], "Sent to Claude") in gateway.S.adapter.edits
     assert decisions.load(req["id"])["edited"] is True
     n = len(gateway.S.adapter.edits)
     run(gateway.scan())
@@ -509,16 +509,16 @@ def test_a_finished_request_edits_its_newest_message_to_the_outcome():
 def test_reply_prompts_are_edited_to_the_outcome_too(hermes):
     req, mid = presented(hermes)
     decisions.update(req["id"], presented={**decisions.load(req["id"])["presented"], "replies": {"0": ["901"]}})
-    decisions.transition(req["id"], ("open",), "done", outcome="Delivered ✓")
+    decisions.transition(req["id"], ("open",), "done", outcome="Sent to Claude")
     run(gateway.scan())
     assert sorted(m for _, m, _ in gateway.S.adapter.edits) == sorted([mid, "901"])
-    assert {t for _, _, t in gateway.S.adapter.edits} == {"Delivered ✓"}
+    assert {t for _, _, t in gateway.S.adapter.edits} == {"Sent to Claude"}
 
 
 def test_a_failed_edit_is_retried_once_then_dropped():
     req = ask()
     run(gateway.scan())
-    decisions.transition(req["id"], ("open",), "done", outcome="Delivered ✓")
+    decisions.transition(req["id"], ("open",), "done", outcome="Sent to Claude")
     gateway.S.adapter.fail_edits = 2
     run(gateway.scan())
     assert not decisions.load(req["id"]).get("edited") and req["id"] in gateway.S.watch

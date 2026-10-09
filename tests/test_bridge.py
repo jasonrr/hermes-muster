@@ -71,7 +71,7 @@ def test_answered_question_prints_the_updated_input_and_is_done(tmp_path, capsys
     thread.join()
     assert out(capsys) == {"hookSpecificOutput": {"hookEventName": "PermissionRequest", "decision": {
         "behavior": "allow", "updatedInput": {**ASK["tool_input"], "answers": {"Which db?": "free text"}}}}}
-    assert (only()["status"], only()["outcome"]) == ("done", "Delivered ✓")
+    assert (only()["status"], only()["outcome"]) == ("done", "Sent to Claude")
 
 
 def test_the_hook_leaves_no_marker_files(tmp_path):
@@ -94,6 +94,26 @@ def test_sigterm_from_claude_means_the_pane_answered(tmp_path, capsys):
     req = only()
     assert out(capsys) is None and req["status"] == "stale" and req["outcome"] == "Answered in the pane"
 
+
+def test_the_pane_answering_as_the_hook_emits_is_never_reported_confirmed(tmp_path, capsys, monkeypatch):
+    # emitting is not applying: Claude may already have taken the pane's answer (issue #21)
+    real = bridge.emit
+    monkeypatch.setattr(bridge, "emit", lambda chosen: (real(chosen), os.kill(os.getpid(), signal.SIGTERM)))
+    thread = answer_when_open(answer={"decision": "allow"})
+    bridge.wait(tmp_path, LINK, BASH)
+    thread.join()
+    assert out(capsys)["hookSpecificOutput"]["decision"] == {"behavior": "allow"}
+    assert (only()["status"], only()["outcome"]) == ("done", "Allow sent to Claude")
+
+
+def test_claude_exiting_as_the_hook_emits_is_never_reported_confirmed(tmp_path, capsys, monkeypatch):
+    real = bridge.emit
+    monkeypatch.setattr(bridge, "emit", lambda chosen: (real(chosen), monkeypatch.setattr(os, "getppid", lambda: 1)))
+    thread = answer_when_open(answer={"Which db?": "pg"})
+    bridge.wait(tmp_path, LINK, ASK)
+    thread.join()
+    assert out(capsys)["hookSpecificOutput"]["decision"]["behavior"] == "allow"
+    assert (only()["status"], only()["outcome"]) == ("done", "Sent to Claude")
 
 def test_the_pane_is_read_from_the_launch_for_an_adhoc_run(tmp_path):
     run = {"card": "t_led", "repo": "o/r", "branch": "fix/x", "launch": {"pane": "w_9:p1"}}
@@ -133,7 +153,7 @@ def test_allow_once_is_done_as_allowed(tmp_path):
     thread = answer_when_open(answer={"decision": "allow"})
     bridge.wait(tmp_path, LINK, BASH)
     thread.join()
-    assert (only()["status"], only()["outcome"]) == ("done", "Allowed ✓")
+    assert (only()["status"], only()["outcome"]) == ("done", "Allow sent to Claude")
 
 
 def test_deny_with_typed_text_carries_the_message(tmp_path, capsys):
@@ -141,7 +161,7 @@ def test_deny_with_typed_text_carries_the_message(tmp_path, capsys):
     bridge.wait(tmp_path, LINK, BASH)
     thread.join()
     assert out(capsys)["hookSpecificOutput"]["decision"] == {"behavior": "deny", "message": "use make"}
-    assert (only()["status"], only()["outcome"]) == ("done", "Denied ✓: use make")
+    assert (only()["status"], only()["outcome"]) == ("done", "Deny sent to Claude: use make")
 
 
 def test_plain_deny_has_no_message(tmp_path, capsys):
@@ -149,7 +169,7 @@ def test_plain_deny_has_no_message(tmp_path, capsys):
     bridge.wait(tmp_path, LINK, BASH)
     thread.join()
     assert out(capsys)["hookSpecificOutput"]["decision"] == {"behavior": "deny"}
-    assert only()["outcome"] == "Denied ✓"
+    assert only()["outcome"] == "Deny sent to Claude"
 
 
 def test_hermess_timeout_deny_is_reported_as_no_answer_in_time(tmp_path, capsys):
@@ -157,7 +177,7 @@ def test_hermess_timeout_deny_is_reported_as_no_answer_in_time(tmp_path, capsys)
     bridge.wait(tmp_path, LINK, BASH)
     thread.join()
     assert out(capsys)["hookSpecificOutput"]["decision"] == {"behavior": "deny", "message": "No answer in time."}
-    assert only()["outcome"] == "No answer in time: denied"
+    assert only()["outcome"] == "No answer in time: deny sent to Claude"
 
 
 @pytest.mark.parametrize("status", ["stale", "done", "failed"])
@@ -211,7 +231,7 @@ def test_a_permission_prompt_waits_only_ten_minutes_then_is_denied(tmp_path, cap
     req = only()
     decision = out(capsys)["hookSpecificOutput"]["decision"]
     assert decision["behavior"] == "deny" and "10 minutes" in decision["message"]
-    assert req["status"] == "stale" and req["outcome"] == "No answer in 10 min: denied"
+    assert req["status"] == "stale" and req["outcome"] == "No answer in 10 min: deny sent to Claude"
 
 
 def test_a_subagent_prompt_is_sent_when_the_gateway_is_up(tmp_path, capsys, monkeypatch):
@@ -237,7 +257,7 @@ def test_a_main_agent_prompt_is_held_whatever_the_gateway_state(tmp_path, monkey
     thread = answer_when_open(answer={"decision": "deny"})
     bridge.wait(tmp_path, LINK, BASH)
     thread.join()
-    assert only()["outcome"] == "Denied ✓"
+    assert only()["outcome"] == "Deny sent to Claude"
 
 
 def test_an_answer_that_wins_the_deadline_race_is_used(tmp_path, capsys, monkeypatch):

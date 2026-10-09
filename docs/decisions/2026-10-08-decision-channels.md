@@ -20,7 +20,13 @@ Telegram is the first decision surface. Slack is a requirement for the architect
   3. **Map** a tap or a reply back to the request and the question, by message id, never by guessing from
      unrelated chat. Then move the request `open → answered` with `decisions.transition` (its refusal is
      the double-click guard), and call `gateway.on_answered`.
-  4. **Edit** the message to the request's `outcome` when it ends, so the human knows the answer arrived.
+  4. **Edit** the message to the request's `outcome` when it ends, so the human knows what became of the answer.
+     A hook-delivered answer reads "Sent to Claude" / "Allow sent to Claude" / "Deny sent to Claude"
+     (jasonrr/hermes-muster#21). That label means the PermissionRequest hook printed the answer, not that
+     Claude applied it: the pane can answer, or Claude can exit, around that write. Confirming would take a
+     PostToolUse acknowledgment, which was cut in #17 and cannot see a deny anyway. An allow is permission,
+     never a command that succeeded. A ✓ is kept for outcomes muster verified itself (the feedback "Sent ✓",
+     checked against the prompt Claude received).
 
 ## Telegram (built: `muster/gateway.py`)
 
