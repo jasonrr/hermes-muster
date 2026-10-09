@@ -1098,3 +1098,16 @@ def test_with_topics_off_nothing_carries_a_thread(hermes):
     ask()
     run(gateway.scan())
     assert gateway.S.adapter.sent[0]["thread"] is None and not (config.data_dir() / "runs").exists()
+
+
+def test_an_unknown_probe_error_changes_nothing_and_is_logged(forum, monkeypatch):
+    opened(forum)
+
+    async def flaky(chat_id, message_thread_id):
+        raise Exception("Timed out")
+    monkeypatch.setattr(forum.bot, "reopen_forum_topic", flaky)
+    ask()
+    tick(forum, 0)
+    assert conversation.load("led1")["state"] == "open" and len(forum.adapter.sent) == 1  # sent to its topic
+    assert "probe: Timed out" in core.log_path("gateway").read_text()
+

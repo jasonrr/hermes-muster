@@ -647,13 +647,13 @@ async def probe(ref):
         await S.bot.reopen_forum_topic(ref["chat_id"], int(thread))
         return "alive"
     except Exception as caught:  # noqa: BLE001
-        found = outcome_of(caught)
+        found, error = outcome_of(caught), caught
     if found == "deleted":
         log(f"{ledger}: topic {thread} is gone; making a new one")
         await asyncio.to_thread(conversation.swap, ledger, ("open", "closed"), state="creating", thread_id=None,
                                 previous=[*ref.get("previous", []), thread], attempts=0, since=0, repaired=None)
     elif found == "unknown":
-        log(f"{ledger}: topic {thread} probe: {caught}")
+        log(f"{ledger}: topic {thread} probe: {error}")
     return found
 
 
