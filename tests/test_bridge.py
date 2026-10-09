@@ -115,6 +115,7 @@ def test_claude_exiting_as_the_hook_emits_is_never_reported_confirmed(tmp_path, 
     assert out(capsys)["hookSpecificOutput"]["decision"]["behavior"] == "allow"
     assert (only()["status"], only()["outcome"]) == ("done", "Sent to Claude")
 
+
 def test_the_pane_is_read_from_the_launch_for_an_adhoc_run(tmp_path):
     run = {"card": "t_led", "repo": "o/r", "branch": "fix/x", "launch": {"pane": "w_9:p1"}}
     thread = answer_when_open(answer={"Which db?": "pg"})

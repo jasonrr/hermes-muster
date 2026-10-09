@@ -8,7 +8,7 @@ On a one-minute cron tick muster looks for issues carrying your approving label 
 2. `hermes muster tick` (cron) sees the label event, checks the approver's login and numeric id, and makes one ledger card per approval.
 3. The card is subscribed `notify+wake` to your chat, then a herdr worktree on branch `<branch_prefix><issue number>` is created.
 4. The agent starts empty in the pane, then the brief (rules, the "how to work" prompt, the repo's production note) is submitted as its first prompt.
-5. The agent works the issue. When it asks a question or a permission prompt waits, you get a Telegram message with the question, its context and every option as a button; tap one or reply to the message, and muster hands your answer to the waiting agent and edits the message to say whether it arrived. The pane still works too: whichever answers first wins.
+5. The agent works the issue. When it asks a question or a permission prompt waits, you get a Telegram message with the question, its context and every option as a button; tap one or reply to the message, and muster hands your answer to the waiting agent and edits the message to say what happened (sent to Claude, answered in the pane, ...). The pane still works too: whichever answers first wins.
 6. The agent opens exactly one pull request whose body ends with `Closes #<n>` and runs `hermes muster hook done <PR url>`; the ledger card completes and you get the link. The Hermes agent then reviews the pull request and sends one recommendation (merge, send back, or do nothing) with buttons; see [Decisions in the channel](#decisions-in-the-channel).
 7. `hermes muster cleanup` (cron) closes the workspace once the PR is merged, the checkout is clean and pushed, and every pane has been quiet for 30 minutes.
 
