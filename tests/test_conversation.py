@@ -72,10 +72,13 @@ def test_target_without_a_reference_is_the_main_chat():
                                            "thread_id": None}
 
 
-def test_name_is_cut_to_telegrams_limit():
-    assert conversation.name("o/app", "Fix it", issue=4) == "app#4 Fix it"
-    assert conversation.name("o/app", "Thing", branch="feat/x") == "app feat/x: Thing"
-    assert len(conversation.name("o/app", "x" * 300, issue=4)) == 128
+def test_name_is_cut_to_telegrams_limit_and_ends_with_the_ledger():
+    assert conversation.name("o/app", "Fix it", "t_1", issue=4) == "app#4 Fix it · t_1"
+    assert conversation.name("o/app", "Thing", "t_2", branch="feat/x") == "app feat/x: Thing · t_2"
+    long = conversation.name("o/app", "x" * 300, "t_0e034c97", issue=4)
+    assert len(long) == 128 and long.endswith(" · t_0e034c97")
+    # the same readable title in two runs: two names
+    assert conversation.name("o/app", "Fix", "t_a", issue=4) != conversation.name("o/app", "Fix", "t_b", issue=4)
 
 
 def test_add_card_is_idempotent_and_a_no_op_without_a_reference():
@@ -143,7 +146,7 @@ def test_a_fallback_is_said_once_on_the_ledger(monkeypatch):
     comments = [argv for argv in subs.calls if argv[0] == "comment"]
     assert comments == [("comment", "led1", "topic: not created: the Hermes gateway is not running; this run stays "
                                             "in the main chat")]
-    assert conversation.load("led1")["name"] == "app#3 Fix"
+    assert conversation.load("led1")["name"] == "app#3 Fix · led1"
 
 
 def test_topics_off_a_subscription_writes_no_file(monkeypatch):

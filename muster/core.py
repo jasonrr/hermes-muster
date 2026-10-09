@@ -932,7 +932,7 @@ def topic(card, repo, title, issue=None, branch=None):
     """Ask for the run's topic (muster.conversation); a fallback is said once on the card. Never raises."""
     from . import conversation
 
-    ref = conversation.request(card, conversation.name(repo, title, issue=issue, branch=branch))
+    ref = conversation.request(card, conversation.name(repo, title, card, issue=issue, branch=branch))
     if ref and ref.get("state") == "fallback" and not ref.get("commented"):
         with contextlib.suppress(CommandError, OSError):
             kanban("comment", card, f"topic: not created: {ref.get('why')}; this run stays in the main chat")

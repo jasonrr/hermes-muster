@@ -425,10 +425,14 @@ class Subs:
 
     def __init__(self):
         self.rows, self.calls = {}, []
+        self.fail = {}  # card -> how many of its next notify-subscribe calls fail
 
     def __call__(self, *argv):
         self.calls.append(argv)
         verb, card = argv[0], argv[1]
+        if verb == "notify-subscribe" and self.fail.get(card):
+            self.fail[card] -= 1
+            raise core.CommandError("hermes kanban: exit 1\ndatabase is locked")
         if verb == "notify-subscribe":
             flag = dict(zip(argv[2::2], argv[3::2]))
             self.rows.setdefault(card, []).append({

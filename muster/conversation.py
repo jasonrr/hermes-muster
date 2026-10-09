@@ -74,10 +74,12 @@ def target(ledger):
     return {**core.notify_target(), "thread_id": thread}
 
 
-def name(repo, title, issue=None, branch=None):
-    short = repo.split("/")[-1]
+def name(repo, title, ledger, issue=None, branch=None):
+    """The topic's name: the run's readable title, ended by its ledger id. The id makes the name unique, so
+    Telegram's topic-created notice (which carries only the name) points at exactly one run."""
+    short, tag = repo.split("/")[-1], f" · {ledger}"
     head = f"{short}#{issue}" if issue is not None else f"{short} {branch}:"
-    return f"{head} {title}"[:LIMIT]
+    return f"{head} {title}"[:LIMIT - len(tag)] + tag
 
 
 def request(ledger, topic_name):

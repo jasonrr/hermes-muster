@@ -76,3 +76,7 @@
 ## labelled buttons (issue #22, 2026-10-09)
 
 - Putting option labels on buttons cut to a phone-safe width → two labels sharing a long prefix (`… us-east-1` / `… us-west-2`) or a blank label give buttons the human cannot tell apart, which Hermes's numbered buttons never did; number the buttons (and their body lines) whenever plain labels would collide or be blank.
+- A topic name built from the readable title alone (`app#24 Fix it`) → two runs with the same title match the same topic-created notice and can adopt each other's topic; end every name with the ledger id and ignore a notice that matches more than one run.
+- Hermes's `create_handoff_thread` returns None for every failure, including a timeout after Telegram made the topic → a retry on None can make a second topic; call create once per destination and, without the notice, fall back rather than retry.
+- A repair that writes "done" after a loop that logs and skips failed card subscriptions → the coordinator's wake stays on the dead topic with no retry; keep the unmoved cards, retry them, and mark done only when notify-list shows each one at the new destination and not the old.
+

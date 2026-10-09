@@ -39,8 +39,10 @@ CAP = 3500  # characters per message (Telegram allows 4096)
 LABEL_MAX = 32  # characters on a button; Telegram's phone client cuts longer ones
 BACKOFF_MAX = 60
 BOOT = secrets.token_hex(4)
-TOPIC_RETRY = 10  # s of silence after a create that returned no thread before the next attempt
+TOPIC_RETRY = 10  # s before another try at checking the group, after a check that could not run
 TOPIC_ATTEMPTS = 3
+NOTICE_WAIT = 20  # s to wait for Telegram's topic-created notice after a create that returned no thread
+MIGRATE_MAX = 60  # s, the longest wait between retries of a card subscription that did not move
 PROBE_EVERY = 30  # s between deleted-topic probes of an open run topic
 now, clock = time.time, time.monotonic  # topic timing only; tests patch these
 
@@ -142,8 +144,7 @@ async def in_topic(rid, thread):
     except (OSError, ValueError, KeyError) as caught:  # unreadable: fail closed
         log(f"request {rid}: conversation unreadable, refused: {caught}")
         return False
-    if ref and ref.get("previous") and (ref.get("state") in ("pending", "creating")
-                                        or ref.get("repaired") != (ref.get("thread_id") or "main")):
+    if ref and ref.get("previous") and (ref.get("state") in ("pending", "creating") or not prompts_moved(ref)):
         return False  # its topic is being remade: nowhere answers until its prompts move there
     expected = (await asyncio.to_thread(conversation.target, ledger))["thread_id"]
     got = None if thread in (None, "", "1", 1) else str(thread)  # Telegram's General topic is thread 1
@@ -638,6 +639,15 @@ async def _dispatch(event, gateway):
 
 # -- run topics (issue #24) -----------------------------------------------------------------------
 
+def dest_of(ref):
+    """Where the run is now: its thread, or "main" (the main chat)."""
+    return ref.get("thread_id") or "main"
+
+
+def prompts_moved(ref):
+    return ref.get("moved") == dest_of(ref)
+
+
 def outcome_of(error):
     """A Telegram topic call's error: "alive" (nothing to change), "deleted" (the thread is gone), else "unknown"."""
     text = str(error).lower()
@@ -653,9 +663,8 @@ async def destination(ledger):
     the topic is being made, moved or closed: the request waits for a later scan."""
     ref = await asyncio.to_thread(conversation.load, ledger)
     state = (ref or {}).get("state")
-    if ref and (ledger in S.repairing or (ref.get("previous")
-                                          and ref.get("repaired") != (ref.get("thread_id") or "main"))):
-        return False, None  # a new destination its cards and prompts have not moved to yet
+    if ref and (ledger in S.repairing or (ref.get("previous") and not prompts_moved(ref))):
+        return False, None  # a new destination its prompts have not moved to yet
     if state in (None, "fallback"):
         return True, None  # the main chat
     if state not in ("open", "closed"):
@@ -681,7 +690,8 @@ async def probe(ref):
     if found == "deleted":
         log(f"{ledger}: topic {thread} is gone; making a new one")
         await asyncio.to_thread(conversation.swap, ledger, ("open", "closed"), state="creating", thread_id=None,
-                                previous=[*ref.get("previous", []), thread], attempts=0, since=0, repaired=None)
+                                previous=[*ref.get("previous", []), thread], attempts=0, since=0, asked=False,
+                                moved=None, repaired=None)
     elif found == "unknown":
         log(f"{ledger}: topic {thread} probe: {error}")
     return found
@@ -708,7 +718,7 @@ async def topic_step(ref):
                                        f"This run stays in the main chat.")
             await asyncio.to_thread(conversation.update, ledger, noticed=True)
         if ref.get("previous") and ref.get("repaired") != "main":
-            await repair(ref)  # a recreate that failed: the run's cards move to the main chat
+            await repair(ref)  # a recreate that failed: the run moves to the main chat
     elif state == "closing":
         _, ok = await asyncio.to_thread(conversation.swap, ledger, ("closing",), state="closed")
         if ok:  # once: a failed send or close is logged, never repeated
@@ -721,20 +731,29 @@ async def topic_step(ref):
                     log(f"{ledger}: closing topic {ref['thread_id']}: {caught}")
     elif state == "open":
         if ref.get("previous") and ref.get("repaired") != ref["thread_id"]:
-            await repair(ref)
+            await repair(ref)  # until every card's subscription reads back here
         elif clock() - S.probed.get(ledger, float("-inf")) >= PROBE_EVERY:
             await probe(ref)
 
 
 async def create(ref):
-    """One creation attempt, after 10 s of silence since the last one; 3 attempts, then the main chat. A create
-    whose reply was lost is adopted from Telegram's service message (topic_created), never made twice on purpose."""
+    """At most one createForumTopic call per destination. Its result can be lost: Hermes's create_handoff_thread
+    turns every error into None, including a timeout after Telegram made the topic. So a None is never retried
+    (that could make a second topic). The topic is adopted from Telegram's topic-created notice when one arrives
+    (topic_created), and after NOTICE_WAIT without one the run uses the main chat; a notice that turns up later
+    closes that topic as unused. Only a prerequisite check that could not run is tried again (3 times)."""
     ledger, attempts = ref["ledger"], ref.get("attempts", 0)
+    if ref.get("asked"):
+        if now() - ref.get("since", 0) >= NOTICE_WAIT:
+            await asyncio.to_thread(
+                conversation.swap, ledger, ("creating",), state="fallback", noticed=False,
+                why="Telegram neither confirmed the topic nor sent its notice; not retried, so no second topic is made")
+        return
     if ref["state"] == "creating" and now() - ref.get("since", 0) < TOPIC_RETRY:
         return
     if attempts >= TOPIC_ATTEMPTS:
         await asyncio.to_thread(conversation.swap, ledger, ("pending", "creating"), state="fallback", noticed=False,
-                                why=f"no topic after {TOPIC_ATTEMPTS} attempts")
+                                why=f"could not check the group after {TOPIC_ATTEMPTS} attempts")
         return
     ref, ok = await asyncio.to_thread(conversation.swap, ledger, ("pending", "creating"), state="creating",
                                       attempts=attempts + 1, since=now())
@@ -747,11 +766,15 @@ async def create(ref):
             await asyncio.to_thread(conversation.swap, ledger, ("creating",), state="fallback", why=why, noticed=False)
         log(f"{ledger}: topic attempt {attempts + 1}: {why}")
         return
+    # Saved before the call: from here on the result may be unknown (a lost reply, or a restart mid-call).
+    _, ok = await asyncio.to_thread(conversation.swap, ledger, ("creating",), asked=True, since=now())
+    if not ok:
+        return
     thread = await S.adapter.create_handoff_thread(ref["chat_id"], ref["name"])
     if thread:
         await settle(ledger, str(thread))
     else:
-        log(f"{ledger}: topic attempt {attempts + 1} returned no thread; waiting for Telegram's notice")
+        log(f"{ledger}: the topic create returned no thread; waiting {NOTICE_WAIT} s for Telegram's notice, no retry")
 
 
 async def prerequisites(chat):
@@ -792,8 +815,10 @@ async def close_duplicate(ref, thread):
 
 
 async def topic_created(update, context):
-    """Telegram's forum_topic_created notice of a topic the bot itself made in the notify chat: the thread of a
-    create whose reply was lost, adopted by name; an extra one for a run that already has its topic is closed."""
+    """Telegram's forum_topic_created notice of a topic the bot itself made in the notify chat. Its name carries the
+    run's ledger id (conversation.name), so it names exactly one run: the thread of that run's create whose reply was
+    lost is adopted; any other topic for the run is closed as unused. A name that matches no run, or several, is
+    left alone."""
     try:
         msg = update.effective_message
         made = getattr(msg, "forum_topic_created", None)
@@ -803,52 +828,74 @@ async def topic_created(update, context):
         if str(msg.chat.id) != core.notify_target()["chat_id"]:
             return
         thread = str(msg.message_thread_id)
-        mine = [r for r in await asyncio.to_thread(conversation.every)
-                if r.get("name") == made.name and r.get("attempts", 0) > 0]
-        waiting = [r for r in mine if r.get("state") in ("pending", "creating")]
-        if waiting:
-            await settle(waiting[0]["ledger"], thread)
-        elif mine and all(r.get("thread_id") != thread for r in mine):
-            await close_duplicate(mine[0], thread)
+        log(f"topic notice: thread {thread} {made.name!r}")  # the live evidence that Telegram sends these to the bot
+        mine = [r for r in await asyncio.to_thread(conversation.every) if r.get("name") == made.name]
+        if len(mine) != 1:
+            if mine:
+                log(f"topic notice: {len(mine)} runs are named {made.name!r}; ambiguous, ignored")
+            return
+        ref = mine[0]
+        if ref.get("state") == "creating" and ref.get("asked"):
+            await settle(ref["ledger"], thread)
+        elif ref.get("thread_id") != thread and thread not in ref.get("previous", []):
+            await close_duplicate(ref, thread)
     except Exception as caught:  # noqa: BLE001 - never break Hermes's own update handling
         log(f"topic notice: {caught}")
 
 
 async def repair(ref):
-    """The run's topic was recreated (or given up on): move its cards' subscriptions and present its open requests
-    again there. Once per new destination (`repaired`)."""
-    ledger, dest = ref["ledger"], ref.get("thread_id") or "main"
-    if ledger in S.repairing:
+    """The run's topic was recreated (or given up on). First, once: its open requests are presented again there and
+    the move is said. Then each card's subscription is moved, and a card whose move does not read back is kept in
+    `migrating` and tried again (backing off to MIGRATE_MAX). `repaired` is written only when none is left."""
+    ledger, dest = ref["ledger"], dest_of(ref)
+    if ledger in S.repairing or now() < ref.get("migrate_at", 0):
         return
     S.repairing.add(ledger)
     try:
-        await asyncio.to_thread(move_cards, ref)
-        for req in await asyncio.to_thread(decisions.for_ledger, ledger):
-            if req["status"] == "open":
-                release(req["id"])
-                presented = req.get("presented") or {}
-                await asyncio.to_thread(decisions.update, req["id"],
-                                        presented={k: v for k, v in presented.items() if k != "boot"})
-        if ref.get("thread_id"):
-            await S.adapter.send(ref["chat_id"], "The previous topic was deleted; this run continues here.",
-                                 metadata={"thread_id": ref["thread_id"]})
-        await asyncio.to_thread(conversation.update, ledger, repaired=dest)
-        log(f"{ledger}: moved to {dest}")
+        if ref.get("moved") != dest:
+            for req in await asyncio.to_thread(decisions.for_ledger, ledger):
+                if req["status"] == "open":
+                    release(req["id"])
+                    presented = req.get("presented") or {}
+                    await asyncio.to_thread(decisions.update, req["id"],
+                                            presented={k: v for k, v in presented.items() if k != "boot"})
+            if ref.get("thread_id"):
+                await S.adapter.send(ref["chat_id"], "The previous topic was deleted; this run continues here.",
+                                     metadata={"thread_id": ref["thread_id"]})
+            ref = await asyncio.to_thread(conversation.update, ledger, moved=dest, migrating=list(ref.get("cards", [])),
+                                          migrate_delay=0, migrate_at=0)
+        left = await asyncio.to_thread(move_cards, ref)
+        if left:
+            delay = min(max(ref.get("migrate_delay", 0) * 2, SCAN_EVERY), MIGRATE_MAX)
+            await asyncio.to_thread(conversation.update, ledger, migrating=left, migrate_delay=delay,
+                                    migrate_at=now() + delay)
+            log(f"{ledger}: {len(left)} card subscription(s) not moved to {dest} yet, retry in {delay} s: {left}")
+        else:
+            await asyncio.to_thread(conversation.update, ledger, migrating=[], repaired=dest)
+            log(f"{ledger}: moved to {dest}")
     finally:
         S.repairing.discard(ledger)
 
 
 def move_cards(ref):
-    """Each card of the run: subscribed where the run now is, unsubscribed where it was."""
-    ledger, platform = ref["ledger"], config.settings["notify_platform"]
+    """Move each card in `migrating` to where the run is now. Returns the cards not verified there: a card is done
+    only when notify-list shows it subscribed at the destination (core.subscribe reads that back) and nowhere it
+    was before, so Hermes's notifier pings it, and wakes the coordinator, in the new place only."""
+    ledger, platform, chat = ref["ledger"], config.settings["notify_platform"], ref["chat_id"]
     olds = [t for t in ref.get("previous", []) if t] + ([None] if ref.get("thread_id") else [])
-    for card in ref.get("cards", []):
+    left = []
+    for card in ref.get("migrating", []):
         try:
             core.subscribe(card, ledger)
-        except Exception as caught:  # noqa: BLE001 - one card must not keep the rest in the old topic
-            log(f"{ledger}: resubscribe {card}: {caught}")
-            continue
-        for old in olds:
-            with contextlib.suppress(core.CommandError):  # "no such subscription"
-                core.kanban("notify-unsubscribe", card, "--platform", platform, "--chat-id", ref["chat_id"],
-                            *(["--thread-id", old] if old else []))
+            for old in olds:
+                with contextlib.suppress(core.CommandError):  # "no such subscription": checked below
+                    core.kanban("notify-unsubscribe", card, "--platform", platform, "--chat-id", chat,
+                                *(["--thread-id", old] if old else []))
+            stale = {str(old or "") for old in olds}
+            rows = json.loads(core.kanban("notify-list", card, "--json"))
+            if any(str(r.get("chat_id")) == str(chat) and str(r.get("thread_id") or "") in stale for r in rows):
+                raise core.CommandError("still subscribed where the run was")
+        except Exception as caught:  # noqa: BLE001 - one card must not hold up the rest
+            log(f"{ledger}: moving {card}'s subscription: {caught}")
+            left.append(card)
+    return left

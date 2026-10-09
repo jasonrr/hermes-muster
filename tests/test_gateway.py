@@ -1020,19 +1020,41 @@ def test_a_notice_from_someone_else_or_another_chat_adopts_nothing(forum):
     assert conversation.load("led1")["state"] == "creating"
 
 
-def test_lost_creates_with_no_notice_retry_after_silence_then_fall_back(forum):
-    forum.adapter.creates = ["lost", "lost", "lost"]
+def test_a_lost_create_with_no_notice_is_never_retried_and_the_run_uses_the_main_chat(forum):
+    forum.adapter.creates = ["lost"]
     requested()
     tick(forum, 0)
-    tick(forum, 5)  # under 10 s of silence: no second attempt
-    assert conversation.load("led1")["attempts"] == 1
-    tick(forum, 6)
     tick(forum, 11)
-    assert conversation.load("led1")["attempts"] == 3
-    tick(forum, 11)
+    tick(forum, 8)  # 19 s: still waiting for the notice, still one create
+    assert conversation.load("led1")["state"] == "creating" and len(forum.bot.topics) == 1
+    tick(forum, 1)
     ref = conversation.load("led1")
-    assert ref["state"] == "fallback" and "3 attempts" in ref["why"]
-    assert len(forum.bot.topics) == 3  # Telegram made them all; none was reported, none carries the run
+    assert ref["state"] == "fallback" and "not retried" in ref["why"]
+    tick(forum, 11, n=3)
+    assert len(forum.bot.topics) == 1  # never a second topic
+    assert [n[1] for n in forum.adapter.notes if "stays in the main chat" in n[1]] and all(
+        n[2] is None for n in forum.adapter.notes)
+    # the notice turns up after all: that topic is closed as unused, the run stays in the main chat
+    run(gateway.topic_created(fh.topic_notice(GROUP_CHAT, 41, "r#7 Fix it"), None))
+    assert 41 in forum.bot.closed and conversation.load("led1")["state"] == "fallback"
+
+
+def test_a_restart_during_a_create_waits_for_the_notice_and_does_not_create_again(forum):
+    requested(state="creating", attempts=1, asked=True, since=1000.0)  # the gateway died inside the create call
+    tick(forum, 5)
+    assert not forum.bot.topics and conversation.load("led1")["state"] == "creating"
+    tick(forum, 16)
+    assert not forum.bot.topics and conversation.load("led1")["state"] == "fallback"
+
+
+def test_a_check_that_cannot_run_is_tried_three_times_without_creating(forum, monkeypatch):
+    async def down(chat):
+        raise Exception("Timed out")
+    monkeypatch.setattr(forum.bot, "get_chat", down)
+    requested()
+    tick(forum, 11, n=4)
+    ref = conversation.load("led1")
+    assert ref["state"] == "fallback" and ref["attempts"] == 3 and not forum.bot.topics
 
 
 def test_the_launchs_fallback_beats_a_late_create(forum):
@@ -1259,4 +1281,75 @@ def test_someone_elses_tap_cannot_make_a_prompt_present_again(forum):
         run(gateway.guard(update, None))
     assert update.callback_query.answers == ["Not authorized"]
     assert req["id"] in gateway.S.shown and decisions.load(req["id"])["presented"].get("boot") == gateway.BOOT
+
+
+def test_a_card_whose_subscription_does_not_move_is_retried_before_the_repair_is_done(forum):
+    old = opened(forum, cards=["led1", "w1"])
+    forum.bot.deleted.add(int(old))
+    forum.subs.fail["led1"] = 1  # the ledger: the card the coordinator's review wake comes from
+    tick(forum, 31)  # the probe finds it gone
+    tick(forum, 0)  # a new topic
+    new = conversation.load("led1")["thread_id"]
+    tick(forum, 0)  # the repair: w1 moves, the ledger's subscribe fails
+    ref = conversation.load("led1")
+    assert ref["moved"] == new and ref["migrating"] == ["led1"] and ref.get("repaired") is None
+    assert forum.subs.deliver("w1") == [new] and forum.subs.deliver("led1") == [old]  # not claimed as moved
+    assert "not moved to" in core.log_path("gateway").read_text()
+    tick(forum, 1)  # inside the backoff: nothing tried
+    assert conversation.load("led1")["migrating"] == ["led1"]
+    tick(forum, 2)
+    ref = conversation.load("led1")
+    assert ref["migrating"] == [] and ref["repaired"] == new
+    # the ledger completes: Hermes's notifier pings, and wakes the coordinator, in the new topic only
+    assert forum.subs.deliver("led1") == [new] and forum.subs.deliver("w1") == [new]
+
+
+def test_a_card_left_subscribed_at_the_old_topic_is_not_counted_as_moved(forum, monkeypatch):
+    old = opened(forum, cards=["led1"])
+    forum.bot.deleted.add(int(old))
+    real = forum.subs.__class__.__call__
+
+    def stuck(self, *argv):  # an unsubscribe that reports success but leaves the row
+        if argv[0] == "notify-unsubscribe":
+            self.calls.append(argv)
+            return ""
+        return real(self, *argv)
+    monkeypatch.setattr(forum.subs.__class__, "__call__", stuck)
+    tick(forum, 31)
+    tick(forum, 0, n=2)
+    ref = conversation.load("led1")
+    assert ref["migrating"] == ["led1"] and ref.get("repaired") is None
+
+
+def test_topic_notices_bind_to_the_run_not_its_readable_title(forum):
+    a_name = conversation.name("o/r", "Fix it", "ledA", issue=7)
+    b_name = conversation.name("o/r", "Fix it", "ledB", issue=7)
+    forum.adapter.creates = ["lost", "lost"]
+    requested("ledA", a_name)
+    requested("ledB", b_name)
+    tick(forum, 0)
+    a_thread, b_thread = (t for t, n in forum.bot.topics.items() if n == a_name), \
+        (t for t, n in forum.bot.topics.items() if n == b_name)
+    a_thread, b_thread = next(a_thread), next(b_thread)
+    run(gateway.topic_created(fh.topic_notice(GROUP_CHAT, b_thread, b_name), None))  # B's notice first
+    run(gateway.topic_created(fh.topic_notice(GROUP_CHAT, a_thread, a_name), None))
+    assert conversation.load("ledA")["thread_id"] == str(a_thread)
+    assert conversation.load("ledB")["thread_id"] == str(b_thread)
+    # delayed duplicates: a repeat of A's own notice changes nothing; another topic named for A is closed
+    run(gateway.topic_created(fh.topic_notice(GROUP_CHAT, a_thread, a_name), None))
+    extra = forum.bot.make_topic(GROUP_CHAT, a_name)
+    run(gateway.topic_created(fh.topic_notice(GROUP_CHAT, extra, a_name), None))
+    assert forum.bot.closed == {extra}
+    assert conversation.load("ledA")["thread_id"] == str(a_thread)
+    assert conversation.load("ledB")["thread_id"] == str(b_thread)
+
+
+def test_a_notice_whose_name_matches_two_runs_is_ignored(forum):
+    forum.adapter.creates = ["lost", "lost"]
+    requested("ledA", "same")
+    requested("ledB", "same")  # cannot happen with ledger-tagged names; refused if it ever does
+    tick(forum, 0)
+    run(gateway.topic_created(fh.topic_notice(GROUP_CHAT, 41, "same"), None))
+    assert conversation.load("ledA")["state"] == conversation.load("ledB")["state"] == "creating"
+    assert not forum.bot.closed and "ambiguous, ignored" in core.log_path("gateway").read_text()
 
