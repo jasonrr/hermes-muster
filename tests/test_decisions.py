@@ -195,7 +195,7 @@ class World:
         if argv[:3] == ["herdr", "agent", "prompt"]:
             self.prompts.append(argv[4])
             if self.delivers:
-                core.prompt_seen(self.evidence, {"prompt": argv[4]})
+                core.prompt_seen(self.evidence, {"prompt": pasted(argv[4])})
             if self.prompt_error:
                 raise core.CommandError(self.prompt_error)
             return json.dumps({"result": {}})
@@ -203,6 +203,11 @@ class World:
 
     def merge_calls(self):
         return [a for a, _ in self.calls if a[:3] == ["gh", "pr", "merge"]]
+
+
+def pasted(text):
+    """How Claude Code hands a long prompt to the UserPromptSubmit hook (session 43300d37)."""
+    return f'\n\n<pasted_content id="ef30">\n{text}\n</pasted_content id="ef30">\n'
 
 
 @pytest.fixture
@@ -632,10 +637,23 @@ def test_a_retry_never_double_sends_when_the_first_send_was_in_fact_seen(world):
     first = feedback(world, {"action": "send"})
     decisions.execute(first)
     (retry,) = [r["id"] for r in decisions.for_ledger("t_1", "feedback") if r["id"] != first]
-    core.prompt_seen(world.evidence, {"prompt": world.prompts[0]})  # the hook fired late
+    core.prompt_seen(world.evidence, {"prompt": pasted(world.prompts[0])})  # the hook fired late
     decisions.transition(retry, ("open",), "answered", answer={"action": "send"})
     decisions.execute(retry)
     assert state(retry) == ("done", "Sent ✓") and len(world.prompts) == 1
+
+
+def test_a_second_confirmation_while_the_agent_works_on_the_first_is_sent_without_a_resend(world):
+    world.delivers = False
+    first = feedback(world, {"action": "send"})
+    decisions.execute(first)
+    (retry,) = [r["id"] for r in decisions.for_ledger("t_1", "feedback") if r["id"] != first]
+    core.prompt_seen(world.evidence, {"prompt": pasted(world.prompts[0])})  # the hook fired late
+    world.agent = {"agent_status": "working"}  # on the first send's instructions
+    decisions.transition(retry, ("open",), "answered", answer={"action": "send"})
+    decisions.execute(retry)
+    assert state(retry) == ("done", "Sent ✓") and len(world.prompts) == 1
+    assert len(decisions.for_ledger("t_1", "feedback")) == 2  # no further retry was offered
 
 
 def test_a_retry_not_seen_is_sent_again_with_the_same_text(world):
@@ -695,7 +713,7 @@ def executing_send(world, seen):
     decisions.transition(rid, ("answered",), "executing", executing_boot="old", resolved="Fix the null case.",
                          intent={"action": "send-back", "head": HEAD, "prompt_sha": sha(text)})
     if seen:
-        core.prompt_seen(world.evidence, {"prompt": text})
+        core.prompt_seen(world.evidence, {"prompt": pasted(text)})
     return decisions.load(rid)
 
 
