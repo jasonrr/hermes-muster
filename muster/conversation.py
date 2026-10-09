@@ -108,11 +108,15 @@ def request(ledger, topic_name):
         return ref
     except Exception as caught:  # noqa: BLE001 - a topic must never stop a launch
         core.log("conversation", f"{ledger}: topic request failed: {caught!r}")
+        with contextlib.suppress(Exception):  # a late topic must not take a run whose cards are in the main chat
+            swap(ledger, ("pending", "creating"), state="fallback", noticed=False, why=f"topic request failed: {caught}")
         return None
 
 
 def add_card(ledger, card):
     """Remember a card subscribed for the run, so a recreated topic can move its subscription."""
+    if load(ledger) is None:  # no topic for this run (topics off): touch nothing
+        return
     with locked(ledger):
         ref = load(ledger)
         if ref and card not in ref.setdefault("cards", []):

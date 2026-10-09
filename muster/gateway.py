@@ -132,11 +132,18 @@ async def in_topic(rid, thread):
     """The message (or reply) is in the request's conversation: its run's topic, or the main chat (General) for a
     run without one. A request muster no longer has passes: Hermes answers it with its own "expired"."""
     ledger = S.ledgers.get(rid)
-    if ledger is None:
-        try:
+    try:
+        if ledger is None:
             ledger = S.ledgers[rid] = (await asyncio.to_thread(decisions.load, rid))["ledger"]
-        except (OSError, ValueError, KeyError):
-            return True
+        ref = await asyncio.to_thread(conversation.load, ledger)
+    except FileNotFoundError:
+        return True
+    except (OSError, ValueError, KeyError) as caught:  # unreadable: fail closed
+        log(f"request {rid}: conversation unreadable, refused: {caught}")
+        return False
+    if ref and ref.get("previous") and (ref.get("state") in ("pending", "creating")
+                                        or ref.get("repaired") != (ref.get("thread_id") or "main")):
+        return False  # its topic is being remade: nowhere answers until its prompts move there
     expected = (await asyncio.to_thread(conversation.target, ledger))["thread_id"]
     got = None if thread in (None, "", "1", 1) else str(thread)  # Telegram's General topic is thread 1
     return got == (str(expected) if expected else None)
@@ -625,11 +632,13 @@ async def destination(ledger):
     the topic is being made, moved or closed: the request waits for a later scan."""
     ref = await asyncio.to_thread(conversation.load, ledger)
     state = (ref or {}).get("state")
+    if ref and (ledger in S.repairing or (ref.get("previous")
+                                          and ref.get("repaired") != (ref.get("thread_id") or "main"))):
+        return False, None  # a new destination its cards and prompts have not moved to yet
     if state in (None, "fallback"):
         return True, None  # the main chat
-    if state not in ("open", "closed") or ledger in S.repairing or (
-            ref.get("previous") and ref.get("repaired") != ref.get("thread_id")):
-        return False, None  # being made, closed, or a new topic its cards and prompts have not moved to yet
+    if state not in ("open", "closed"):
+        return False, None  # being made, or being closed
     if await probe(ref) == "deleted":
         return False, None
     if state == "closed":  # the run resumed: the probe reopened it

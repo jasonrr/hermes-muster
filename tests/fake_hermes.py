@@ -228,6 +228,11 @@ class Adapter:
         self.creates = []  # scripted create_handoff_thread outcomes: "ok", "lost" (made, no reply) or "fail"
         self.notes = []  # send(): (chat, text, thread)
 
+    def landing(self, metadata):
+        """The thread a send lands in: Hermes resends to General (None) when the thread is gone."""
+        thread = (metadata or {}).get("thread_id")
+        return None if thread and self.bot and int(thread) in self.bot.deleted else thread
+
     async def create_handoff_thread(self, parent_chat_id, name):
         """As the Telegram adapter: Telegram's createForumTopic, every error swallowed into None."""
         outcome = self.creates.pop(0) if self.creates else "ok"
@@ -237,10 +242,7 @@ class Adapter:
         return None if outcome == "lost" else str(thread)
 
     async def send(self, chat_id, content, reply_to=None, metadata=None):
-        thread = (metadata or {}).get("thread_id")
-        if thread and self.bot and int(thread) in self.bot.deleted:
-            thread = None  # Hermes resends to General on "thread not found"
-        self.notes.append((chat_id, content, thread))
+        self.notes.append((chat_id, content, self.landing(metadata)))
         self._n += 1
         return SimpleNamespace(success=True, message_id=str(self._n), error=None)
 
@@ -253,7 +255,7 @@ class Adapter:
         self._approval_state[self._n] = session_key
         self.sent.append({"chat": chat_id, "command": command, "text": description, "session": session_key,
                           "mid": str(self._n), "permanent": allow_permanent, "session_button": allow_session,
-                          "thread": (metadata or {}).get("thread_id")})
+                          "thread": self.landing(metadata)})
         return SimpleNamespace(success=True, message_id=str(self._n), error=None)
 
     async def send_clarify(self, chat_id, question, choices, clarify_id, session_key, metadata=None):
@@ -262,7 +264,7 @@ class Adapter:
             return SimpleNamespace(success=False, message_id=None, error="boom")
         self._n += 1
         self.sent.append({"chat": chat_id, "text": question, "choices": choices, "cid": clarify_id,
-                          "session": session_key, "mid": str(self._n), "thread": (metadata or {}).get("thread_id")})
+                          "session": session_key, "mid": str(self._n), "thread": self.landing(metadata)})
         return SimpleNamespace(success=True, message_id=str(self._n), error=None)
 
     async def edit_message(self, chat_id, message_id, content, *, finalize=False, metadata=None):

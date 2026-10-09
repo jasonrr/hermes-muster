@@ -1111,3 +1111,75 @@ def test_an_unknown_probe_error_changes_nothing_and_is_logged(forum, monkeypatch
     assert conversation.load("led1")["state"] == "open" and len(forum.adapter.sent) == 1  # sent to its topic
     assert "probe: Timed out" in core.log_path("gateway").read_text()
 
+
+def test_a_prompt_rerouted_to_general_is_not_answered_there_and_moves_to_a_new_topic(forum, monkeypatch):
+    old = opened(forum, cards=["led1"])
+    forum.bot.deleted.add(int(old))
+    real = forum.bot.reopen_forum_topic
+
+    async def flaky(chat_id, message_thread_id):  # the probe cannot tell, so the send goes out
+        raise Exception("Timed out")
+    monkeypatch.setattr(forum.bot, "reopen_forum_topic", flaky)
+    req = ask()
+    tick(forum, 0)
+    assert [s["thread"] for s in forum.adapter.sent] == [None]  # Hermes resent it to General
+    monkeypatch.setattr(forum.bot, "reopen_forum_topic", real)
+    update = fh.update(42, GROUP_CHAT, data=f"cl:mu{req['id']}q0:0", thread=None)
+    with pytest.raises(fh.ApplicationHandlerStop):
+        run(gateway.guard(update, None))
+    assert update.callback_query.answers == ["Moved: answer in the run's topic"] and status(req) == "open"
+    tick(forum, 0, n=4)
+    new = conversation.load("led1")["thread_id"]
+    assert new != old and [s["thread"] for s in forum.adapter.sent] == [None, new]
+
+
+def test_while_a_deleted_topic_is_remade_no_tap_is_taken_anywhere(forum):
+    old = opened(forum, cards=["led1"])
+    req = ask()
+    tick(forum, 0)
+    forum.bot.deleted.add(int(old))
+    tick(forum, 31)
+    assert conversation.load("led1")["state"] == "creating"
+    for thread in (None, int(old)):
+        update = fh.update(42, GROUP_CHAT, data=f"cl:mu{req['id']}q0:0", thread=thread)
+        with pytest.raises(fh.ApplicationHandlerStop):
+            run(gateway.guard(update, None))
+    assert status(req) == "open"
+
+
+def test_a_recreate_that_falls_back_presents_the_prompt_once_in_the_main_chat(forum):
+    old = opened(forum, cards=["led1"])
+    forum.bot.deleted.add(int(old))
+    forum.bot.forum = False
+    ask()
+    tick(forum, 11, n=6)
+    assert [s["thread"] for s in forum.adapter.sent] == [None]
+    assert conversation.load("led1")["repaired"] == "main"
+
+
+def test_an_approval_card_tapped_outside_its_topic_is_refused(forum):
+    opened(forum)
+    req = permission()
+
+    async def go():
+        await gateway.scan()
+        await until(lambda: forum.adapter.sent)
+
+    run(go())
+    approval_id = int(forum.adapter.sent[0]["mid"])
+    update = fh.update(42, GROUP_CHAT, data=f"ea:once:{approval_id}", thread=None)
+    with pytest.raises(fh.ApplicationHandlerStop):
+        run(gateway.approval_guard(update, None))
+    assert update.callback_query.answers == ["Moved: answer in the run's topic"] and status(req) == "open"
+
+
+def test_someone_elses_tap_cannot_make_a_prompt_present_again(forum):
+    opened(forum)
+    req = ask()
+    tick(forum, 0)
+    update = fh.update(99, GROUP_CHAT, data=f"cl:mu{req['id']}q0:0", thread=None)
+    with pytest.raises(fh.ApplicationHandlerStop):
+        run(gateway.guard(update, None))
+    assert update.callback_query.answers == ["Not authorized"]
+    assert req["id"] in gateway.S.shown and decisions.load(req["id"])["presented"].get("boot") == gateway.BOOT
+

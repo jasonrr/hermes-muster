@@ -1,5 +1,6 @@
 import threading
 import time
+import types
 
 import pytest
 
@@ -143,3 +144,19 @@ def test_a_fallback_is_said_once_on_the_ledger(monkeypatch):
     assert comments == [("comment", "led1", "topic: not created: the Hermes gateway is not running; this run stays "
                                             "in the main chat")]
     assert conversation.load("led1")["name"] == "app#3 Fix"
+
+
+def test_topics_off_a_subscription_writes_no_file(monkeypatch):
+    monkeypatch.setitem(config.settings, "notify_topics", False)
+    monkeypatch.setattr(core, "kanban", fh.Subs())
+    core.subscribe("c1", "c1")
+    assert not (config.data_dir() / "runs").exists()
+
+
+def test_a_request_that_fails_after_pending_falls_back(monkeypatch):
+    def broken(_seconds):
+        raise OSError("interrupted")
+    monkeypatch.setattr(conversation, "time", types.SimpleNamespace(monotonic=time.monotonic, sleep=broken))
+    assert conversation.request("led1", "n") is None
+    ref = conversation.load("led1")
+    assert ref["state"] == "fallback" and "interrupted" in ref["why"]
