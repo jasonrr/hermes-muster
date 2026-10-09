@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import importlib.util
 import sys
 import threading
@@ -851,8 +852,8 @@ def test_plugin_yaml_discloses_the_dispatch_hook():
 # -- executing build and feedback requests (task 6) -----------------------------------------------
 
 def tap_request(kind, status="answered", **fields):
-    req = decisions.create(kind, "led1", questions=[{"text": "Q", "header": "", "multi": False, "options": []}],
-                           choices=[["A"]], actions=["nothing"], run={"branch": "b"}, **fields)
+    req = decisions.create(kind, "led1", **{"questions": [{"text": "Q", "header": "", "multi": False, "options": []}],
+                                            "choices": [["A"]], "actions": ["nothing"], "run": {"branch": "b"}, **fields})
     if status != "open":
         decisions.transition(req["id"], ("open",), status, executing_boot=fields.get("executing_boot"))
     return req["id"]
@@ -904,6 +905,34 @@ def test_build_free_text_becomes_a_feedback_request_that_the_next_scan_presents(
     assert fb["feedback"] == "Fix it.\n\nAdditional instructions from the human:\nplease also add docs"
     assert fb["choices"] == [["Send as written", "Don't send"]]
     assert [[b for b, _ in m["buttons"]] for m in sent()] == [["Send as written", "Don't send", fh.OTHER]]
+
+
+def test_a_scan_retires_an_open_retry_whose_send_arrived_late_and_presents_nothing(tmp_path):
+    core.prompt_seen(tmp_path, {"prompt": "the revision"})
+    rid = tap_request("feedback", "open", prompt_sha=hashlib.sha256(b"the revision").hexdigest(),
+                      run={"branch": "b", "evidence_dir": str(tmp_path)})
+    waiting = tap_request("feedback", "open", prompt_sha="0" * 64, run={"branch": "b", "evidence_dir": str(tmp_path)})
+    decisions.update(rid, presented={"boot": gateway.BOOT})  # already shown this boot: reconcile still runs
+
+    async def go():
+        await asyncio.gather(gateway.scan(), gateway.scan())
+
+    run(go())
+    assert decisions.load(rid)["status"] == "done" and decisions.load(rid)["outcome"] == "Sent ✓"
+    assert decisions.load(waiting)["status"] == "open" and len(sent()) == 1  # only the unseen retry is shown
+
+
+def test_a_retry_tapped_while_it_is_reconciled_is_not_presented(monkeypatch):
+    rid = tap_request("feedback", "open", prompt_sha="0" * 64, run={"branch": "b", "evidence_dir": "/nowhere"})
+    monkeypatch.setattr(decisions, "execute", lambda rid, boot="": None)
+
+    def tapped(req):  # the human's tap lands while the scan is in reconcile's thread
+        decisions.transition(req["id"], ("open",), "answered", answer={"action": "send"})
+        return False
+
+    monkeypatch.setattr(decisions, "reconcile", tapped)
+    run(gateway.scan())
+    assert decisions.load(rid)["status"] == "answered" and sent() == []
 
 
 def test_the_first_scan_recovers_executing_requests_of_an_older_boot_once(monkeypatch):
