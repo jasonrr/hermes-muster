@@ -10,6 +10,8 @@ import threading
 import types
 from types import SimpleNamespace
 
+from muster import core
+
 
 class Entry:
     def __init__(self, clarify_id, session_key, question, choices, multi):
@@ -196,6 +198,14 @@ class CallbackQueryHandler:
         self.callback, self.pattern, self.block = callback, pattern, block
 
 
+class MessageHandler:
+    def __init__(self, filters, callback, block=True):
+        self.filters, self.callback, self.pattern = filters, callback, None
+
+
+filters = types.SimpleNamespace(StatusUpdate=types.SimpleNamespace(FORUM_TOPIC_CREATED="forum_topic_created"))
+
+
 class Application:
     def __init__(self):
         self.handlers = []  # (handler, group)
@@ -214,6 +224,25 @@ class Adapter:
         self.fail_edits = 0
         self._n = 100
         self._approval_state = {}  # approval id -> session key, as the Telegram adapter keeps it
+        self.bot = None  # the Bot whose forum the topics live in (Application.bot)
+        self.creates = []  # scripted create_handoff_thread outcomes: "ok", "lost" (made, no reply) or "fail"
+        self.notes = []  # send(): (chat, text, thread)
+
+    async def create_handoff_thread(self, parent_chat_id, name):
+        """As the Telegram adapter: Telegram's createForumTopic, every error swallowed into None."""
+        outcome = self.creates.pop(0) if self.creates else "ok"
+        if outcome == "fail":
+            return None
+        thread = self.bot.make_topic(parent_chat_id, name)
+        return None if outcome == "lost" else str(thread)
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None):
+        thread = (metadata or {}).get("thread_id")
+        if thread and self.bot and int(thread) in self.bot.deleted:
+            thread = None  # Hermes resends to General on "thread not found"
+        self.notes.append((chat_id, content, thread))
+        self._n += 1
+        return SimpleNamespace(success=True, message_id=str(self._n), error=None)
 
     async def send_exec_approval(self, chat_id, command, session_key, description=None, metadata=None,
                                  allow_permanent=True, allow_session=True, smart_denied=False):
@@ -223,7 +252,8 @@ class Adapter:
         self._n += 1
         self._approval_state[self._n] = session_key
         self.sent.append({"chat": chat_id, "command": command, "text": description, "session": session_key,
-                          "mid": str(self._n), "permanent": allow_permanent, "session_button": allow_session})
+                          "mid": str(self._n), "permanent": allow_permanent, "session_button": allow_session,
+                          "thread": (metadata or {}).get("thread_id")})
         return SimpleNamespace(success=True, message_id=str(self._n), error=None)
 
     async def send_clarify(self, chat_id, question, choices, clarify_id, session_key, metadata=None):
@@ -232,7 +262,7 @@ class Adapter:
             return SimpleNamespace(success=False, message_id=None, error="boom")
         self._n += 1
         self.sent.append({"chat": chat_id, "text": question, "choices": choices, "cid": clarify_id,
-                          "session": session_key, "mid": str(self._n)})
+                          "session": session_key, "mid": str(self._n), "thread": (metadata or {}).get("thread_id")})
         return SimpleNamespace(success=True, message_id=str(self._n), error=None)
 
     async def edit_message(self, chat_id, message_id, content, *, finalize=False, metadata=None):
@@ -253,17 +283,52 @@ class Bot:
 
     def __init__(self):
         self.sent, self._n = [], 900
+        self.id = 555  # the bot's own user id
+        self.forum, self.member = True, SimpleNamespace(status="administrator", can_manage_topics=True)
+        self.topics, self.closed, self.deleted = {}, set(), set()  # thread -> name
+        self.calls = []  # (method, chat, thread)
+        self._thread = 40
 
-    async def send_message(self, chat_id, text, parse_mode=None, reply_markup=None):
+    def make_topic(self, chat_id, name):
+        self._thread += 1
+        self.topics[self._thread] = name
+        return self._thread
+
+    async def send_message(self, chat_id, text, parse_mode=None, reply_markup=None, message_thread_id=None):
         self._n += 1
-        self.sent.append({"chat": chat_id, "text": text, "markup": reply_markup, "mid": self._n})
+        self.sent.append({"chat": chat_id, "text": text, "markup": reply_markup, "mid": self._n,
+                          "thread": message_thread_id})
         return SimpleNamespace(message_id=self._n)
+
+    async def get_chat(self, chat_id):
+        return SimpleNamespace(id=chat_id, is_forum=self.forum)
+
+    async def get_chat_member(self, chat_id, user_id):
+        assert user_id == self.id
+        return self.member
+
+    def _topic(self, method, chat_id, thread):
+        self.calls.append((method, chat_id, thread))
+        if thread in self.deleted or thread not in self.topics:
+            raise Exception("Message thread not found")  # PTB's BadRequest text
+
+    async def reopen_forum_topic(self, chat_id, message_thread_id):
+        self._topic("reopen", chat_id, message_thread_id)
+        if message_thread_id not in self.closed:
+            raise Exception("Topic_not_modified")
+        self.closed.discard(message_thread_id)
+        return True
+
+    async def close_forum_topic(self, chat_id, message_thread_id):
+        self._topic("close", chat_id, message_thread_id)
+        self.closed.add(message_thread_id)
+        return True
 
 
 class Query:
-    def __init__(self, user, chat, data="cl:mu0q0:0"):
+    def __init__(self, user, chat, data="cl:mu0q0:0", thread=None):
         self.from_user = SimpleNamespace(id=user, mention_html=lambda: f'<a href="tg://user?id={user}">J</a>')
-        self.message = SimpleNamespace(chat=SimpleNamespace(id=chat))
+        self.message = SimpleNamespace(chat=SimpleNamespace(id=chat), message_thread_id=thread)
         self.data = data
         self.answers = []
 
@@ -271,14 +336,21 @@ class Query:
         self.answers.append(text)
 
 
-def update(user, chat, data="cl:mu0q0:0"):
-    return SimpleNamespace(callback_query=Query(user, chat, data))
+def update(user, chat, data="cl:mu0q0:0", thread=None):
+    return SimpleNamespace(callback_query=Query(user, chat, data, thread))
 
 
-def event(text, user, chat, reply=None, platform="telegram"):
+def topic_notice(chat, thread, name, sender=555):
+    """Telegram's forum_topic_created service message, as a PTB Update."""
+    return SimpleNamespace(effective_message=SimpleNamespace(
+        chat=SimpleNamespace(id=chat), from_user=SimpleNamespace(id=sender), message_thread_id=thread,
+        forum_topic_created=SimpleNamespace(name=name)))
+
+
+def event(text, user, chat, reply=None, platform="telegram", thread=None):
     return SimpleNamespace(text=text, reply_to_message_id=reply,
                            source=SimpleNamespace(platform=SimpleNamespace(value=platform),
-                                                  user_id=user, chat_id=chat))
+                                                  user_id=user, chat_id=chat, thread_id=thread))
 
 
 def install(monkeypatch):
@@ -289,6 +361,7 @@ def install(monkeypatch):
     tools.clarify_gateway, tools.approval, tools.approval_gateway_wait = clarify, approval, wait
     ext = types.ModuleType("telegram.ext")
     ext.CallbackQueryHandler, ext.ApplicationHandlerStop = CallbackQueryHandler, ApplicationHandlerStop
+    ext.MessageHandler, ext.filters = MessageHandler, filters
     telegram = types.ModuleType("telegram")
     telegram.ext, telegram.ForceReply = ext, ForceReply
     for name, mod in (("tools", tools), ("tools.clarify_gateway", clarify), ("tools.approval", approval),
@@ -308,3 +381,39 @@ class Gateway:
 def spawn_task(coro, name=None):
     import asyncio
     return asyncio.get_running_loop().create_task(coro)
+
+
+class Subs:
+    """`hermes kanban notify-subscribe / notify-unsubscribe / notify-list` as Hermes keeps them: one row per
+    (card, chat, thread); `deliver` is where the kanban notifier would send a card's ping and run its wake."""
+
+    def __init__(self):
+        self.rows, self.calls = {}, []
+
+    def __call__(self, *argv):
+        self.calls.append(argv)
+        verb, card = argv[0], argv[1]
+        if verb == "notify-subscribe":
+            flag = dict(zip(argv[2::2], argv[3::2]))
+            self.rows.setdefault(card, []).append({
+                "chat_id": flag["--chat-id"], "thread_id": flag.get("--thread-id", ""), "user_id": flag["--user-id"],
+                "chat_type": flag["--chat-type"], "notifier_profile": flag["--notifier-profile"],
+                "delivery_mode": flag["--delivery-mode"]})
+            return ""
+        if verb == "notify-unsubscribe":
+            flag = dict(zip(argv[2::2], argv[3::2]))
+            rows = self.rows.get(card, [])
+            keep = [r for r in rows if (r["chat_id"], r["thread_id"]) != (flag["--chat-id"], flag.get("--thread-id", ""))]
+            if len(keep) == len(rows):
+                raise core.CommandError("(no such subscription)")
+            self.rows[card] = keep
+            return ""
+        if verb == "notify-list":
+            return json.dumps(self.rows.get(card, []))
+        if verb == "comment":
+            return ""
+        raise AssertionError(argv)
+
+    def deliver(self, card):
+        """The threads Hermes's notifier pings (and runs the coordinator's wake in) for this card's next event."""
+        return sorted(r["thread_id"] for r in self.rows.get(card, []))

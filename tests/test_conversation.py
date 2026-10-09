@@ -1,10 +1,11 @@
-import json
 import threading
 import time
 
 import pytest
 
 from muster import config, conversation, core, decisions
+
+from tests import fake_hermes as fh
 
 
 @pytest.fixture(autouse=True)
@@ -108,31 +109,8 @@ def test_active_skips_closed_and_settled_fallbacks():
     assert sorted(r["ledger"] for r in conversation.active()) == ["a", "d", "f"]
 
 
-class Subs:
-    """`hermes kanban notify-subscribe / notify-list` as Hermes keeps them: rows per (card, chat, thread)."""
-
-    def __init__(self):
-        self.rows, self.calls = {}, []
-
-    def __call__(self, *argv):
-        self.calls.append(argv)
-        verb, card = argv[0], argv[1]
-        if verb == "notify-subscribe":
-            flag = dict(zip(argv[2::2], argv[3::2]))
-            self.rows.setdefault(card, []).append({
-                "chat_id": flag["--chat-id"], "thread_id": flag.get("--thread-id", ""), "user_id": flag["--user-id"],
-                "chat_type": flag["--chat-type"], "notifier_profile": flag["--notifier-profile"],
-                "delivery_mode": flag["--delivery-mode"]})
-            return ""
-        if verb == "notify-list":
-            return json.dumps(self.rows.get(card, []))
-        if verb == "comment":
-            return ""
-        raise AssertionError(argv)
-
-
 def test_two_runs_subscribe_their_cards_in_their_own_topics(monkeypatch):
-    subs = Subs()
+    subs = fh.Subs()
     monkeypatch.setattr(core, "kanban", subs)
     conversation.update("ledA", state="open", thread_id="11", cards=[])
     conversation.update("ledB", state="open", thread_id="22", cards=[])
@@ -146,7 +124,7 @@ def test_two_runs_subscribe_their_cards_in_their_own_topics(monkeypatch):
 
 
 def test_without_a_topic_the_subscription_is_unchanged(monkeypatch):
-    subs = Subs()
+    subs = fh.Subs()
     monkeypatch.setattr(core, "kanban", subs)
     core.subscribe("c1")
     core.subscribe("c2", "no-ref")
@@ -156,7 +134,7 @@ def test_without_a_topic_the_subscription_is_unchanged(monkeypatch):
 
 
 def test_a_fallback_is_said_once_on_the_ledger(monkeypatch):
-    subs = Subs()
+    subs = fh.Subs()
     monkeypatch.setattr(core, "kanban", subs)
     monkeypatch.setattr(decisions, "gateway_up", lambda: False)
     core.topic("led1", "o/app", "Fix", issue=3)

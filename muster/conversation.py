@@ -126,8 +126,8 @@ def finish(ledger):
         swap(ledger, ("open",), state="closing")
 
 
-def active():
-    """References the gateway still has work on: not closed, and not a fallback already told and settled."""
+def every():
+    """Every readable reference; a file that does not parse is logged and skipped."""
     out = []
     for file in sorted((config.data_dir() / "runs").glob("*/conversation.json")):
         try:
@@ -135,8 +135,11 @@ def active():
         except (OSError, ValueError) as error:
             core.log("conversation", f"{file}: unreadable, skipped: {error}")
             continue
-        state = ref.get("state")
-        settled = state == "fallback" and ref.get("noticed") and (not ref.get("previous") or ref.get("repaired"))
-        if state != "closed" and not settled:
-            out.append({**ref, "ledger": ref.get("ledger") or file.parent.name})
+        out.append({**ref, "ledger": ref.get("ledger") or file.parent.name})
     return out
+
+
+def active():
+    """References the gateway still has work on: not closed, and not a fallback already told and settled."""
+    return [ref for ref in every() if ref.get("state") != "closed" and not (
+        ref.get("state") == "fallback" and ref.get("noticed") and (not ref.get("previous") or ref.get("repaired")))]

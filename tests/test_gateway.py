@@ -55,11 +55,11 @@ def question(text="Which?", labels=("Alpha", "Beta"), multi=False):
             "options": [{"label": label, "description": f"about {label}"} for label in labels]}
 
 
-def ask(text="Which?", labels=("Alpha", "Beta"), multi=False, **fields):
+def ask(text="Which?", labels=("Alpha", "Beta"), multi=False, ledger="led1", **fields):
     fields = {"questions": [question(text, labels, multi)], "choices": [list(labels)], "tool": {"name": "AskUserQuestion"},
               "wait": "w1", "run": {"repo": "o/r", "issue": 7, "branch": "muster/7", "pane": "p1", "kind": "issue"},
               "alive": time.time(), **fields}
-    return decisions.create("question", "led1", **fields)
+    return decisions.create("question", ledger, **fields)
 
 
 def permission(**fields):
@@ -105,7 +105,8 @@ def test_factory_registers_both_guards_and_one_scan_task(monkeypatch):
 
     run(go())
     assert [(g, h.pattern, h.callback) for h, g in app.handlers] == [
-        (-1, r"^cl:mu", gateway.guard), (-1, r"^ea:", gateway.approval_guard)]
+        (-1, r"^cl:mu", gateway.guard), (-1, r"^ea:", gateway.approval_guard), (-1, None, gateway.topic_created)]
+    assert app.handlers[2][0].filters == "forum_topic_created"
     assert other.handlers and prepared == [1, 1]
 
 
@@ -844,3 +845,256 @@ def test_the_first_scan_recovers_executing_requests_of_an_older_boot_once(monkey
 
     run(go())
     assert rec == [old] and ex == [pending] and mine not in rec + ex and asked not in rec + ex
+
+
+# -- run topics (#24) -----------------------------------------------------------------------------
+
+from muster import conversation  # noqa: E402
+
+GROUP_CHAT = "-100123"
+
+
+@pytest.fixture
+def forum(monkeypatch):
+    """Topics on in a forum group; the bot may manage topics; one clock for topic timing."""
+    for key, value in (("notify_topics", True), ("notify_chat_id", GROUP_CHAT), ("notify_user_id", "42")):
+        monkeypatch.setitem(config.settings, key, value)
+    bot = fh.Bot()
+    gateway.S.bot = gateway.S.adapter.bot = bot
+    subs = fh.Subs()
+    monkeypatch.setattr(core, "kanban", subs)
+    clock = [1000.0]
+    monkeypatch.setattr(gateway, "now", lambda: clock[0])
+    monkeypatch.setattr(gateway, "clock", lambda: clock[0])
+    return types.SimpleNamespace(bot=bot, subs=subs, clock=clock, adapter=gateway.S.adapter)
+
+
+def requested(ledger="led1", name="r#7 Fix it", **fields):
+    """What the launch writes before it waits (conversation.request)."""
+    return conversation.update(ledger, **{
+        "platform": "telegram", "chat_id": GROUP_CHAT, "user_id": "42", "thread_id": None, "name": name,
+        "state": "pending", "attempts": 0, "since": 0, "previous": [], "cards": [], "noticed": False, "why": "",
+        **fields})
+
+
+def opened(forum, ledger="led1", name="r#7 Fix it", cards=()):
+    """A run whose topic exists, with its cards subscribed there."""
+    thread = forum.bot.make_topic(GROUP_CHAT, name)
+    requested(ledger, name, state="open", thread_id=str(thread), attempts=1)
+    for card in cards:
+        core.subscribe(card, ledger)
+    return str(thread)
+
+
+def tick(forum, seconds, n=1):
+    for _ in range(n):
+        forum.clock[0] += seconds
+        run(gateway.scan())
+
+
+def test_the_gateway_makes_the_topic_a_launch_asked_for(forum):
+    requested()
+    tick(forum, 0)
+    ref = conversation.load("led1")
+    assert ref["state"] == "open" and forum.bot.topics[int(ref["thread_id"])] == "r#7 Fix it"
+    assert ref["attempts"] == 1
+
+
+@pytest.mark.parametrize("change, why", [
+    ({"forum": False}, "Topics are not enabled"),
+    ({"member": types.SimpleNamespace(status="administrator", can_manage_topics=False)}, "Manage Topics"),
+    ({"member": types.SimpleNamespace(status="member")}, "Manage Topics"),
+])
+def test_missing_prerequisites_fall_back_to_the_main_chat_with_one_notice(forum, change, why):
+    for key, value in change.items():
+        setattr(forum.bot, key, value)
+    requested()
+    tick(forum, 0, n=3)
+    ref = conversation.load("led1")
+    assert ref["state"] == "fallback" and why in ref["why"] and not forum.bot.topics
+    assert [(c, t) for c, _, t in forum.adapter.notes] == [(GROUP_CHAT, None)]
+    assert why in forum.adapter.notes[0][1] and "stays in the main chat" in forum.adapter.notes[0][1]
+    assert conversation.target("led1")["thread_id"] is None
+
+
+def test_a_lost_create_is_adopted_from_telegrams_notice_and_never_made_twice(forum):
+    forum.adapter.creates = ["lost"]
+    requested()
+    tick(forum, 0)
+    assert conversation.load("led1")["state"] == "creating" and list(forum.bot.topics) == [41]
+    run(gateway.topic_created(fh.topic_notice(GROUP_CHAT, 41, "r#7 Fix it"), None))
+    assert conversation.load("led1")["state"] == "open" and conversation.load("led1")["thread_id"] == "41"
+    tick(forum, 11, n=3)
+    assert list(forum.bot.topics) == [41]  # no second create
+    # a late notice of another topic of that name: a duplicate, said so and closed
+    forum.bot.make_topic(GROUP_CHAT, "r#7 Fix it")
+    run(gateway.topic_created(fh.topic_notice(GROUP_CHAT, 42, "r#7 Fix it"), None))
+    assert (GROUP_CHAT, 'Duplicate topic, not used; this run is in the topic "r#7 Fix it".', "42") in forum.adapter.notes
+    assert 42 in forum.bot.closed and 41 not in forum.bot.closed
+    assert conversation.load("led1")["thread_id"] == "41"
+
+
+def test_a_notice_from_someone_else_or_another_chat_adopts_nothing(forum):
+    forum.adapter.creates = ["lost"]
+    requested()
+    tick(forum, 0)
+    run(gateway.topic_created(fh.topic_notice(GROUP_CHAT, 41, "r#7 Fix it", sender=42), None))  # the human made it
+    run(gateway.topic_created(fh.topic_notice("-100999", 41, "r#7 Fix it"), None))
+    assert conversation.load("led1")["state"] == "creating"
+
+
+def test_lost_creates_with_no_notice_retry_after_silence_then_fall_back(forum):
+    forum.adapter.creates = ["lost", "lost", "lost"]
+    requested()
+    tick(forum, 0)
+    tick(forum, 5)  # under 10 s of silence: no second attempt
+    assert conversation.load("led1")["attempts"] == 1
+    tick(forum, 6)
+    tick(forum, 11)
+    assert conversation.load("led1")["attempts"] == 3
+    tick(forum, 11)
+    ref = conversation.load("led1")
+    assert ref["state"] == "fallback" and "3 attempts" in ref["why"]
+    assert len(forum.bot.topics) == 3  # Telegram made them all; none was reported, none carries the run
+
+
+def test_the_launchs_fallback_beats_a_late_create(forum):
+    forum.adapter.creates = ["lost"]
+    requested()
+    tick(forum, 0)
+    conversation.swap("led1", ("pending", "creating"), state="fallback", why="no topic within 45 s")  # the tick
+    run(gateway.topic_created(fh.topic_notice(GROUP_CHAT, 41, "r#7 Fix it"), None))
+    assert conversation.load("led1")["state"] == "fallback" and 41 in forum.bot.closed
+    assert (GROUP_CHAT, "Duplicate topic, not used; this run is in the main chat.", "41") in forum.adapter.notes
+
+
+def test_a_finished_run_closes_its_topic_once_and_keeps_it(forum):
+    thread = opened(forum)
+    conversation.finish("led1")
+    tick(forum, 0, n=3)
+    assert conversation.load("led1")["state"] == "closed" and int(thread) in forum.bot.closed
+    assert int(thread) in forum.bot.topics  # never deleted
+    assert [n for n in forum.adapter.notes if "finished" in n[1]] == [
+        (GROUP_CHAT, "Run finished; worktree removed. History kept.", thread)]
+
+
+def test_a_request_for_a_closed_run_reopens_its_topic_first(forum):
+    thread = opened(forum)
+    conversation.finish("led1")
+    tick(forum, 0)
+    ask()
+    tick(forum, 0)
+    assert conversation.load("led1")["state"] == "open" and int(thread) not in forum.bot.closed
+    assert [s["thread"] for s in forum.adapter.sent] == [thread]
+
+
+def test_a_deleted_topic_then_an_agent_prompt_lands_in_a_new_topic(forum):
+    old = opened(forum, cards=["led1", "w1"])
+    forum.bot.deleted.add(int(old))
+    req = ask()
+    tick(forum, 0)  # the present's probe finds the topic gone: nothing is sent to General
+    assert forum.adapter.sent == [] and conversation.load("led1")["state"] == "creating"
+    tick(forum, 0, n=3)  # made, then the cards and the request move
+    ref = conversation.load("led1")
+    new = ref["thread_id"]
+    assert ref["state"] == "open" and new != old and ref["previous"] == [old] and ref["repaired"] == new
+    assert [s["thread"] for s in forum.adapter.sent] == [new] and forum.adapter.sent[0]["cid"] == f"mu{req['id']}q0"
+    assert forum.subs.deliver("led1") == [new] and forum.subs.deliver("w1") == [new]
+    assert (GROUP_CHAT, "The previous topic was deleted; this run continues here.", new) in forum.adapter.notes
+
+
+def test_a_deleted_topic_then_a_coordinator_wake_lands_in_the_new_topic(forum):
+    old = opened(forum, cards=["led1"])
+    tick(forum, 0)  # first probe: alive
+    forum.bot.deleted.add(int(old))
+    tick(forum, 10)
+    assert conversation.load("led1")["state"] == "open"  # the next probe is due 30 s after the last
+    tick(forum, 21)
+    assert conversation.load("led1")["state"] == "creating"
+    tick(forum, 0, n=2)
+    new = conversation.load("led1")["thread_id"]
+    # the ledger completes (hook done): Hermes's notifier pings and wakes the coordinator per subscription
+    assert new != old and forum.subs.deliver("led1") == [new]
+
+
+def test_a_recreate_that_fails_moves_the_run_to_the_main_chat(forum):
+    old = opened(forum, cards=["led1"])
+    forum.bot.deleted.add(int(old))
+    forum.bot.forum = False  # Topics turned off meanwhile
+    tick(forum, 0)
+    tick(forum, 0, n=3)
+    ref = conversation.load("led1")
+    assert ref["state"] == "fallback" and ref["repaired"] == "main"
+    assert forum.subs.deliver("led1") == [""]
+
+
+def test_after_a_restart_the_topic_is_reused(forum):
+    thread = opened(forum)
+    ask()
+    gateway.S = gateway.State()
+    gateway.S.configured, gateway.S.adapter, gateway.S.bot = True, forum.adapter, forum.bot
+    tick(forum, 0)
+    assert [s["thread"] for s in forum.adapter.sent] == [thread] and list(forum.bot.topics) == [int(thread)]
+
+
+def test_two_runs_never_cross_route(forum, hermes):
+    a_thread, b_thread = opened(forum, "ledA", "r#1 A"), opened(forum, "ledB", "r#2 B")
+    a, b = ask(ledger="ledA"), ask(ledger="ledB")
+    tick(forum, 0)
+    sent = {s["cid"]: s for s in forum.adapter.sent}
+    assert sent[f"mu{a['id']}q0"]["thread"] == a_thread and sent[f"mu{b['id']}q0"]["thread"] == b_thread
+    # a tap on A's message seen outside A's topic is refused, and A is presented again in its topic
+    update = fh.update(42, GROUP_CHAT, data=f"cl:mu{a['id']}q0:0", thread=int(b_thread))
+    with pytest.raises(fh.ApplicationHandlerStop):
+        run(gateway.guard(update, None))
+    assert update.callback_query.answers == ["Moved: answer in the run's topic"]
+    # both wait for typed text after Other: text typed in B's topic answers B only
+    tick(forum, 0)
+    hermes.mark_awaiting_text(f"mu{a['id']}q0")
+    hermes.mark_awaiting_text(f"mu{b['id']}q0")
+
+    async def typed():
+        got = await gateway.on_dispatch(event=fh.event("for B", "42", GROUP_CHAT, thread=b_thread),
+                                        gateway=fh.Gateway())
+        await until(lambda: status(b) == "answered")
+        return got
+
+    assert run(typed()) == {"action": "skip"}
+    assert decisions.load(b["id"])["answer"] == {"Which?": "for B"} and status(a) == "open"
+    # a reply to A's message inside A's topic answers A; the same reply from B's topic does not
+    a_mid = [s["mid"] for s in forum.adapter.sent if s["cid"] == f"mu{a['id']}q0"][-1]
+    assert run(gateway.on_dispatch(event=fh.event("x", "42", GROUP_CHAT, reply=a_mid, thread=b_thread),
+                                   gateway=fh.Gateway())) is None
+
+    async def replied():
+        got = await gateway.on_dispatch(event=fh.event("Beta", "42", GROUP_CHAT, reply=a_mid, thread=a_thread),
+                                        gateway=fh.Gateway())
+        await until(lambda: status(a) == "answered")
+        return got
+
+    assert run(replied()) == {"action": "skip"}
+
+
+def test_every_kind_of_request_follows_the_runs_topic(forum):
+    thread = opened(forum)
+    permission()
+    decisions.create("build", "led1", **{**dict(actions=["merge", "send-back", "nothing"], recommended="merge",
+                                                head="a" * 40, pr="https://github.com/o/r/pull/1", cycle=1,
+                                                choices=[["Merge", "Send back", "Do nothing"]]),
+                                         "questions": [question("Review", ("Merge", "Send back", "Do nothing"))],
+                                         "run": {"repo": "o/r", "issue": 7}})
+    decisions.create("feedback", "led1", actions=["send", "cancel"], choices=[["Send as written", "Don't send"]],
+                     questions=[question("Fix X", ("Send as written", "Don't send"))], run={"repo": "o/r", "issue": 7})
+
+    async def go():
+        await gateway.scan()
+        await until(lambda: len(forum.adapter.sent) == 3)
+
+    run(go())
+    assert sorted(s["thread"] for s in forum.adapter.sent) == [thread] * 3
+
+
+def test_with_topics_off_nothing_carries_a_thread(hermes):
+    ask()
+    run(gateway.scan())
+    assert gateway.S.adapter.sent[0]["thread"] is None and not (config.data_dir() / "runs").exists()
