@@ -1353,3 +1353,65 @@ def test_a_notice_whose_name_matches_two_runs_is_ignored(forum):
     assert conversation.load("ledA")["state"] == conversation.load("ledB")["state"] == "creating"
     assert not forum.bot.closed and "ambiguous, ignored" in core.log_path("gateway").read_text()
 
+
+def test_a_late_notice_of_the_deleted_previous_topic_is_never_adopted(forum):
+    old = opened(forum, cards=["led1"])
+    name = conversation.load("led1")["name"]
+    forum.bot.deleted.add(int(old))
+    forum.adapter.creates = ["lost"]
+    tick(forum, 31)  # gone
+    tick(forum, 0)  # the recreate's reply is lost
+    new = max(forum.bot.topics)
+    run(gateway.topic_created(fh.topic_notice(GROUP_CHAT, int(old), name), None))  # the old topic's notice, late
+    ref = conversation.load("led1")
+    assert ref["state"] == "creating" and ref["thread_id"] is None and not forum.bot.closed
+    run(gateway.topic_created(fh.topic_notice(GROUP_CHAT, new, name), None))
+    assert conversation.load("led1")["thread_id"] == str(new) and not forum.bot.closed
+    assert run(gateway.settle("led1", old)) is None and conversation.load("led1")["thread_id"] == str(new)
+
+
+def test_a_card_that_never_moves_does_not_stop_the_deletion_probe(forum):
+    old = opened(forum, cards=["led1", "w1"])
+    forum.bot.deleted.add(int(old))
+    forum.subs.fail["w1"] = 10 ** 6
+    tick(forum, 31)
+    tick(forum, 0, n=2)
+    first = conversation.load("led1")["thread_id"]
+    assert conversation.load("led1")["migrating"] == ["w1"]
+    forum.bot.deleted.add(int(first))  # the new topic is deleted too
+    tick(forum, 31)
+    ref = conversation.load("led1")
+    assert ref["state"] == "creating" and ref["previous"] == [old, first] and ref["migrate_at"] == 0
+    tick(forum, 0, n=2)
+    assert conversation.load("led1")["moved"] == conversation.load("led1")["thread_id"]  # prompts move at once
+
+
+def test_a_card_deleted_from_the_board_counts_as_moved(forum):
+    old = opened(forum, cards=["led1", "w1"])
+    forum.bot.deleted.add(int(old))
+    forum.subs.missing.add("w1")
+    tick(forum, 31)
+    tick(forum, 0, n=2)
+    ref = conversation.load("led1")
+    assert ref["migrating"] == [] and ref["repaired"] == ref["thread_id"]
+    assert "w1 is gone from the board" in core.log_path("gateway").read_text()
+
+
+def test_a_move_to_the_main_chat_must_read_back_there(forum, monkeypatch):
+    old = opened(forum, cards=["led1"])
+    forum.bot.deleted.add(int(old))
+    forum.bot.forum = False  # the recreate falls back to the main chat
+    real = forum.subs.__class__.__call__
+
+    def silent(self, *argv):  # a subscribe that does nothing and a read-back that still passes
+        if argv[0] == "notify-subscribe" and "--thread-id" not in argv:
+            self.calls.append(argv)
+            return ""
+        return real(self, *argv)
+    monkeypatch.setattr(forum.subs.__class__, "__call__", silent)
+    monkeypatch.setattr(core, "subscribe", lambda card, ledger=None: real(forum.subs, "notify-list", card))
+    tick(forum, 31)
+    tick(forum, 0, n=3)
+    ref = conversation.load("led1")
+    assert ref["state"] == "fallback" and ref["migrating"] == ["led1"] and ref.get("repaired") is None
+

@@ -691,7 +691,7 @@ async def probe(ref):
         log(f"{ledger}: topic {thread} is gone; making a new one")
         await asyncio.to_thread(conversation.swap, ledger, ("open", "closed"), state="creating", thread_id=None,
                                 previous=[*ref.get("previous", []), thread], attempts=0, since=0, asked=False,
-                                moved=None, repaired=None)
+                                moved=None, repaired=None, migrate_at=0, migrate_delay=0)
     elif found == "unknown":
         log(f"{ledger}: topic {thread} probe: {error}")
     return found
@@ -732,8 +732,9 @@ async def topic_step(ref):
     elif state == "open":
         if ref.get("previous") and ref.get("repaired") != ref["thread_id"]:
             await repair(ref)  # until every card's subscription reads back here
-        elif clock() - S.probed.get(ledger, float("-inf")) >= PROBE_EVERY:
-            await probe(ref)
+            ref = await asyncio.to_thread(conversation.load, ledger)
+        if ref.get("state") == "open" and clock() - S.probed.get(ledger, float("-inf")) >= PROBE_EVERY:
+            await probe(ref)  # on its own timer: a card still moving must not hide a new deletion
 
 
 async def create(ref):
@@ -794,6 +795,9 @@ async def prerequisites(chat):
 
 async def settle(ledger, thread):
     """A topic Telegram made for this run: adopt it, unless the run already has its topic or gave up waiting."""
+    old = await asyncio.to_thread(conversation.load, ledger)
+    if old and thread in old.get("previous", []):
+        return  # a topic the run left: never adopted again
     ref, ok = await asyncio.to_thread(conversation.swap, ledger, ("pending", "creating"), state="open",
                                       thread_id=thread)
     if ok:
@@ -835,6 +839,8 @@ async def topic_created(update, context):
                 log(f"topic notice: {len(mine)} runs are named {made.name!r}; ambiguous, ignored")
             return
         ref = mine[0]
+        if thread in ref.get("previous", []):
+            return  # a late notice of a topic the run already left (deleted): never adopted, never closed
         if ref.get("state") == "creating" and ref.get("asked"):
             await settle(ref["ledger"], thread)
         elif ref.get("thread_id") != thread and thread not in ref.get("previous", []):
@@ -891,11 +897,17 @@ def move_cards(ref):
                 with contextlib.suppress(core.CommandError):  # "no such subscription": checked below
                     core.kanban("notify-unsubscribe", card, "--platform", platform, "--chat-id", chat,
                                 *(["--thread-id", old] if old else []))
-            stale = {str(old or "") for old in olds}
-            rows = json.loads(core.kanban("notify-list", card, "--json"))
-            if any(str(r.get("chat_id")) == str(chat) and str(r.get("thread_id") or "") in stale for r in rows):
+            stale, here = {str(old or "") for old in olds}, str(ref.get("thread_id") or "")
+            rows = [str(r.get("thread_id") or "") for r in json.loads(core.kanban("notify-list", card, "--json"))
+                    if str(r.get("chat_id")) == str(chat)]
+            if here not in rows:
+                raise core.CommandError(f"not subscribed at {here or 'the main chat'}")
+            if stale & set(rows):
                 raise core.CommandError("still subscribed where the run was")
         except Exception as caught:  # noqa: BLE001 - one card must not hold up the rest
+            if "no such task" in str(caught):  # deleted from the board: nothing left to move
+                log(f"{ledger}: {card} is gone from the board; not moved")
+                continue
             log(f"{ledger}: moving {card}'s subscription: {caught}")
             left.append(card)
     return left

@@ -426,10 +426,13 @@ class Subs:
     def __init__(self):
         self.rows, self.calls = {}, []
         self.fail = {}  # card -> how many of its next notify-subscribe calls fail
+        self.missing = set()  # cards deleted from the board
 
     def __call__(self, *argv):
         self.calls.append(argv)
         verb, card = argv[0], argv[1]
+        if verb == "notify-subscribe" and card in self.missing:
+            raise core.CommandError(f"hermes kanban: exit 1\nno such task: {card}")  # as _cmd_notify_subscribe
         if verb == "notify-subscribe" and self.fail.get(card):
             self.fail[card] -= 1
             raise core.CommandError("hermes kanban: exit 1\ndatabase is locked")
