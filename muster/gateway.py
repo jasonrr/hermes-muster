@@ -334,11 +334,11 @@ async def handle(req):
         return
     if req.get("prompt_sha"):  # a retry whose first send may have arrived after all
         S.presenting.add(rid)  # held across the await, so a concurrent scan cannot present it meanwhile
-        try:
-            retired = await asyncio.to_thread(decisions.reconcile, req)
+        try:  # retired now, or answered by a tap during the await: either way not to present
+            ended = await asyncio.to_thread(lambda: decisions.reconcile(req) or decisions.load(rid)["status"] != "open")
         finally:
             S.presenting.discard(rid)
-        if retired:
+        if ended:
             release(rid)
             return
     if (req.get("presented") or {}).get("boot") == BOOT:

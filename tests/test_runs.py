@@ -776,6 +776,7 @@ def test_a_prompt_claude_wrapped_as_a_paste_is_seen_as_the_exact_text_sent(run1)
     core.prompt_seen(run1, {"prompt": pasted(brief)})
     assert core.seen(run1, sha(brief)) and core.seen(run1, sha(pasted(brief)))
     assert not core.seen(run1, sha(brief + " "))
+    assert not core.seen(run1, None) and not core.seen(run1, "")
 
 
 @pytest.mark.parametrize("prompt", [pasted("the brief", close_id="ab12"), "note " + pasted("the brief"),

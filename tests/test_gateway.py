@@ -922,6 +922,19 @@ def test_a_scan_retires_an_open_retry_whose_send_arrived_late_and_presents_nothi
     assert decisions.load(waiting)["status"] == "open" and len(sent()) == 1  # only the unseen retry is shown
 
 
+def test_a_retry_tapped_while_it_is_reconciled_is_not_presented(monkeypatch):
+    rid = tap_request("feedback", "open", prompt_sha="0" * 64, run={"branch": "b", "evidence_dir": "/nowhere"})
+    monkeypatch.setattr(decisions, "execute", lambda rid, boot="": None)
+
+    def tapped(req):  # the human's tap lands while the scan is in reconcile's thread
+        decisions.transition(req["id"], ("open",), "answered", answer={"action": "send"})
+        return False
+
+    monkeypatch.setattr(decisions, "reconcile", tapped)
+    run(gateway.scan())
+    assert decisions.load(rid)["status"] == "answered" and sent() == []
+
+
 def test_the_first_scan_recovers_executing_requests_of_an_older_boot_once(monkeypatch):
     rec, ex = [], []
     monkeypatch.setattr(decisions, "recover", lambda req: rec.append(req["id"]))

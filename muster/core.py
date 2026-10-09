@@ -556,7 +556,7 @@ def seen(directory, sha):
     for line in path.read_text().splitlines():
         try:
             record = json.loads(line)
-            if sha in (record.get("sha256"), record.get("inner")):
+            if sha and sha in (record.get("sha256"), record.get("inner")):
                 return True
         except (ValueError, AttributeError):  # a line torn by a crash, or not a record: not evidence
             continue
