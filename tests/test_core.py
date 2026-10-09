@@ -985,3 +985,15 @@ def test_an_issue_past_the_300_item_cap_is_not_called_absent(tmp_path, monkeypat
     monkeypatch.setattr(core, "run", fake_world(tmp_path, calls, project=full)[0])
     assert tick() == 0
     assert project_comments(calls) == ["project: not in the first 300 items of Project #5"]
+
+
+def test_an_issue_launch_asks_for_its_topic_before_subscribing_in_it(tmp_path, monkeypatch):
+    calls, order = [], []
+    monkeypatch.setattr(core, "run", fake_world(tmp_path, calls)[0])
+    monkeypatch.setattr(core, "topic", lambda card, repo, title, issue=None, branch=None:
+                        order.append(("topic", card, repo, issue)))
+    real = core.subscribe
+    monkeypatch.setattr(core, "subscribe", lambda card, ledger=None: (order.append(("subscribe", card, ledger)),
+                                                                      real(card, ledger)))
+    assert tick() == 0
+    assert order[:2] == [("topic", "t_abc123", REPO, 397), ("subscribe", "t_abc123", "t_abc123")]

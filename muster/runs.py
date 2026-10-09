@@ -471,7 +471,8 @@ def launch_run(clone, branch, title, brief, base=None, model=None):
     step = "subscribe"
     try:
         with core.launch_lock(directory):
-            core.subscribe(card)
+            core.topic(card, repo, title, branch=branch)  # never raises; the subscription names the topic
+            core.subscribe(card, card)
             step = "launch"
             run = relaunch(run, text)
     except BaseException as error:  # a killed launch (Ctrl-C, a caller's timeout) still blocks its card

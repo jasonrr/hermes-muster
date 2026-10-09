@@ -974,3 +974,14 @@ def test_a_stale_build_request_cannot_merge(revised, monkeypatch):
     decisions.execute(stale)
     assert decisions.load(stale)["status"] == "stale"
     assert not [c for c in revised["calls"] if c[:3] == ["gh", "pr", "merge"]]
+
+
+def test_launch_asks_for_the_runs_topic_before_subscribing_in_it(board, clone, monkeypatch):
+    order = []
+    monkeypatch.setattr(core, "topic", lambda card, repo, title, issue=None, branch=None:
+                        order.append(("topic", card, repo, title, branch)))
+    real = core.subscribe
+    monkeypatch.setattr(core, "subscribe", lambda card, ledger=None: (order.append(("subscribe", card, ledger)),
+                                                                      real(card, ledger)))
+    card = launch(clone)["card"]
+    assert order[:2] == [("topic", card, "o/r", "Fix the thing", "fix/x"), ("subscribe", card, card)]

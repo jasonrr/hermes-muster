@@ -977,3 +977,15 @@ def test_an_unreported_failure_does_not_hold_a_later_wait(board, monkeypatch, tm
     assert done(PR) == 1
     assert hook(monkeypatch, "notification") == 0  # drains the flagged entry first, then opens the wait
     assert board["cards"]["t_wait1"] == "blocked" and runs.pending("t_abc123") == []
+
+
+# -- run topics (#24): every card of a run is subscribed in its ledger's conversation ----------------
+
+def test_a_wait_card_and_a_review_card_subscribe_in_the_ledgers_conversation(board, monkeypatch, tmp_path):
+    seen = []
+    monkeypatch.setattr(core, "subscribe", lambda card, ledger=None: seen.append((card, ledger)))
+    assert hook(monkeypatch, "notification") == 0
+    verified(monkeypatch, tmp_path, board)
+    assert done(PR) == 0
+    runs.drain("t_abc123")
+    assert seen == [("t_wait1", "t_abc123"), ("t_wait2", "t_abc123")]

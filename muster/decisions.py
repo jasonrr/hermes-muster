@@ -185,7 +185,7 @@ def rereview(ledger, run=None):
         + core.PROVENANCE, "--idempotency-key", f"review:{ledger}:{head}", "--created-by", core.CREATED_BY, "--json",
         "--", f"{run.get('title') or run['repo'] + '/' + run['branch']}: revised, ready for re-review"))
     if card["status"] == "ready":
-        core.subscribe(card["id"])
+        core.subscribe(card["id"], ledger)
         core.kanban("complete", card["id"], "--summary", f"Revised, ready for re-review: {pr['url']} at {head[:7]}")
         events.expect(card["id"], "done", "rereview")
     for old in for_ledger(ledger, "build"):  # a recommendation for this head is the current one: keep it
