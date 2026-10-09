@@ -32,3 +32,28 @@ def approval_session(adapter, callback_data):
         return (getattr(adapter, "_approval_state", None) or {}).get(int(str(callback_data).split(":", 2)[2]))
     except (ValueError, IndexError):
         return None
+
+
+async def send_labelled_clarify(adapter, chat_id, text, labels, clarify_id, session_key):
+    """Hermes's clarify prompt with each option's label on its button, and no numbered legend in the text.
+
+    Hermes's `send_clarify` (plugins/platforms/telegram/adapter.py:4376) shows numbers only on its buttons and lists
+    the options under the text. This is a labelled copy that goes through the same send shell (`_send_prompt`,
+    adapter.py:4265) and makes the same `_clarify_state` record (adapter.py:4391). It also uses the same callback
+    data (`cl:<id>:<idx>`, `cl:<id>:other`) and the same Other label. So Hermes's tap handler, its choice mapping
+    (choices[idx] as registered), the expired notice and Other's text capture all apply unchanged. Wanted upstream:
+    `send_clarify(..., button_labels=[...])`.
+    """
+    import html
+
+    from agent.i18n import t
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+    from telegram.constants import ParseMode
+
+    def build():
+        rows = [[InlineKeyboardButton(label, callback_data=f"cl:{clarify_id}:{i}")] for i, label in enumerate(labels)]
+        rows.append([InlineKeyboardButton(t("platform.telegram.prompt.other"), callback_data=f"cl:{clarify_id}:other")])
+        return (f"❓ {html.escape(text)}", InlineKeyboardMarkup(rows),
+                lambda msg: adapter._clarify_state.__setitem__(clarify_id, session_key))
+
+    return await adapter._send_prompt("send_clarify", chat_id, None, build, parse_mode=ParseMode.HTML)

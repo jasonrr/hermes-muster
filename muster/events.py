@@ -4,7 +4,7 @@ Registered only by the pane's own --settings file (core.agent_settings); a no-op
 without <git dir>/muster-card.json. The gateway notifier turns each block or completion into a
 Telegram ping for the human and a queued agent turn.
 
-  notification   open a WAIT card (subscribed notify+wake, or none when muster pages it itself; blocked "<message>\\nReply in Herdr pane P.")
+  notification   open a WAIT card (subscribed notify+wake, or none when muster pages it itself; blocked "<message>")
                  for a permission prompt or an AskUserQuestion (hook matchers in claude.hook_settings)
                  unless one is open or the ledger is archived (after done the pull request is in
                  review, so questions still page); its id is kept in <git dir>/muster-wait
@@ -171,7 +171,7 @@ def open_wait(git_dir, link, detail, key, ask=None, proposal=None, bridged=False
         # "--": the agent's question may start with "--" (e.g. "--kind=..."); argparse would read it as a flag.
         seen = (f"\n{heading(proposal)}: full text on this card and ledger {link['card']}." if proposal else "")
         core.kanban("block", "--kind", "needs_input", "--", card,
-                    f"{detail or 'The agent is waiting for you.'}{seen}\nReply in Herdr pane {link['pane']}.")
+                    f"{detail or 'The agent is waiting for you.'}{seen}")
     expect(card, "blocked", "notification")
     if proposal:
         disarm(link["card"], card, proposal)
@@ -370,8 +370,7 @@ def move(event, git_dir, link, detail, key, ask=None, proposal=None, bridged=Fal
     now = status(card)
     if event == "session-end" and now == "ready":
         core.kanban("block", "--kind", "needs_input", card,
-                    "The agent's session ended before it opened a pull request.\n"
-                    f"Check Herdr pane {link['pane']}.")
+                    "The agent's session ended before it opened a pull request.")
         expect(card, "blocked", event)
         return f"{event}: card {card} ready -> blocked"
     if event == "done":
