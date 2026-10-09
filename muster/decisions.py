@@ -422,8 +422,16 @@ def _retry(req, why):
     """Fail a send and offer it again as a new feedback request (the `seen` check stops a double send)."""
     if not [r for r in for_ledger(req["ledger"], "feedback") if r.get("retry_of") == req["id"]]:
         make_feedback(req, req.get("resolved") or req["feedback"], origin=req.get("origin") or req["id"],
-                      retry_of=req["id"])
+                      retry_of=req["id"], prompt_sha=(req.get("intent") or {}).get("prompt_sha"))
     fail(req["id"], f"{why}. A retry request follows.")
+
+
+def reconcile(req):
+    """Retire an `open` retry once the hook reports its original send arrived late: True if it did."""
+    sha, evidence = req.get("prompt_sha"), (req.get("run") or {}).get("evidence_dir")
+    if req.get("kind") != "feedback" or req.get("status") != "open" or not sha or not evidence:
+        return False
+    return core.seen(evidence, sha) and transition(req["id"], ("open",), "done", outcome="Sent ✓")[1]
 
 
 def _send(req, boot):

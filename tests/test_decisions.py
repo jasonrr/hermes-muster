@@ -656,6 +656,26 @@ def test_a_second_confirmation_while_the_agent_works_on_the_first_is_sent_withou
     assert len(decisions.for_ledger("t_1", "feedback")) == 2  # no further retry was offered
 
 
+def test_a_retry_still_open_when_the_late_evidence_arrives_is_retired_as_sent(world):
+    world.delivers = False
+    first = feedback(world, {"action": "send"})
+    decisions.execute(first)
+    (retry,) = [r for r in decisions.for_ledger("t_1", "feedback") if r["id"] != first]
+    assert retry["prompt_sha"] == sha(wire_of(first)) and not decisions.reconcile(retry)
+    core.prompt_seen(world.evidence, {"prompt": pasted(world.prompts[0])})  # the hook fired late
+    assert decisions.reconcile(decisions.load(retry["id"])) and state(retry["id"]) == ("done", "Sent ✓")
+    assert not decisions.reconcile(decisions.load(retry["id"]))
+    assert decisions.transition(retry["id"], ("open",), "answered", answer={"action": "send"})[1] is False
+    decisions.execute(retry["id"])  # a stale tap: nothing is sent
+    assert len(world.prompts) == 1 and len(decisions.for_ledger("t_1", "feedback")) == 2
+
+
+def test_reconcile_ignores_a_request_without_evidence_or_a_sha(world):
+    plain = decisions.create("feedback", "t_1", run={**RUN, "evidence_dir": None}, prompt_sha="0" * 64)
+    assert not decisions.reconcile(plain) and not decisions.reconcile({**plain, "run": None})
+    assert not decisions.reconcile(decisions.create("feedback", "t_1", run=world.run_dict))
+
+
 def test_a_retry_not_seen_is_sent_again_with_the_same_text(world):
     world.delivers = False
     first = feedback(world, {"action": "send"})
