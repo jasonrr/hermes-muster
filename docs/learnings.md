@@ -66,3 +66,10 @@
 ## outcome labels (issue #21, 2026-10-09)
 
 - A ✓ label written right after the PermissionRequest hook prints its answer → it confirms the stdout write, not that Claude applied it (the pane can win, or Claude can exit, at the same moment); label what muster knows ("Sent to Claude") and keep ✓ for outcomes muster verified.
+
+## run topics (issue #24, 2026-10-09)
+
+- Hermes's Telegram sends retry a gone thread without it (to General), and `SendResult` does not say which thread a message landed in → muster cannot tell from a send that a topic was deleted; probe the topic itself (`reopen_forum_topic`: TOPIC_NOT_MODIFIED when open, "thread not found" when deleted), and never answer a muster message found outside its topic.
+- A subscription with `--chat-type forum` → the coordinator's wake gets session `…:forum:<chat>:<thread>` while the human's replies in that topic are `…:group:…` (the adapter builds inbound sources with "group"); keep the configured chat_type and add only `--thread-id`.
+- Presenting a request the moment its new topic exists, then running the repair that re-presents the run's open requests → the prompt was sent twice; hold presentation until the repair for that thread has run.
+

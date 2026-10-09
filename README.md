@@ -93,6 +93,7 @@ Set under `plugins.entries.muster.settings`. Required: `approver_login`, `approv
 | `notify_chat_id` | `""` | Empty = DM the `TELEGRAM_HOME_CHANNEL` from `$HERMES_HOME/.env`. When you set it to a group, also set `notify_user_id` (the code falls back to the chat id as the user id). |
 | `notify_user_id` | `""` | The user the subscription is for. |
 | `notify_chat_type` | `group` | Chat type used with `notify_chat_id` (a DM fallback uses `dm`). |
+| `notify_topics` | `false` | One Telegram forum topic per run in the `notify_chat_id` group; see [Run topics](#run-topics). Needs `notify_platform: telegram`, `notify_chat_id` and `notify_user_id`. |
 | `gh_config_dir` | `""` | Empty = the pane uses your own `gh` login. Set it to a `GH_CONFIG_DIR` holding another login (for example a bot): the pane then gets `GH_CONFIG_DIR=<dir>` and blank `GH_TOKEN`/`GITHUB_TOKEN`, so `gh` and `git push` act as that login. The launch refuses if `hosts.yml` is missing there. |
 | `notes_dir` | `""` | Per-repo production notes. Empty = `$HERMES_HOME/plugin-data/muster/repos`. |
 | `workflow_prompt_file` | `""` | Replaces `prompts/workflow.md` in the brief. |
@@ -132,6 +133,18 @@ Herdr is optional: every routine decision can be made from Telegram. Pane ids ap
 
 The gateway side registers Telegram callback guards (muster prompts answer only the notify user; the reply prompt after Other) and a `pre_gateway_dispatch` hook, so **restart the Hermes gateway after installing or upgrading muster**. The gateway and the panes must resolve the same `HERMES_HOME` (the requests live in its plugin data). Panes started before the upgrade have no bridge hook; their questions ping as before. Slack: see `docs/decisions/2026-10-08-decision-channels.md`.
 
+## Run topics
+
+Opt-in (`notify_topics: true`). Each run (an issue or an ad-hoc launch) gets one forum topic in the notify group, named `<repo>#<issue> <title>` (or `<repo> <branch>: <title>`). Everything about the run happens there: its questions, permission cards, proposals for approval, wait and review pings, the Hermes agent's review and the Merge / Send back / Do nothing buttons, send-backs and re-reviews. Hermes's kanban notifier pings, and runs the Hermes agent's turn, in each card's subscription thread, so the agent's commentary lands in the topic too. General planning stays in the main chat (General).
+
+- **Before you turn it on:** enable Topics in the group's settings, and make the bot an admin with the Manage Topics right. muster never changes either. Restart the Hermes gateway after upgrading.
+- **At launch** the gateway makes the topic (Hermes's `create_handoff_thread`) while the launch waits up to 45 s. If Topics is off, the right is missing, the gateway is down, or three attempts fail, the run stays in the main chat. You get one message saying why there, and a `topic:` comment on the ledger card. Runs launched before you turned topics on stay in the main chat; nothing migrates.
+- **A lost create** (Telegram made the topic, but the reply was lost) is adopted from Telegram's own "topic created" notice for a topic the bot made with that name. No second topic is made while waiting, and a later extra topic is closed with a note. Whether Telegram delivers that notice to the bot that made the topic is still to be verified live. If it does not, a lost reply is retried after 10 s, which can leave one empty topic. Either way the run's conversation lives in exactly one topic.
+- **Answers are scoped to the topic.** A tap or reply counts only inside the run's topic, from the notify user. Text after "Other" goes to the prompt waiting in the topic it was typed in, so two runs' prompts never compete. A muster message found anywhere else (Hermes moves a message to General when its topic is gone) is not answered there: the tap says "Moved" and the request is shown again in its topic.
+- **A deleted topic** is found by a probe (Telegram's reopen, which changes nothing on an open topic): before every muster prompt, and every 30 s for each open run topic. muster then makes a new topic, moves every card's subscription to it, shows the open prompts there again, and says so. A ping fired in the 30 s before the probe lands in General, where Hermes resends it.
+- **When the run is finished** (cleanup removed its worktree) the topic gets "Run finished; worktree removed. History kept." and is closed, never deleted. Anything new for that run (a late question, a recover) reopens the same topic first. A topic closed by hand while its run is still open is reopened by the next probe.
+- The reference lives in `<data dir>/runs/<ledger>/conversation.json` (platform, chat, thread, requester, state). Its thread field is Telegram's `message_thread_id` and is meant to hold Slack's `thread_ts` later.
+
 ## Ad-hoc runs
 
 For coding work that is not a labeled issue:
@@ -158,7 +171,7 @@ v1 supports Claude Code. To add a kind, write one module in `muster/` with `KIND
 - Writes: kanban cards, worktrees under `worktrees`, state under `$HERMES_HOME/plugin-data/muster/`, and per-pane agent settings (the hooks) in that data directory. Nothing global in your agent's config changes.
 - The agent is interactive, runs as you, and is not sandboxed. Claude Code starts with `--permission-mode auto`, so it runs most tools without asking. The brief forbids it to push to main, merge, approve, deploy or force-push, to edit `.github/`, CI, deployment config, secrets, lockfiles or agent-instruction files, or to add dependencies. Issue text never enters the brief and is treated as data.
 - Human review of the pull request is the control: nothing merges or deploys without you. muster merges only when you tap Merge on a recommendation, squash, pinned to the reviewed head, with your own `gh` login.
-- Inside the Hermes gateway, muster runs a scan every 2 s over `<data dir>/decisions/`, a Telegram callback guard, and a `pre_gateway_dispatch` hook that swallows only replies to its own messages from you.
+- Inside the Hermes gateway, muster runs a scan every 2 s over `<data dir>/decisions/`, a Telegram callback guard, and a `pre_gateway_dispatch` hook that swallows only replies to its own messages from you. With `notify_topics` it also creates, closes, reopens and probes forum topics in the notify group, and reads Telegram's topic-created notices there.
 - Under `plugins.isolation: host`, Hermes skips `register_cli_command`, so the `hermes muster` commands do not exist.
 
 ## Development

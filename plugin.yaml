@@ -1,6 +1,6 @@
 name: muster
 version: "0.1.0"
-description: One named human labels a GitHub issue; muster opens a herdr worktree pane, starts your coding agent with a brief, and reports blocked/done to a Hermes kanban card. Disclosure — shells out to gh, git, herdr and hermes; starts interactive agent panes on this machine; uses your gh login (or a GH_CONFIG_DIR you name); writes worktrees under ~/.herdr/worktrees; registers Telegram callback guards and a pre_gateway_dispatch hook in the gateway, and presents decisions with Hermes's own clarify prompts and approval cards; merges a pull request only on the notify user's tap.
+description: One named human labels a GitHub issue; muster opens a herdr worktree pane, starts your coding agent with a brief, and reports blocked/done to a Hermes kanban card. Disclosure — shells out to gh, git, herdr and hermes; starts interactive agent panes on this machine; uses your gh login (or a GH_CONFIG_DIR you name); writes worktrees under ~/.herdr/worktrees; registers Telegram callback guards and a pre_gateway_dispatch hook in the gateway, and presents decisions with Hermes's own clarify prompts and approval cards; with notify_topics, creates, closes and reopens one Telegram forum topic per run; merges a pull request only on the notify user's tap.
 manifest_version: 2
 provides_hooks: [pre_gateway_dispatch]
 license: MIT
