@@ -133,7 +133,7 @@ def files(run_dir, box):
 def test_blocked_an_ask_opens_one_subscribed_wait_card_and_waits_for_the_gateway_ack(board, run1, monkeypatch, capsys):
     assert fire(monkeypatch, "notification", message="Claude needs your permission") == 0
     assert board["cards"] == {CARD: "ready", "t_wait1": "blocked"}
-    assert block_text(board, "t_wait1") == "Claude needs your permission\nReply in Herdr pane w_1:p2."
+    assert block_text(board, "t_wait1") == "Claude needs your permission"
     assert [c[5] for c in calls(board, "notify-subscribe")] == ["t_wait1"]
     body = calls(board, "create")[0]
     assert "| branch fix/x |" in body[body.index("--body") + 1] and core.PROVENANCE in body[body.index("--body") + 1]
@@ -254,8 +254,7 @@ def test_session_end_without_a_pr_blocks_the_ledger_once_and_clear_does_nothing(
     fire(monkeypatch, "session-end", reason="logout")
     assert board["cards"] == {CARD: "blocked", "t_wait1": "archived"}
     assert board["blocks"][CARD] == 1
-    assert block_text(board, CARD) == ("The agent's session ended without a finished pull request: there is no open pull request yet.\n"
-                                      "Check Herdr pane w_1:p2.")
+    assert block_text(board, CARD) == ("The agent's session ended without a finished pull request: there is no open pull request yet.")
 
 
 def test_an_empty_wait_marker_left_by_a_killed_hook_does_not_swallow_the_next_wait(board, run1, monkeypatch):
@@ -329,7 +328,7 @@ def test_an_idle_pane_without_a_pr_pages_once_after_ten_minutes(board, run1, mon
     runs.flush()
     assert board["cards"] == {CARD: "ready", "t_wait1": "blocked"} and board["blocks"] == {"t_wait1": 1}
     assert block_text(board, "t_wait1") == ("The agent has been idle for 10 minutes and is not finished: "
-                                            "there is no open pull request yet.\nReply in Herdr pane w_1:p2.")
+                                            "there is no open pull request yet.")
 
 
 def test_an_agent_that_moves_restarts_the_idle_clock(board, run1):
@@ -349,8 +348,7 @@ def test_missed_callback_a_gone_pane_blocks_the_ledger(board, run1):
     board["agent"] = None
     runs.flush()
     assert board["cards"] == {CARD: "blocked"}
-    assert block_text(board, CARD) == ("The agent's session ended without a finished pull request: there is no open pull request yet.\n"
-                                      "Check Herdr pane w_1:p2.")
+    assert block_text(board, CARD) == ("The agent's session ended without a finished pull request: there is no open pull request yet.")
 
 
 def test_missed_callback_a_dialog_opens_a_wait(board, run1):
@@ -358,7 +356,7 @@ def test_missed_callback_a_dialog_opens_a_wait(board, run1):
     runs.flush()
     runs.flush()
     assert board["blocks"] == {"t_wait1": 1}
-    assert block_text(board, "t_wait1") == "The agent is waiting on a dialog.\nReply in Herdr pane w_1:p2."
+    assert block_text(board, "t_wait1") == "The agent is waiting on a dialog."
 
 
 @pytest.mark.parametrize("setup", ["working", "open-wait", "herdr-down", "not-launched", "ledger-blocked"])
@@ -801,7 +799,7 @@ def test_an_ad_hoc_proposal_is_a_ledger_comment_and_the_next_ask_carries_it(boar
                                  "options": [{"label": "Yes", "description": "build"}]}]})
     body = board["bodies"]["t_wait1"]
     assert "| branch fix/x |" in body and f"# {head}" in body and "- Yes: build" in body
-    assert block_text(board, "t_wait1") == f"Approve?\n{head}: full text on this card and ledger {CARD}.\nReply in Herdr pane w_1:p2."
+    assert block_text(board, "t_wait1") == f"Approve?\n{head}: full text on this card and ledger {CARD}."
 
 
 def test_an_ad_hoc_propose_without_a_run_fails_loudly(board, tmp_path, capsys):

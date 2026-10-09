@@ -30,6 +30,7 @@ CTX = None  # the Hermes plugin context; set by register()
 SCAN_EVERY = 2  # s between scans
 ALIVE_MAX = 30  # s without a hook heartbeat before a question or permission request is stale
 CAP = 3500  # characters per message (Telegram allows 4096)
+LABEL_MAX = 32  # characters on a button; Telegram's phone client cuts longer ones
 BACKOFF_MAX = 60
 BOOT = secrets.token_hex(4)
 
@@ -283,7 +284,7 @@ def title(req):
 
 
 def render(req, n):
-    q, run = req["questions"][n], req.get("run") or {}
+    q = req["questions"][n]
     card = req.get("wait") or req["ledger"]
     head = [title(req)]
     tail = ["Several: tap Other and type the numbers, e.g. 1,3" if q.get("multi")
@@ -291,13 +292,15 @@ def render(req, n):
     if req.get("proposal"):
         p = req["proposal"]
         tail.append(f"Proposal v{p.get('version')} {str(p.get('sha', ''))[:8]} (full text on ledger {req['ledger']})")
-    if run.get("pane"):
-        tail.append(f"Herdr pane {run['pane']} (optional)")
+    cut = {label for label, shown in zip(req["choices"][n], buttons(req, n)) if label not in shown}
 
     def build(described, body):
-        # Hermes lists the numbered options under the text, matching its buttons: only add what a label lacks.
-        notes = [f"• {o['label']}: {o['description']}" for o in q["options"]
-                 if described and o.get("description") and o["description"].strip() != o["label"].strip()]
+        # The buttons carry the labels: add only what a button lacks, a description (dropped first) or a cut label.
+        notes = []
+        for o in q["options"]:
+            said = described and o.get("description") and o["description"].strip() != o["label"].strip()
+            if said or o["label"] in cut:
+                notes.append(f"• {o['label']}: {o['description']}" if said else f"• {o['label']}")
         return "\n\n".join([*head, body, *(["\n".join(notes)] if notes else []), *tail])
 
     text = build(True, q["text"])
@@ -308,6 +311,14 @@ def render(req, n):
         room = CAP - len(build(False, ""))
         text = build(False, q["text"][:max(room - 1, 0)] + "…")
     return text[:CAP]
+
+
+def buttons(req, n):
+    """Each choice's button text: its label, numbered when several may be picked (the typed answer names the
+    numbers), cut to LABEL_MAX."""
+    multi = req["questions"][n].get("multi")
+    shown = [f"{i + 1}. {c}" if multi else c for i, c in enumerate(req["choices"][n])]
+    return [s if len(s) <= LABEL_MAX else s[:LABEL_MAX - 1] + "…" for s in shown]
 
 
 async def present(req):
@@ -330,7 +341,8 @@ async def present(req):
             S.shown[rid] = n + 1
             threading.Thread(target=waiter, args=(rid, n, cid, S.loop), daemon=True).start()
             try:
-                res = await S.adapter.send_clarify(chat, render(req, n), choices, cid, session(rid, n))
+                res = await hermes_private.send_labelled_clarify(S.adapter, chat, render(req, n), buttons(req, n),
+                                                                 cid, session(rid, n))
             except Exception as caught:  # noqa: BLE001
                 res = SimpleNamespace(success=False, error=str(caught))
             if not res.success:
