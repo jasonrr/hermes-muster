@@ -102,6 +102,7 @@ def test_send_labelled_clarify_still_matches_hermess_send_clarify():
         n for n in ast.walk(ast.parse(source)) if isinstance(n, ast.AsyncFunctionDef) and n.name == "send_clarify"))
     for shape in ('callback_data=f"cl:{clarify_id}:{idx}"', 'callback_data=f"cl:{clarify_id}:other"',
                   't("platform.telegram.prompt.other")', "self._clarify_state.__setitem__(clarify_id, session_key)",
-                  "self._send_prompt(", "parse_mode=ParseMode.HTML", "_html.escape(question)"):
+                  "self._send_prompt(", "parse_mode=ParseMode.HTML", "_html.escape(question)",
+                  "thread_id=self._metadata_thread_id(metadata)"):
         assert shape in clarify, f"send_clarify changed ({shape}): hermes_private.send_labelled_clarify is stale"
     assert "self._clarify_state: Dict[str, str] = {}" in source

@@ -57,7 +57,7 @@ import tomllib
 from datetime import datetime
 from pathlib import Path
 
-from . import config, core, events, runs
+from . import config, conversation, core, events, runs
 
 
 def state_path():
@@ -359,7 +359,7 @@ def analysis(rec):
     return digest([rec, quiet(workspace)]), None, None
 
 
-def escalate(link, reason, signature):
+def escalate(link, reason, signature, ledger=None):
     """Open (or find) this state's warning card, subscribed notify+wake and blocked once. Its id."""
     where = f"workspace {link['workspace']} | {link['repo']} {link['branch']} | worktree {link['worktree']}"
     card = json.loads(core.kanban(
@@ -369,7 +369,7 @@ def escalate(link, reason, signature):
         "--idempotency-key", f"muster-cleanup:{signature}", "--created-by", "muster-cleanup", "--json",
         "--", f"Unsaved work in {link['repo'].split('/')[-1]}"))["id"]
     if events.status(card) == "ready":
-        core.subscribe(card)
+        core.subscribe(card, ledger)  # in the run's topic, when it has one
         core.kanban("block", "--kind", "needs_input", card,
                          f"Cleanup kept a workspace because it has unsaved work: {reason}. Push or commit it, "
                          f"discard it, or keep the workspace?\nOpen Herdr workspace {link['workspace']}.")
@@ -420,7 +420,7 @@ def step(target, state, dry):
             say(f"{name}: would warn the human: {reason}")
             return False
         try:
-            card = escalate(target["link"], reason, signature)
+            card = escalate(target["link"], reason, signature, ledger_of(target))
         except FAILURES as error:
             say(f"{name}: kept, {reason}; warning failed: {error}")
             return True
@@ -463,10 +463,22 @@ def step(target, state, dry):
         say(f"{name}: {what} failed: {error}")
         return True
     say(f"{name}: did {what}; branch kept")
+    ledger = ledger_of(target)
+    if ledger:  # the run is finished: the gateway closes its topic, keeping its history
+        try:
+            conversation.finish(ledger)
+        except OSError as error:
+            say(f"{name}: closing the run's topic failed: {error}")
     return False
 
 
-def coding_target(name, repo, clone, path, link=None, record=None):
+def ledger_of(target):
+    """The run's ledger card: a run record's directory, or an issue worktree's card file (link["card"])."""
+    card = target.get("link", {}).get("card")
+    return target.get("ledger") or (card.get("card") if isinstance(card, dict) else None)
+
+
+def coding_target(name, repo, clone, path, link=None, record=None, ledger=None):
     """A worktree whose link is known up front (run, coding) or read from its card each check (intake)."""
     held, copies = dict(link or {}), []
 
@@ -483,6 +495,7 @@ def coding_target(name, repo, clone, path, link=None, record=None):
         return (["herdr", "worktree", "remove", "--workspace", held["workspace"]],
                 f"remove worktree {path} and workspace {held['workspace']}{also}")
     return {"name": name, "key": path, "link": held, "check": check, "remove": remove, "record": record,
+            "ledger": ledger,
             "clear": lambda: copies and clear(held, clone, list(copies))}
 
 
@@ -553,7 +566,8 @@ def targets(dry=False):
                 paths.add(rec["worktree"])
                 link = {k: rec[k] for k in ("repo", "branch", "base", "worktree", "workspace")}
                 found.append(coding_target(f"{rec['repo']} {rec['branch']}", rec["repo"], rec["clone"],
-                                           rec["worktree"], link, record if owned else None))
+                                           rec["worktree"], link, record if owned else None,
+                                           None if owned else record.parent.name))
         except FAILURES as error:
             say(f"{record}: kept, unreadable: {error}")
             failed = True

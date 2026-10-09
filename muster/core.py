@@ -312,16 +312,24 @@ def notify_target():
     return {"chat_id": chat, "user_id": chat, "chat_type": "dm"}
 
 
-def subscribe(card):
-    """notify+wake: the gateway pings the human, then queues a fresh agent turn, for every card event."""
-    target = notify_target()
+def subscribe(card, ledger=None):
+    """notify+wake: the gateway pings the human, then queues a fresh agent turn, for every card event. With the
+    run's ledger, in the run's topic when it has one: Hermes's notifier sends the ping and runs the wake in the
+    subscription's thread, so the coordinator's commentary lands there too."""
+    from . import conversation  # conversation imports core
+
+    target = conversation.target(ledger) if ledger else {**notify_target(), "thread_id": None}
+    thread = target.pop("thread_id")
     kanban("notify-subscribe", card, "--platform", config.settings["notify_platform"], "--chat-id", target["chat_id"],
-           "--user-id", target["user_id"], "--chat-type", target["chat_type"],
-           "--notifier-profile", "default", "--delivery-mode", "notify+wake")
+           *(["--thread-id", thread] if thread else []), "--user-id", target["user_id"], "--chat-type",
+           target["chat_type"], "--notifier-profile", "default", "--delivery-mode", "notify+wake")
     subs = json.loads(kanban("notify-list", card, "--json"))
-    want = {**target, "notifier_profile": "default", "delivery_mode": "notify+wake"}
-    if not any(all(s.get(k) == v for k, v in want.items()) for s in subs):
+    want = {**target, **({"thread_id": thread} if thread else {}), "notifier_profile": "default",
+            "delivery_mode": "notify+wake"}
+    if not any(all(str(s.get(k)) == str(v) for k, v in want.items()) for s in subs):
         raise LaunchError("the notify+wake subscription did not read back")
+    if ledger:
+        conversation.add_card(ledger, card)
 
 
 def agent_settings():
@@ -920,6 +928,17 @@ def step_of(at, record):
     return (record["launch"].get("phase") or "launch") if at["step"] == "launch" and record else at["step"]
 
 
+def topic(card, repo, title, issue=None, branch=None):
+    """Ask for the run's topic (muster.conversation); a fallback is said once on the card. Never raises."""
+    from . import conversation
+
+    ref = conversation.request(card, conversation.name(repo, title, card, issue=issue, branch=branch))
+    if ref and ref.get("state") == "fallback" and not ref.get("commented"):
+        with contextlib.suppress(CommandError, OSError):
+            kanban("comment", card, f"topic: not created: {ref.get('why')}; this run stays in the main chat")
+            conversation.update(card, commented=True)
+
+
 def launch(repo, issue, card, event=None, auto=None):
     """Open the pane for a card made this tick. Returns (prompt state, pane), or None after blocking the card."""
     number = issue["number"]
@@ -937,9 +956,11 @@ def launch(repo, issue, card, event=None, auto=None):
             if why:
                 note(record["launch"], why)
             save_json(directory / "launch.json", record)
-            # Subscribe first, so a block at any later step pings the human.
+            # Subscribe first, so a block at any later step pings the human. The topic comes just before: the
+            # subscription names it. topic() never raises.
+            topic(card, repo, issue["title"], issue=number)
             at["step"] = "subscribe"
-            subscribe(card)
+            subscribe(card, card)
             at["step"] = "card readback"
             task = json.loads(kanban("show", card, "--json"))["task"]
             if task.get("status") != "ready" or task.get("assignee"):

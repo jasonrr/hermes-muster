@@ -34,7 +34,7 @@ def approval_session(adapter, callback_data):
         return None
 
 
-async def send_labelled_clarify(adapter, chat_id, text, labels, clarify_id, session_key):
+async def send_labelled_clarify(adapter, chat_id, text, labels, clarify_id, session_key, metadata=None):
     """Hermes's clarify prompt with each option's label on its button, and no numbered legend in the text.
 
     Hermes's `send_clarify` (plugins/platforms/telegram/adapter.py:4376) shows numbers only on its buttons and lists
@@ -56,4 +56,6 @@ async def send_labelled_clarify(adapter, chat_id, text, labels, clarify_id, sess
         return (f"❓ {html.escape(text)}", InlineKeyboardMarkup(rows),
                 lambda msg: adapter._clarify_state.__setitem__(clarify_id, session_key))
 
-    return await adapter._send_prompt("send_clarify", chat_id, None, build, parse_mode=ParseMode.HTML)
+    # metadata (a run topic's thread_id) is routed exactly as send_clarify routes it (adapter.py:4394)
+    return await adapter._send_prompt("send_clarify", chat_id, metadata, build, parse_mode=ParseMode.HTML,
+                                      thread_id=adapter._metadata_thread_id(metadata))

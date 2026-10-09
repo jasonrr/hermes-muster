@@ -40,10 +40,20 @@ Telegram is the first decision surface. Slack is a requirement for the architect
   and on a mismatch answers "Not authorized" and raises `ApplicationHandlerStop`.
 - **Map replies.** The `pre_gateway_dispatch` hook. A reply to a stored message id resolves that prompt
   through Hermes (`mark_awaiting_text` + `resolve_text_response_for_session`, or a deny with reason on an
-  approval card); so does text after "Other" when exactly one muster prompt waits. It returns
+  approval card); so does text after "Other" when exactly one muster prompt waits in the conversation (run topic,
+  or the main chat) the text was typed in. It returns
   `{"action": "skip"}` only for those. After "Other", muster sends a ForceReply (group privacy mode).
 - **Restart.** Hermes keeps prompts in memory. The scan presents open requests again each boot; a tap on an
   older message gets Hermes's own "expired" notice and is edited to "Superseded". Every message id ever sent stays bound.
+
+## Run topics (issue #24)
+
+- The conversation a run's messages go to is `muster.conversation`: one reference per ledger with `platform`,
+  `chat_id`, `thread_id`, the requester and a state. Every card subscription passes its `thread_id` to Hermes
+  (`notify-subscribe --thread-id`), and every gateway send passes it as `metadata["thread_id"]`. Taps and replies
+  are checked against it.
+- Telegram's `thread_id` is the forum topic's `message_thread_id`. The gateway owns its lifecycle: create,
+  reconcile, probe, recreate, close and reopen.
 
 ## Slack (contract only)
 
@@ -57,6 +67,10 @@ Telegram is the first decision surface. Slack is a requirement for the architect
 - **Map replies.** `pre_gateway_dispatch` already sees Slack messages. A thread reply carries the parent
   `ts` as its reply id, so key `presented.messages` by `ts`. `on_dispatch` currently returns early for
   any platform but telegram. Generalize that check to "the configured decision platform".
+- **Threads.** A run's conversation reference stores the parent message's `ts` as `thread_id`. Pass it as
+  `metadata["thread_id"]` (the Slack adapter's `_resolve_thread_ts` reads it), as `--thread-id` on subscriptions,
+  and compare it with an inbound reply's `source.thread_id`. Creating the thread is posting the parent message.
+  Closing it has no Slack equivalent, so it can be a final reply.
 - **Config.** `notify_platform: slack` selects the adapter. Wait cards then skip their subscription only when Hermes's runtime
   status shows the Slack platform connected (`decisions.gateway_up`), as with Telegram.
 - **Not needed.** No change to `decisions.py`, `bridge.py`, `recommend`, execution, recovery or

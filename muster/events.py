@@ -167,7 +167,7 @@ def open_wait(git_dir, link, detail, key, ask=None, proposal=None, bridged=False
             os.close(claim)
     if status(card) == "ready":
         if not muster_pages(git_dir, link, bridged or bool(ask)):
-            core.subscribe(card)
+            core.subscribe(card, link["card"])
         # "--": the agent's question may start with "--" (e.g. "--kind=..."); argparse would read it as a flag.
         seen = (f"\n{heading(proposal)}: full text on this card and ledger {link['card']}." if proposal else "")
         core.kanban("block", "--kind", "needs_input", "--", card,

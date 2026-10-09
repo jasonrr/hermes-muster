@@ -1,6 +1,6 @@
 name: muster
 version: "0.1.0"
-description: One named human labels a GitHub issue; muster opens a herdr worktree pane, starts your coding agent with a brief, and reports blocked/done to a Hermes kanban card. Disclosure — shells out to gh, git, herdr and hermes; starts interactive agent panes on this machine; uses your gh login (or a GH_CONFIG_DIR you name); writes worktrees under ~/.herdr/worktrees; registers Telegram callback guards and a pre_gateway_dispatch hook in the gateway, and presents decisions with Hermes's own clarify prompts and approval cards; merges a pull request only on the notify user's tap.
+description: One named human labels a GitHub issue; muster opens a herdr worktree pane, starts your coding agent with a brief, and reports blocked/done to a Hermes kanban card. Disclosure — shells out to gh, git, herdr and hermes; starts interactive agent panes on this machine; uses your gh login (or a GH_CONFIG_DIR you name); writes worktrees under ~/.herdr/worktrees; registers Telegram callback guards and a pre_gateway_dispatch hook in the gateway, and presents decisions with Hermes's own clarify prompts and approval cards; with notify_topics, creates, closes and reopens one Telegram forum topic per run; merges a pull request only on the notify user's tap.
 manifest_version: 2
 provides_hooks: [pre_gateway_dispatch]
 license: MIT
@@ -21,6 +21,7 @@ config_schema:
   notify_chat_id: {type: str, default: "", description: Empty = DM the TELEGRAM_HOME_CHANNEL from $HERMES_HOME/.env}
   notify_user_id: {type: str, default: ""}
   notify_chat_type: {type: str, default: group}
+  notify_topics: {type: bool, default: false, description: "One Telegram forum topic per run in the notify_chat_id group (needs Topics on and the bot's Manage Topics right); see README"}
   gh_config_dir: {type: str, default: "", description: Optional GH_CONFIG_DIR for a bot login used by gh/git in the pane}
   notes_dir: {type: str, default: "", description: Per-repo production notes; empty = plugin-data/muster/repos}
   workflow_prompt_file: {type: str, default: "", description: Overrides prompts/workflow.md in the brief}

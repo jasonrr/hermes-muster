@@ -67,6 +67,16 @@
 
 - A ✓ label written right after the PermissionRequest hook prints its answer → it confirms the stdout write, not that Claude applied it (the pane can win, or Claude can exit, at the same moment); label what muster knows ("Sent to Claude") and keep ✓ for outcomes muster verified.
 
+## run topics (issue #24, 2026-10-09)
+
+- Hermes's Telegram sends retry a gone thread without it (to General), and `SendResult` does not say which thread a message landed in → muster cannot tell from a send that a topic was deleted; probe the topic itself (`reopen_forum_topic`: TOPIC_NOT_MODIFIED when open, "thread not found" when deleted), and never answer a muster message found outside its topic.
+- A subscription with `--chat-type forum` → the coordinator's wake gets session `…:forum:<chat>:<thread>` while the human's replies in that topic are `…:group:…` (the adapter builds inbound sources with "group"); keep the configured chat_type and add only `--thread-id`.
+- Presenting a request the moment its new topic exists, then running the repair that re-presents the run's open requests → the prompt was sent twice; hold presentation until the repair for that thread has run.
+
 ## labelled buttons (issue #22, 2026-10-09)
 
 - Putting option labels on buttons cut to a phone-safe width → two labels sharing a long prefix (`… us-east-1` / `… us-west-2`) or a blank label give buttons the human cannot tell apart, which Hermes's numbered buttons never did; number the buttons (and their body lines) whenever plain labels would collide or be blank.
+- A topic name built from the readable title alone (`app#24 Fix it`) → two runs with the same title match the same topic-created notice and can adopt each other's topic; end every name with the ledger id and ignore a notice that matches more than one run.
+- Hermes's `create_handoff_thread` returns None for every failure, including a timeout after Telegram made the topic → a retry on None can make a second topic; call create once per destination and, without the notice, fall back rather than retry.
+- A repair that writes "done" after a loop that logs and skips failed card subscriptions → the coordinator's wake stays on the dead topic with no retry; keep the unmoved cards, retry them, and mark done only when notify-list shows each one at the new destination and not the old.
+

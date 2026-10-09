@@ -189,3 +189,20 @@ def test_require_rejects_a_half_set_project(change, key):
 def test_require_passes_with_no_project_or_a_whole_one(owner, number):
     config.settings.update(approver_login="me", repos=["o/a"], approver_id=7, project_owner=owner, project_number=number)
     config.require()
+
+
+@pytest.mark.parametrize("change, missing", [
+    ({"notify_chat_id": ""}, "notify_chat_id"),
+    ({"notify_user_id": ""}, "notify_user_id"),
+    ({"notify_platform": "slack"}, "notify_platform"),
+    ({"notify_topics": "yes"}, "notify_topics"),
+])
+def test_require_rejects_topics_without_a_telegram_group(change, missing):
+    config.settings.update({"approver_login": "me", "repos": ["o/a"], "approver_id": 7, "notify_topics": True,
+                            "notify_chat_id": "-100123", "notify_user_id": "42", **change})
+    with pytest.raises(config.ConfigError, match=missing):
+        config.require()
+
+
+def test_topics_are_off_by_default():
+    assert config.DEFAULTS["notify_topics"] is False
