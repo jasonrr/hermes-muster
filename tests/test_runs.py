@@ -765,6 +765,26 @@ def test_a_torn_prompt_seen_line_neither_hides_nor_swallows_evidence(run1):
     assert core.seen(run1, sha)
 
 
+def pasted(text, open_id="ef30", close_id="ef30"):
+    """The prompt as Claude Code hands a long paste to UserPromptSubmit (seen in session 43300d37)."""
+    return f'\n\n<pasted_content id="{open_id}">\n{text}\n</pasted_content id="{close_id}">\n'
+
+
+def test_a_prompt_claude_wrapped_as_a_paste_is_seen_as_the_exact_text_sent(run1):
+    sha = lambda text: __import__("hashlib").sha256(text.encode()).hexdigest()  # noqa: E731
+    brief = "the brief\nwith a second line"
+    core.prompt_seen(run1, {"prompt": pasted(brief)})
+    assert core.seen(run1, sha(brief)) and core.seen(run1, sha(pasted(brief)))
+    assert not core.seen(run1, sha(brief + " "))
+
+
+@pytest.mark.parametrize("prompt", [pasted("the brief", close_id="ab12"), "note " + pasted("the brief"),
+                                    pasted("the brief") + "more", pasted("the brief")[2:]])
+def test_anything_but_the_exact_paste_wrapper_is_not_the_text_inside_it(run1, prompt):
+    core.prompt_seen(run1, {"prompt": prompt})
+    assert not core.seen(run1, __import__("hashlib").sha256(b"the brief").hexdigest())
+
+
 def test_save_json_syncs_before_it_replaces(tmp_path, monkeypatch):
     synced = []
     monkeypatch.setattr(core.os, "fsync", lambda fd: synced.append(fd))

@@ -523,10 +523,19 @@ def launch_lock(directory):
         yield
 
 
+# How Claude Code hands a long paste to UserPromptSubmit (sessions 43300d37, dae8bcbc): this exact shape only.
+PASTED = re.compile(r'\n\n<pasted_content id="([0-9a-f]+)">\n(.*)\n</pasted_content id="\1">\n', re.S)
+
+
 def prompt_seen(directory, payload):
-    """A UserPromptSubmit hook's evidence that a prompt reached Claude: its sha256, kept beside the record."""
+    """A UserPromptSubmit hook's evidence that a prompt reached Claude: its sha256, kept beside the record,
+    and for a prompt Claude wrapped as a paste, the sha256 of the text inside the wrapper as `inner`."""
     if not isinstance(payload, dict) or not isinstance(payload.get("prompt"), str):
         return
+    record = {"sha256": hashlib.sha256(payload["prompt"].encode()).hexdigest()}
+    paste = PASTED.fullmatch(payload["prompt"])
+    if paste:
+        record["inner"] = hashlib.sha256(paste.group(2).encode()).hexdigest()
     path = Path(directory) / "prompt-seen.jsonl"
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "ab+") as out:
@@ -536,8 +545,8 @@ def prompt_seen(directory, payload):
             torn = out.read(1) != b"\n"  # a crash mid-append: start a fresh line, never glue onto it
         else:
             torn = False
-        out.write(("\n" if torn else "").encode() + json.dumps({"sha256": hashlib.sha256(payload["prompt"].encode()).hexdigest(),
-                              "at": int(time.time()), "session": payload.get("session_id")}).encode() + b"\n")
+        out.write(("\n" if torn else "").encode() + json.dumps({**record, "at": int(time.time()),
+                                                                     "session": payload.get("session_id")}).encode() + b"\n")
 
 
 def seen(directory, sha):
@@ -546,7 +555,8 @@ def seen(directory, sha):
         return False
     for line in path.read_text().splitlines():
         try:
-            if json.loads(line).get("sha256") == sha:
+            record = json.loads(line)
+            if sha in (record.get("sha256"), record.get("inner")):
                 return True
         except (ValueError, AttributeError):  # a line torn by a crash, or not a record: not evidence
             continue
