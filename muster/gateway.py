@@ -6,8 +6,8 @@ card. Hermes owns the buttons, the typed-text parsing and the "expired" notice o
 only what Hermes lacks (upstream asks: jasonrr/hermes-muster#20):
 - a narrower authorization: only the notify user, in the notify chat, may answer a muster prompt (a guard in
   front of Hermes's handlers); Hermes's allowlist (who may talk to its agent) is not enough to approve;
-- the outcome on the message: it is edited to what happened (Delivered ✓, Denied ✓, Answered in the pane...),
-  so the human knows whether an answer reached the agent;
+- the outcome on the message: it is edited to what happened (Sent to Claude, Deny sent to Claude, Answered in
+  the pane...), so the human knows whether muster passed their answer on (not that Claude applied it);
 - prompts that survive a gateway restart: Hermes keeps them in memory, so each boot presents open requests again;
 - a reply routed to the message it answers: Hermes routes typed text by chat session, oldest prompt first;
 - a ForceReply after "Other": in a group with privacy mode Telegram delivers only replies to the bot;

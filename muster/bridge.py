@@ -144,7 +144,7 @@ def poll(rid, tool_input):
             return
         permission = req["kind"] == "permission"
         if req["status"] == "open" and time.monotonic() - start >= (PERMISSION_DEADLINE if permission else DEADLINE):
-            outcome = "No answer in 10 min: denied" if permission else "No answer in 24 h; answer in the pane"
+            outcome = "No answer in 10 min: deny sent to Claude" if permission else "No answer in 24 h; answer in the pane"
             req, ok = decisions.transition(rid, ("open",), "stale", outcome=outcome)
             if ok:
                 if permission:
@@ -184,16 +184,17 @@ def deliver(req, tool_input):
         log(f"request {req['id']}: answer not usable, left to the pane")
         return
     emit(chosen)
-    # Claude applies the first answer; had the pane answered first, SIGTERM would have ended the wait.
+    # Sent, not confirmed: Claude applies whichever answer comes first, and the pane may answer, or Claude exit,
+    # around this write. "Allow" is permission given, never a command that ran.
     answer = req["answer"]
     if req["kind"] == "question":
-        outcome = "Delivered ✓"
+        outcome = "Sent to Claude"
     elif answer.get("timeout"):
-        outcome = "No answer in time: denied"
+        outcome = "No answer in time: deny sent to Claude"
     elif chosen["behavior"] == "deny":
-        outcome = "Denied ✓" + (f": {answer['message']}" if answer.get("message") else "")
+        outcome = "Deny sent to Claude" + (f": {answer['message']}" if answer.get("message") else "")
     else:
-        outcome = "Allowed ✓"
+        outcome = "Allow sent to Claude"
     decisions.transition(req["id"], ("answered",), "done", outcome=outcome)
 
 
