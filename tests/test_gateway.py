@@ -249,6 +249,32 @@ def test_a_long_label_stays_whole_in_oversize_text():
     assert f"• {long}" in text and "d" * 100 not in text and len(text) <= gateway.CAP + len("❓ ")
 
 
+def test_cut_labels_that_would_look_alike_are_numbered_on_buttons_and_text():
+    east, west = "Deploy to production cluster us-east-1", "Deploy to production cluster us-west-2"
+    ask(labels=(east, west), questions=[{"text": "Where?", "header": "", "multi": False, "options": [
+        {"label": east, "description": ""}, {"label": west, "description": ""}]}])
+    run(gateway.scan())
+    (msg,) = sent()
+    first, second = (b for b, _ in msg["buttons"][:2])
+    assert first != second and first.startswith("1. ") and second.startswith("2. ")
+    assert f"• 1. {east}" in msg["text"] and f"• 2. {west}" in msg["text"]
+
+
+def test_a_blank_label_gets_a_number_not_an_empty_button():
+    ask(labels=("", "Beta"), questions=[{"text": "Which?", "header": "", "multi": False, "options": [
+        {"label": "", "description": ""}, {"label": "Beta", "description": ""}]}])
+    run(gateway.scan())
+    assert [b for b, _ in sent()[0]["buttons"][:2]] == ["1. ", "2. Beta"]
+
+
+def test_a_cut_choice_is_listed_whole_even_when_it_differs_from_its_option_label():
+    label = "y" * 30
+    ask(labels=(label, f"{label} (2)"), questions=[{"text": "Which?", "header": "", "multi": False, "options": [
+        {"label": label, "description": ""}, {"label": label, "description": ""}]}])
+    run(gateway.scan())
+    assert f"• {label} (2)" in sent()[0]["text"]
+
+
 def test_several_keep_their_numbers_on_the_buttons():
     ask(multi=True, questions=[{"text": "Which?", "header": "", "multi": True, "options": [
         {"label": "Alpha", "description": ""}, {"label": "Beta", "description": ""}]}])

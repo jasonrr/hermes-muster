@@ -292,15 +292,17 @@ def render(req, n):
     if req.get("proposal"):
         p = req["proposal"]
         tail.append(f"Proposal v{p.get('version')} {str(p.get('sha', ''))[:8]} (full text on ledger {req['ledger']})")
-    cut = {label for label, shown in zip(req["choices"][n], buttons(req, n)) if label not in shown}
+    shown = buttons(req, n)
 
     def build(described, body):
-        # The buttons carry the labels: add only what a button lacks, a description (dropped first) or a cut label.
+        # The buttons carry the labels: add only what a button lacks, a description (dropped first) or a cut label,
+        # under the button's number when it has one.
         notes = []
-        for o in q["options"]:
+        for i, (o, choice, button) in enumerate(zip(q["options"], req["choices"][n], shown)):
             said = described and o.get("description") and o["description"].strip() != o["label"].strip()
-            if said or o["label"] in cut:
-                notes.append(f"• {o['label']}: {o['description']}" if said else f"• {o['label']}")
+            if said or choice not in button:
+                name = f"{i + 1}. {choice}" if button.startswith(f"{i + 1}. ") else choice
+                notes.append(f"• {name}: {o['description']}" if said else f"• {name}")
         return "\n\n".join([*head, body, *(["\n".join(notes)] if notes else []), *tail])
 
     text = build(True, q["text"])
@@ -314,11 +316,18 @@ def render(req, n):
 
 
 def buttons(req, n):
-    """Each choice's button text: its label, numbered when several may be picked (the typed answer names the
-    numbers), cut to LABEL_MAX."""
-    multi = req["questions"][n].get("multi")
-    shown = [f"{i + 1}. {c}" if multi else c for i, c in enumerate(req["choices"][n])]
-    return [s if len(s) <= LABEL_MAX else s[:LABEL_MAX - 1] + "…" for s in shown]
+    """Each choice's button text: its label cut to LABEL_MAX, numbered when several may be picked (the typed answer
+    names the numbers) or when plain labels would leave a button blank or two alike after the cut."""
+    choices = req["choices"][n]
+
+    def fit(s):
+        # ponytail: cuts by code point, so a long emoji sequence can split; cut by grapheme if labels carry them
+        return s if len(s) <= LABEL_MAX else s[:LABEL_MAX - 1] + "…"
+
+    plain = [fit(c) for c in choices]
+    if req["questions"][n].get("multi") or len(set(plain)) < len(plain) or not all(p.strip() for p in plain):
+        return [fit(f"{i + 1}. {c}") for i, c in enumerate(choices)]
+    return plain
 
 
 async def present(req):

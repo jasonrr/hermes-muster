@@ -66,3 +66,7 @@
 ## outcome labels (issue #21, 2026-10-09)
 
 - A ✓ label written right after the PermissionRequest hook prints its answer → it confirms the stdout write, not that Claude applied it (the pane can win, or Claude can exit, at the same moment); label what muster knows ("Sent to Claude") and keep ✓ for outcomes muster verified.
+
+## labelled buttons (issue #22, 2026-10-09)
+
+- Putting option labels on buttons cut to a phone-safe width → two labels sharing a long prefix (`… us-east-1` / `… us-west-2`) or a blank label give buttons the human cannot tell apart, which Hermes's numbered buttons never did; number the buttons (and their body lines) whenever plain labels would collide or be blank.
