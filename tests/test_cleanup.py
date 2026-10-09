@@ -66,7 +66,7 @@ class World:
         self.shells = {}  # pane -> its shell's pid
         self.extra_ps = []  # more (pid, ppid, command) rows for ps
         self.dead = set()  # panes whose shell ps does not list
-        self.cards, self.keys, self.blocks, self.subscribed = {}, {}, {}, []
+        self.cards, self.keys, self.blocks, self.subscribed, self.ledgers = {}, {}, {}, [], []
         self.fail_on = set()  # argv prefix tuples that raise CommandError
         self.calls = []
         self.pane_reads = 0
@@ -215,7 +215,8 @@ def main(argv):
 def world(tmp_path, monkeypatch):
     w = World(tmp_path)
     monkeypatch.setattr(core, "run", w.run)
-    monkeypatch.setattr(core, "subscribe", w.subscribed.append)
+    monkeypatch.setattr(core, "subscribe", lambda card, ledger=None: (w.subscribed.append(card),
+                                                                      w.ledgers.append(ledger)))
     t = [BASE]
     w.t = t
     monkeypatch.setattr(cleanup, "clock", lambda: t[0])
@@ -417,7 +418,7 @@ def test_unsaved_work_is_kept_and_warns_the_human_once(world, dirty, unpushed, r
     tick(world, 5)  # minute 30
     assert removes(world) == []
     [(card, data)] = world.cards.items()
-    assert data["status"] == "blocked" and world.subscribed == [card]
+    assert data["status"] == "blocked" and world.subscribed == [card] and world.ledgers == ["t_1"]  # its run's topic
     assert reason in data["reason"] and data["reason"].endswith("\nOpen Herdr workspace wR.")
     assert "muster/15" in data["body"] and "muster/15" not in data["reason"]  # provenance stays on the card
     assert "Decision for the human" in data["body"] and world.path in data["body"]
@@ -978,3 +979,25 @@ def test_the_head_repository_compares_case_insensitively(world):
     world.pulls[0]["head"]["repo"]["full_name"] = REPO.upper()
     window(world)
     assert len(removes(world)) == 1
+
+
+# run topics (#24): a removal is the run's end, so its topic closes --------------------------------
+
+def test_removing_an_issue_worktree_closes_its_runs_topic(world):
+    from muster import conversation
+    conversation.update("t_1", state="open", thread_id="41")
+    window(world, runs=5)
+    assert conversation.load("t_1")["state"] == "open"  # quiet 25 of 30 minutes: kept, still open
+    tick(world, 5)
+    assert len(removes(world)) == 1 and conversation.load("t_1")["state"] == "closing"
+
+
+def test_removing_a_runs_worktree_closes_its_topic_and_a_dry_run_does_not(world):
+    from muster import conversation
+    as_run(world)
+    conversation.update("t_run1", state="open", thread_id="41")
+    window(world, argv=["--dry-run"])
+    assert conversation.load("t_run1")["state"] == "open"
+    window(world)
+    assert len(removes(world)) == 1 and conversation.load("t_run1")["state"] == "closing"
+
