@@ -20,6 +20,7 @@ DEFAULTS = {
     "notify_chat_id": "",  # "" → DM: TELEGRAM_HOME_CHANNEL from $HERMES_HOME/.env
     "notify_user_id": "",
     "notify_chat_type": "group",
+    "notify_topics": False,  # True → one forum topic per run in the notify_chat_id group (muster.conversation)
     "gh_config_dir": "",  # "" → your own gh login; else GH_CONFIG_DIR for gh/git in the pane, GH_TOKEN/GITHUB_TOKEN blanked
     "notes_dir": "",  # "" → data_dir()/"repos"
     "workflow_prompt_file": "",  # "" → <plugin>/prompts/workflow.md
@@ -56,6 +57,13 @@ def require():
             missing.append("project_number")
         missing += [k for k in ("project_owner", "project_status_field", "project_status_value")
                     if not isinstance(settings[k], str) or not settings[k].strip()]
+    topics = settings["notify_topics"]
+    if not isinstance(topics, bool):
+        missing.append("notify_topics")
+    elif topics:  # a topic lives in a Telegram forum group, never in the DM fallback
+        if settings["notify_platform"] != "telegram":
+            missing.append("notify_platform")
+        missing += [k for k in ("notify_chat_id", "notify_user_id") if not str(settings[k]).strip()]
     if missing:
         raise ConfigError(f"muster: set plugins.entries.muster.settings.{{{', '.join(missing)}}} in config.yaml")
     from . import claude
