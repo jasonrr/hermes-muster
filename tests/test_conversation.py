@@ -101,16 +101,17 @@ def test_finish_closes_only_an_open_topic():
     assert conversation.load("nope") is None
 
 
-def test_active_skips_closed_and_settled_fallbacks():
+def test_active_skips_deleted_and_settled_fallbacks():
     conversation.update("a", state="open", thread_id="1")
-    conversation.update("b", state="closed", thread_id="2")
+    conversation.update("b", state="deleted", thread_id="2")
+    conversation.update("h", state="closed", thread_id="4")  # its ledger may be archived later
     conversation.update("c", state="fallback", noticed=True, previous=[])
     conversation.update("d", state="fallback", noticed=False)
     conversation.update("e", state="fallback", noticed=True, previous=["3"], repaired="main")
     conversation.update("f", state="fallback", noticed=True, previous=["3"])
     (config.data_dir() / "runs" / "g").mkdir(parents=True)
     (config.data_dir() / "runs" / "g" / "conversation.json").write_text("{not json")
-    assert sorted(r["ledger"] for r in conversation.active()) == ["a", "d", "f"]
+    assert sorted(r["ledger"] for r in conversation.active()) == ["a", "d", "f", "h"]
 
 
 def test_two_runs_subscribe_their_cards_in_their_own_topics(monkeypatch):

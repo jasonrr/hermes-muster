@@ -81,3 +81,8 @@
 - A repair that writes "done" after a loop that logs and skips failed card subscriptions → the coordinator's wake stays on the dead topic with no retry; keep the unmoved cards, retry them, and mark done only when notify-list shows each one at the new destination and not the old.
 
 - Hashing the UserPromptSubmit `prompt` as delivery evidence → Claude Code hands a long paste to the hook wrapped as `\n\n<pasted_content id="…">\n…\n</pasted_content id="…">\n`, so a delivered send-back never matched and muster offered retries while Claude worked on it; record the hash of the text inside that exact wrapper too, and test with a fake that wraps as Claude does.
+
+## retired run topics (issue #28, 2026-10-10)
+
+- A topic retired only by the step that removes the worktree (cleanup's `conversation.finish`) → a ledger archived by hand, or a workspace removed by hand, left its topic `open`, and the deleted-topic probe made a new one when the human deleted it; gate every create and reopen on a fresh board read of the ledger (`archived` → delete, never recreate), and write `closed`/`deleted` only after Telegram confirms the call.
+- Treating "no such task" from `hermes kanban show` as archived → a gateway pointed at the wrong board (or HERMES_HOME) would read every run as gone and delete every topic; delete only on an explicit `archived`.

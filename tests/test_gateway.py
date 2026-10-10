@@ -1444,3 +1444,138 @@ def test_a_move_to_the_main_chat_must_read_back_there(forum, monkeypatch):
     ref = conversation.load("led1")
     assert ref["state"] == "fallback" and ref["migrating"] == ["led1"] and ref.get("repaired") is None
 
+
+
+# -- retired runs (issue #28) ---------------------------------------------------------------------
+
+def test_an_archived_run_whose_topic_was_deleted_by_hand_never_gets_a_new_one(forum):
+    thread = opened(forum, cards=["led1"])
+    forum.subs.status["led1"] = "archived"
+    forum.bot.deleted.add(int(thread))
+    tick(forum, 31, n=4)
+    ref = conversation.load("led1")
+    assert ref["state"] == "deleted" and ref["thread_id"] == thread
+    assert list(forum.bot.topics) == [int(thread)]  # no replacement was made
+    assert ("reopen", GROUP_CHAT, int(thread)) not in forum.bot.calls  # never probed once retired
+    assert conversation.active() == []
+
+
+def test_a_ledger_missing_from_the_board_deletes_nothing_and_makes_nothing(forum):
+    """Only an explicit "archived" retires a run: a gateway reading the wrong board must not delete topics."""
+    thread = opened(forum)
+    forum.subs.missing.add("led1")
+    tick(forum, 31, n=2)
+    assert conversation.load("led1")["state"] == "open" and int(thread) in forum.bot.topics
+    forum.bot.deleted.add(int(thread))
+    tick(forum, 31, n=3)
+    assert conversation.load("led1")["state"] == "creating" and list(forum.bot.topics) == [int(thread)]
+
+
+def test_an_archived_run_has_its_topic_deleted_and_its_prompts_staled(forum):
+    thread = opened(forum)
+    req = ask()
+    tick(forum, 0)
+    assert [s["thread"] for s in forum.adapter.sent] == [thread]
+    forum.subs.status["led1"] = "archived"
+    tick(forum, 31, n=2)
+    assert conversation.load("led1")["state"] == "deleted" and int(thread) not in forum.bot.topics
+    assert decisions.load(req["id"])["status"] == "stale"
+    assert decisions.load(req["id"])["outcome"] == "The run is archived"
+
+
+def test_a_stale_prompt_for_an_archived_closed_run_never_reopens_its_topic(forum):
+    thread = opened(forum)
+    conversation.finish("led1")
+    tick(forum, 0)
+    assert conversation.load("led1")["state"] == "closed"
+    forum.subs.status["led1"] = "archived"
+    req = ask()
+    tick(forum, 0, n=3)
+    assert forum.adapter.sent == [] and ("reopen", GROUP_CHAT, int(thread)) not in forum.bot.calls
+    assert decisions.load(req["id"])["status"] == "stale"
+    assert conversation.load("led1")["state"] == "deleted" and int(thread) not in forum.bot.topics
+
+
+def test_a_done_run_that_is_not_archived_still_reopens_for_a_new_prompt(forum):
+    thread = opened(forum)
+    conversation.finish("led1")
+    tick(forum, 0)
+    forum.subs.status["led1"] = "done"  # its pull request is in review: questions still page
+    ask()
+    tick(forum, 0)
+    assert conversation.load("led1")["state"] == "open" and [s["thread"] for s in forum.adapter.sent] == [thread]
+
+
+def test_a_close_that_fails_stays_closing_and_is_retried(forum, monkeypatch):
+    thread = opened(forum)
+    real = forum.bot.close_forum_topic
+    fails = [1]
+
+    async def flaky(chat, thread):
+        if fails[0]:
+            fails[0] -= 1
+            raise Exception("Timed out")
+        return await real(chat, thread)
+    monkeypatch.setattr(forum.bot, "close_forum_topic", flaky)
+    conversation.finish("led1")
+    tick(forum, 0)
+    assert conversation.load("led1")["state"] == "closing" and int(thread) not in forum.bot.closed
+    tick(forum, 3)
+    assert conversation.load("led1")["state"] == "closed" and int(thread) in forum.bot.closed
+    assert len([n for n in forum.adapter.notes if "finished" in n[1]]) == 1
+
+
+def test_a_delete_that_fails_is_retried(forum, monkeypatch):
+    thread = opened(forum)
+    real = forum.bot.delete_forum_topic
+    fails = [1]
+
+    async def flaky(chat, thread):
+        if fails[0]:
+            fails[0] -= 1
+            raise Exception("Timed out")
+        return await real(chat, thread)
+    monkeypatch.setattr(forum.bot, "delete_forum_topic", flaky)
+    forum.subs.status["led1"] = "archived"
+    tick(forum, 31)
+    assert conversation.load("led1")["state"] == "retiring" and int(thread) in forum.bot.topics
+    tick(forum, 3)
+    assert conversation.load("led1")["state"] == "deleted" and int(thread) not in forum.bot.topics
+
+
+def test_no_topic_is_made_while_the_board_cannot_be_read(forum, monkeypatch):
+    real = forum.subs.__class__.__call__
+
+    def locked(self, *argv):
+        if argv[0] == "show":
+            raise core.CommandError("hermes kanban: exit 1\ndatabase is locked")
+        return real(self, *argv)
+    monkeypatch.setattr(forum.subs.__class__, "__call__", locked)
+    requested()
+    tick(forum, 0, n=2)
+    assert not forum.bot.topics and conversation.load("led1")["state"] == "pending"
+
+
+def test_a_topic_made_for_a_run_archived_meanwhile_is_deleted_on_its_notice(forum):
+    forum.adapter.creates = ["lost"]
+    requested()
+    tick(forum, 0)
+    forum.subs.status["led1"] = "archived"
+    tick(forum, 31)
+    assert conversation.load("led1")["state"] == "deleted"
+    run(gateway.topic_created(fh.topic_notice(GROUP_CHAT, 41, "r#7 Fix it"), None))
+    assert 41 not in forum.bot.topics and conversation.load("led1")["state"] == "deleted"
+
+
+def test_an_open_runs_prompts_still_arrive_while_the_board_cannot_be_read(forum, monkeypatch):
+    thread = opened(forum)
+    real = forum.subs.__class__.__call__
+
+    def locked(self, *argv):
+        if argv[0] == "show":
+            raise core.CommandError("hermes kanban: exit 1\ndatabase is locked")
+        return real(self, *argv)
+    monkeypatch.setattr(forum.subs.__class__, "__call__", locked)
+    ask()
+    tick(forum, 0)
+    assert [s["thread"] for s in forum.adapter.sent] == [thread]
