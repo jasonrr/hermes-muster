@@ -1565,3 +1565,17 @@ def test_a_topic_made_for_a_run_archived_meanwhile_is_deleted_on_its_notice(foru
     assert conversation.load("led1")["state"] == "deleted"
     run(gateway.topic_created(fh.topic_notice(GROUP_CHAT, 41, "r#7 Fix it"), None))
     assert 41 not in forum.bot.topics and conversation.load("led1")["state"] == "deleted"
+
+
+def test_an_open_runs_prompts_still_arrive_while_the_board_cannot_be_read(forum, monkeypatch):
+    thread = opened(forum)
+    real = forum.subs.__class__.__call__
+
+    def locked(self, *argv):
+        if argv[0] == "show":
+            raise core.CommandError("hermes kanban: exit 1\ndatabase is locked")
+        return real(self, *argv)
+    monkeypatch.setattr(forum.subs.__class__, "__call__", locked)
+    ask()
+    tick(forum, 0)
+    assert [s["thread"] for s in forum.adapter.sent] == [thread]

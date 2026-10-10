@@ -685,11 +685,12 @@ async def destination(ledger):
         return True, None  # the main chat
     if state not in ("open", "closed"):
         return False, None  # being made, or being closed
-    gone = await archived(ledger)  # before the probe: it reopens a closed topic and recreates a deleted one
-    if gone is not False:
-        if gone:
-            await retire(ledger)
-        return False, None
+    if state == "closed":  # before the probe, which reopens it (an open run's recreate is gated in create)
+        gone = await archived(ledger)
+        if gone is not False:
+            if gone:
+                await retire(ledger)
+            return False, None
     if await probe(ref) == "deleted":
         return False, None
     if state == "closed":  # the run resumed: the probe reopened it
