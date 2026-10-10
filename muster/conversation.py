@@ -6,8 +6,13 @@ thread_ts later); `user_id` is the human authorized to answer. `state`:
   pending  - the launch asked for a topic; the gateway (which holds the bot) creates it
   creating - an attempt is under way, or its result was lost (muster.gateway reconciles it)
   open     - the run's messages go to thread_id
-  closing  - cleanup removed the worktree; the gateway closes the topic, keeping its history
-  closed   - closed; the gateway reopens it before presenting anything new
+  closing  - cleanup removed the worktree; the gateway closes the topic, keeping its history (retried until
+             Telegram confirms)
+  closed   - closed in Telegram; the gateway reopens it before presenting anything new
+  retiring - the ledger card reads archived on the board: the gateway stales the run's prompts and deletes
+             the topic (retried until Telegram confirms)
+  deleted  - terminal: the topic is gone and is never probed, reopened or recreated (issue #28). This file
+             stays as the run's compact record; the archived card keeps its pull request and comments
   fallback - no topic (`why`): the run stays in the main chat
 Only runs launched with `notify_topics` on have one; without it a run uses the main chat, as before.
 """
@@ -146,6 +151,7 @@ def every():
 
 
 def active():
-    """References the gateway still has work on: not closed, and not a fallback already told and settled."""
-    return [ref for ref in every() if ref.get("state") != "closed" and not (
+    """References the gateway still has work on: not deleted, and not a fallback already told and settled. A closed
+    one stays: its ledger may be archived later."""
+    return [ref for ref in every() if ref.get("state") != "deleted" and not (
         ref.get("state") == "fallback" and ref.get("noticed") and (not ref.get("previous") or ref.get("repaired")))]

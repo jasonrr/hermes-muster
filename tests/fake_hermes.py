@@ -338,6 +338,11 @@ class Bot:
         self.closed.add(message_thread_id)
         return True
 
+    async def delete_forum_topic(self, chat_id, message_thread_id):
+        self._topic("delete", chat_id, message_thread_id)
+        del self.topics[message_thread_id]
+        return True
+
 
 class InlineKeyboardButton:
     def __init__(self, text, callback_data=None):
@@ -427,6 +432,7 @@ class Subs:
         self.rows, self.calls = {}, []
         self.fail = {}  # card -> how many of its next notify-subscribe calls fail
         self.missing = set()  # cards deleted from the board
+        self.status = {}  # card -> its board status (default "ready")
 
     def __call__(self, *argv):
         self.calls.append(argv)
@@ -455,6 +461,10 @@ class Subs:
             return json.dumps(self.rows.get(card, []))
         if verb == "comment":
             return ""
+        if verb == "show":
+            if card in self.missing:
+                raise core.CommandError(f"hermes kanban: exit 1\nno such task: {card}")  # as `hermes kanban show`
+            return json.dumps({"task": {"status": self.status.get(card, "ready")}})
         raise AssertionError(argv)
 
     def deliver(self, card):
