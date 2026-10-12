@@ -187,7 +187,7 @@ def test_done_completes_with_one_readable_line_and_prints(board, monkeypatch, ca
     complete = next(c for c in board["calls"] if c[4:5] == ["complete"])
     # One line, the PR link, and no claim the work is merged or live. Issue, pane, worktree
     # stay on the card's body and its muster links comment.
-    assert complete[complete.index("--summary") + 1] == f"Ready for review: {PR} (open; not merged or deployed)"
+    assert complete[complete.index("--summary") + 1] == f"Ready for review: {PR} (open; not merged or deployed); {core.REVIEW_CUE}"
     assert "card t_abc123 -> done" in capsys.readouterr().out
 
 

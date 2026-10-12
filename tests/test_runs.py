@@ -179,7 +179,7 @@ def test_a_verified_pr_completes_the_ledger_with_run_pr_pane_links(board, run1, 
     assert board["cards"] == {CARD: "done", "t_wait1": "archived"}
     [complete] = calls(board, "complete")
     assert complete[5:7] == [CARD, "--summary"]
-    assert complete[7] == f"Ready for review: {PR['url']} (open; not merged or deployed)"
+    assert complete[7] == f"Ready for review: {PR['url']} (open; not merged or deployed); {core.REVIEW_CUE}"
     assert not (run1 / "muster-wait").exists()
 
 
@@ -909,7 +909,7 @@ def test_a_revised_pull_request_after_a_send_back_makes_a_ready_for_re_review_ca
     body = create[create.index("--body") + 1]
     assert CARD in body and PR["url"] in body and "abc" in body and "cycle 2" in body and core.PROVENANCE in body
     assert [c[5:] for c in calls(revised, "complete")] == [["t_wait1", "--summary",
-                                                           f"Revised, ready for re-review: {PR['url']} at abc"]]
+                                                           f"Revised, ready for re-review: {PR['url']} at abc; {core.REVIEW_CUE}"]]
     assert revised["mode"] == "notify+wake"
     assert revised["cards"][CARD] == "done" and calls(revised, "block") == [] and revised["comments"] == {}
     assert decisions.load(open_build)["status"] == "stale"

@@ -130,7 +130,7 @@ def complete(run, pr):
         # One line (the board keeps a completion's first summary line only), stating only what gh said.
         # Provenance stays on the card's links comment and in run.json.
         summary = (f"Merged: {pr['url']} (not checked live)" if pr["state"] == "MERGED"
-                   else f"Ready for review: {pr['url']} (open; not merged or deployed)")
+                   else f"Ready for review: {pr['url']} (open; not merged or deployed); {core.REVIEW_CUE}")
         core.kanban("complete", card, "--summary", summary)
         events.expect(card, "done", "complete")
     events.close_wait(run_dir(card), "complete")
