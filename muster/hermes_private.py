@@ -37,9 +37,9 @@ def approval_session(adapter, callback_data):
 async def send_labelled_clarify(adapter, chat_id, text, labels, clarify_id, session_key, metadata=None):
     """Hermes's clarify prompt with each option's label on its button, and no numbered legend in the text.
 
-    Hermes's `send_clarify` (plugins/platforms/telegram/adapter.py:4376) shows numbers only on its buttons and lists
+    Hermes's `send_clarify` (plugins/platforms/telegram/adapter.py:4273) shows numbers only on its buttons and lists
     the options under the text. This is a labelled copy that goes through the same send shell (`_send_prompt`,
-    adapter.py:4265) and makes the same `_clarify_state` record (adapter.py:4391). It also uses the same callback
+    adapter.py:4162) and makes the same `_clarify_state` record (adapter.py:4288). It also uses the same callback
     data (`cl:<id>:<idx>`, `cl:<id>:other`) and the same Other label. So Hermes's tap handler, its choice mapping
     (choices[idx] as registered), the expired notice and Other's text capture all apply unchanged. Wanted upstream:
     `send_clarify(..., button_labels=[...])`.
@@ -56,6 +56,6 @@ async def send_labelled_clarify(adapter, chat_id, text, labels, clarify_id, sess
         return (f"❓ {html.escape(text)}", InlineKeyboardMarkup(rows),
                 lambda msg: adapter._clarify_state.__setitem__(clarify_id, session_key))
 
-    # metadata (a run topic's thread_id) is routed exactly as send_clarify routes it (adapter.py:4394)
+    # metadata (a run topic's thread_id) is routed exactly as send_clarify routes it (adapter.py:4290)
     return await adapter._send_prompt("send_clarify", chat_id, metadata, build, parse_mode=ParseMode.HTML,
                                       thread_id=adapter._metadata_thread_id(metadata))
