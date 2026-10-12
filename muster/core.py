@@ -35,6 +35,10 @@ CREATED_BY = "muster"
 WAIT_KIND = "muster-wait"
 PIN_FILE = "muster-pin"  # the proposal an approval request carried, for the bridge (bridge.write_pin)
 LINKS_PREFIX = "muster links:"
+# Hermes wakes the coordinator with a generic "[kanban] Task ... completed" turn whose only card-specific text is
+# this summary's first line (gateway/kanban_watchers_notifier.py _fmt_completed): naming the skill there is what
+# makes the woken agent review and record a recommendation instead of answering in prose.
+REVIEW_CUE = "review it with the muster:escalation skill"
 PROVENANCE = "Made by muster (hermes muster). The card id and pane are the provenance; see the card comments."
 
 _adapter = None

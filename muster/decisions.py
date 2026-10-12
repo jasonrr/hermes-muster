@@ -186,7 +186,7 @@ def rereview(ledger, run=None):
         "--", f"{run.get('title') or run['repo'] + '/' + run['branch']}: revised, ready for re-review"))
     if card["status"] == "ready":
         core.subscribe(card["id"], ledger)
-        core.kanban("complete", card["id"], "--summary", f"Revised, ready for re-review: {pr['url']} at {head[:7]}")
+        core.kanban("complete", card["id"], "--summary", f"Revised, ready for re-review: {pr['url']} at {head[:7]}; {core.REVIEW_CUE}")
         events.expect(card["id"], "done", "rereview")
     for old in for_ledger(ledger, "build"):  # a recommendation for this head is the current one: keep it
         if old["status"] == "open" and old.get("head") != head:
