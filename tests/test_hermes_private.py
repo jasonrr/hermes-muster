@@ -5,6 +5,7 @@ If Hermes renames or reshapes one of them, these fail loudly. Skipped when no He
 
 import ast
 import inspect
+import re
 from pathlib import Path
 
 import pytest
@@ -105,4 +106,5 @@ def test_send_labelled_clarify_still_matches_hermess_send_clarify():
                   "self._send_prompt(", "parse_mode=ParseMode.HTML", "_html.escape(question)",
                   "thread_id=self._metadata_thread_id(metadata)"):
         assert shape in clarify, f"send_clarify changed ({shape}): hermes_private.send_labelled_clarify is stale"
-    assert "self._clarify_state: Dict[str, str] = {}" in source
+    # the clarify_id -> session_key dict send_labelled_clarify writes; annotation style (Dict/dict) is irrelevant
+    assert re.search(r"self\._clarify_state: [Dd]ict\[str, str\] = \{\}", source)
