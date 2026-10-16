@@ -86,3 +86,10 @@
 
 - A topic retired only by the step that removes the worktree (cleanup's `conversation.finish`) → a ledger archived by hand, or a workspace removed by hand, left its topic `open`, and the deleted-topic probe made a new one when the human deleted it; gate every create and reopen on a fresh board read of the ledger (`archived` → delete, never recreate), and write `closed`/`deleted` only after Telegram confirms the call.
 - Treating "no such task" from `hermes kanban show` as archived → a gateway pointed at the wrong board (or HERMES_HOME) would read every run as gone and delete every topic; delete only on an explicit `archived`.
+
+## duplicate error reports (issue #34, 2026-10-16)
+
+- Hermes's kanban `create --idempotency-key` returns only a non-archived card (kanban_db.py:1201) → an archived card's issue, still open and labeled, gets a fresh card on the next tick; record a resolved approval event (`held.json` closed, `launch.json` retired) and skip it in intake, so only a new label event re-authorizes.
+- A first design keyed duplicates on arrival time (60 min window) → it holds every unrelated report in the window and still cannot tell one incident from two; the human redirected to a cheap model judgment through Hermes's own `ctx.llm` + `register_auxiliary_task`, with the live run's agent making the final call.
+- Blocking a held card `--kind needs_input`, then unblocking it on release → the run's own later `needs_input` block sends the card to triage (same-kind re-block); hold with a generic block.
+- A herdr prompt to an idle agent with a muster wait card open → the prompt hook takes it as the human's answer and closes the wait; deliver only when no `muster-wait` marker and no queued event exist in that run.
