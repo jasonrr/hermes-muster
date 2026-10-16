@@ -46,6 +46,12 @@ not planned or a duplicate, with no open pull request, is retired first: a neutr
 archived ledger, after its quiet window. A quiet run whose pull requests were all closed unmerged while its issue
 stays open gets one notice asking the human to archive its ledger or keep it.
 
+A finished run whose worktree is already gone, whoever removed it (issue #33), is retired too: its ledger reads
+`done`, its topic is still open or closed, a record outside the worktree (run.json, launch.json) names the path,
+herdr no longer lists that path and it is not on disk, no pull request from its branch is open, and nothing still
+owns the run. The gateway then deletes its topic, as for any archived ledger. This includes a run cleanup just
+removed: its topic closes, then is deleted on the next pass.
+
 A coding worktree that is quiet for 30 minutes but not clean or not pushed is never removed.
 Unless a pull request from its branch is open (work under way), once per state, a card on the muster
 board, subscribed notify+wake and blocked, pings the human and wakes the agent with the workspace,
@@ -521,7 +527,7 @@ def step(target, state, dry):
             say(f"{name}: would retire ledger {ledger}: issue closed ({reason})")
             return False
         try:
-            retire(target, ledger, reason, comment)
+            retire(ledger, reason, comment)
         except core.LaunchFailure:
             say(f"{name}: kept, a launch or recover holds the run")
             return False
@@ -606,21 +612,90 @@ def ledger_lock(ledger):
     return contextlib.nullcontext()
 
 
-def retire(target, ledger, reason, comment):
-    """Record the run as retired, say so once on its ledger, archive it. Each part reads state first, so a
-    failure is finished by the next run."""
+def retire(ledger, reason, comment):
     with ledger_lock(ledger):
-        record = core.intake_dir() / ledger / "launch.json"
-        if record.is_file():
-            rec = json.loads(record.read_text())
-            if isinstance(rec.get("launch"), dict) and not rec.get("retired"):
-                rec["retired"] = {"reason": reason, "at": int(clock())}
-                core.save_json(record, rec)
-        shown = json.loads(core.kanban("show", ledger, "--json")).get("comments", [])
-        if not any((c.get("body") or "").startswith(f"retired {ledger}:") for c in shown):
-            core.kanban("comment", ledger, comment)
-        if events.status(ledger) != "archived":
-            core.kanban("archive", ledger)
+        retired(ledger, reason, comment)
+
+
+def retired(ledger, reason, comment):
+    """Record the run as retired, say so once on its ledger, archive it. Each part reads state first, so a
+    failure is finished by the next run. The caller holds the run's launch lock."""
+    record = core.intake_dir() / ledger / "launch.json"
+    if record.is_file():
+        rec = json.loads(record.read_text())
+        if isinstance(rec.get("launch"), dict) and not rec.get("retired"):
+            rec["retired"] = {"reason": reason, "at": int(clock())}
+            core.save_json(record, rec)
+    shown = json.loads(core.kanban("show", ledger, "--json")).get("comments", [])
+    if not any((c.get("body") or "").startswith(f"retired {ledger}:") for c in shown):
+        core.kanban("comment", ledger, comment)
+    if events.status(ledger) != "archived":
+        core.kanban("archive", ledger)
+
+
+def provenance(ledger):
+    """Where a run lived, from its records outside the worktree: {repo, clone, branch, worktree}, or None when
+    no record says a worktree was made (an ad-hoc run's run.json, else the intake launch record)."""
+    try:
+        rec = runs.load(ledger)
+        found = {k: rec.get(k) for k in ("repo", "clone", "branch", "worktree")}
+        made = rec.get("workspace")
+    except FileNotFoundError:
+        try:
+            rec = json.loads((core.intake_dir() / ledger / "launch.json").read_text())
+        except FileNotFoundError:
+            return None
+        launch = rec.get("launch") if isinstance(rec.get("launch"), dict) else {}
+        found = {"repo": rec.get("repo"), "clone": launch.get("clone"), "branch": launch.get("branch"),
+                 "worktree": launch.get("path")}
+        made = launch.get("workspace")
+    return found if made and all(isinstance(v, str) and v for v in found.values()) else None
+
+
+def vanished(ledger, link):
+    """NotReady unless the run is finished and nothing of it is left to clean: its ledger reads done, its worktree
+    is gone from herdr's listing and from disk (judged by path, never by a workspace id herdr may reuse), no pull
+    request from its branch is open, and nothing still owns it."""
+    if ledger_status(ledger) != "done":
+        raise NotReady(f"ledger {ledger} is not done")
+    if any(w.get("path") == link["worktree"] for w in listed(link["clone"])) or os.path.lexists(link["worktree"]):
+        raise NotReady(f"worktree {link['worktree']} still exists")
+    if any(pr.get("state") == "open" for pr in pull_requests(link["repo"], link["branch"])):
+        raise NotReady(f"a pull request from {link['branch']} is open")
+    owner_free(ledger)
+
+
+def settle(dry):
+    """Retire every finished run whose worktree is already gone, whoever removed it (issue #33): targets() finds
+    runs only through worktrees that still exist, and the gateway deletes a topic only once its ledger reads
+    archived. The check runs again under the run's launch lock, right before the retirement. True on a failure."""
+    failed = False
+    for ref in conversation.every():
+        ledger = ref["ledger"]
+        if ref.get("state") not in ("open", "closed") or ledger_status(ledger) != "done":
+            continue  # no topic left to retire, or not finished: nothing to say every five minutes
+        link = provenance(ledger)
+        if link is None:
+            say(f"{ledger}: kept, no record names its worktree")
+            continue
+        try:
+            vanished(ledger, link)
+            comment = f"retired {ledger}: worktree {link['worktree']} already gone; no open PR; branch kept"
+            if dry:
+                say(f"{ledger}: would retire ledger {ledger}: worktree {link['worktree']} already gone")
+                continue
+            with ledger_lock(ledger):
+                vanished(ledger, link)
+                retired(ledger, "worktree gone", comment)
+            say(f"{ledger}: ledger retired: worktree {link['worktree']} already gone")
+        except NotReady as why:
+            say(f"{ledger}: kept, {why}")
+        except core.LaunchFailure:
+            say(f"{ledger}: kept, a launch or recover holds the run")
+        except FAILURES as error:
+            say(f"{ledger}: kept, check failed: {error}")
+            failed = True
+    return failed
 
 
 def coding_target(name, repo, clone, path, link=None, record=None, ledger=None):
@@ -742,6 +817,7 @@ def run_once(dry):
         except FAILURES as error:
             say(f"{target['name']}: kept, {error}")
             failed = True
+    failed = settle(dry) or failed
     try:
         state_path().parent.mkdir(parents=True, exist_ok=True)
         tmp = state_path().with_suffix(".tmp")

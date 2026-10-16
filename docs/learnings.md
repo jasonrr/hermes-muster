@@ -93,3 +93,8 @@
 - A first design keyed duplicates on arrival time (60 min window) → it holds every unrelated report in the window and still cannot tell one incident from two; the human redirected to a cheap model judgment through Hermes's own `ctx.llm` + `register_auxiliary_task`, with the live run's agent making the final call.
 - Blocking a held card `--kind needs_input`, then unblocking it on release → the run's own later `needs_input` block sends the card to triage (same-kind re-block); hold with a generic block.
 - A herdr prompt to an idle agent with a muster wait card open → the prompt hook takes it as the human's answer and closes the wait; deliver only when no `muster-wait` marker and no queued event exist in that run.
+
+## finished runs with a vanished worktree (issue #33, 2026-10-16)
+
+- Cleanup found runs only through worktrees that still exist, and retired a topic only after a removal it made itself → a `done` run whose checkout vanished another way (#480) was never seen again, and the gateway's probe kept its topic open forever; reconcile from the durable records (conversation.json, launch.json, run.json) by path, not only from herdr's listing.
+- Wrapping an existing locked helper (`retire` takes `core.launch_lock`, non-blocking per open file) inside the same lock → the run refuses itself as "busy"; split the body out so one lock covers the recheck and the write.
