@@ -67,6 +67,7 @@ class State:
         self.swept = False
         self.ledgers = {}  # request id -> ledger card: whose conversation (topic) the request belongs to
         self.checked = {}  # ledger -> clock() of the last board read of its ledger card
+        self.vetted = {}  # build or feedback request id -> clock() of the last read of its pull request
         self.repairing = set()  # ledgers whose cards and prompts are moving to a new topic
 
 
@@ -358,7 +359,8 @@ async def handle(req):
     wait = S.retry.get(rid)
     if wait and time.monotonic() < wait[0]:
         return
-    if kind in ("build", "feedback"):  # a saved approval whose pull request moved on is never shown again
+    if kind in ("build", "feedback") and clock() - S.vetted.get(rid, float("-inf")) >= CHECK_EVERY:
+        S.vetted[rid] = clock()  # a saved approval whose pull request moved on is never shown again
         why = await asyncio.to_thread(decisions.obsolete, req)
         if why:
             await asyncio.to_thread(decisions.transition, rid, ("open",), "stale", outcome=f"Not shown: {why}")
@@ -997,12 +999,13 @@ async def topic_toggled(update, context):
         ledger = mine[0]["ledger"]
         if getattr(msg, "forum_topic_closed", None) is not None:
             _, ok = await asyncio.to_thread(conversation.swap, ledger, ("open", "closing"), state="closed",
-                                            closed_at=now(), closed_by="human", why="", retry_at=0, retry_delay=0)
+                                            closed_at=now(), closed_by="human", resumed=False, why="", retry_at=0,
+                                            retry_delay=0)
             if ok:
                 log(f"{ledger}: topic {thread} closed by the human; kept closed")
         else:
             _, ok = await asyncio.to_thread(conversation.swap, ledger, ("closed",), state="open", closed_at=None,
-                                            closed_by=None)
+                                            closed_by=None, resumed=True)  # kept open, even once resolved
             if ok:
                 log(f"{ledger}: topic {thread} reopened by the human; its prompts show again")
                 for req in await asyncio.to_thread(decisions.for_ledger, ledger):

@@ -1457,3 +1457,30 @@ def test_an_unresolved_runs_blocker_is_never_escalated_and_a_dry_run_warns_nobod
     world.t[0] += 86400 + 60
     assert main(["--dry-run"]) == 0
     assert overdue_cards(world) == {} and "would warn the human" in capsys.readouterr().out
+
+
+def test_an_overdue_card_for_a_merge_gate_stays_until_the_gate_clears(world):
+    resolvable(world)
+    world.pulls[0]["base"]["ref"] = "other"  # a gate, not a NotReady: "PR #16 is not merged from ... into main"
+    assert main([]) == 0
+    tick(world, 60 * 25)
+    window(world)  # the gate shows only once the quiet window has passed
+    [card] = overdue_cards(world)
+    for _ in range(4):
+        tick(world, 5)
+    assert world.cards[card]["status"] == "blocked" and list(overdue_cards(world)) == [card]
+    world.pulls[0]["base"]["ref"] = "main"
+    tick(world, 5)
+    assert world.cards[card]["status"] == "archived"
+
+
+def test_a_resolved_runs_topic_reopened_by_a_request_closes_again_but_a_human_resume_stays(world):
+    from muster import conversation
+    resolvable(world)
+    assert main([]) == 0
+    conversation.update("t_1", state="open")  # reopened for a late request, or remade
+    tick(world, 5)
+    assert topic()["state"] == "closing"
+    conversation.update("t_1", state="open", resumed=True)  # the human reopened it
+    tick(world, 5)
+    assert topic()["state"] == "open"

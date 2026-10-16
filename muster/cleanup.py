@@ -504,8 +504,9 @@ def step(target, state, dry):
     except FAILURES as error:
         say(f"{name}: kept, check failed: {error}")
         return True
-    if key in warned and (warning is None or warned[key]["sig"] != warning[1]) and not dry:
-        forget(name, key, warned)
+    held = warned.get(key, {})
+    if held and (warning[1] != held["sig"] if warning else not (gate and held.get("overdue"))) and not dry:
+        forget(name, key, warned)  # an overdue card stays while its gate still keeps the worktree
     was = old.get(key) if isinstance(old.get(key), dict) else {}
     since, last = was.get("since"), was.get("seen")
     watched = (was.get("fingerprint") == fingerprint
@@ -602,7 +603,7 @@ def overdue(target, why, warned, dry):
     except FAILURES as error:
         say(f"{name}: escalating the kept worktree failed: {error}")
         return True
-    warned[key] = {"sig": signature, "card": card}
+    warned[key] = {"sig": signature, "card": card, "overdue": True}
     say(f"{name}: kept a day after its work resolved; human warned on card {card}")
     return False
 
@@ -768,7 +769,12 @@ def resolve(dry):
     for ref in conversation.every():
         ledger = ref["ledger"]
         try:
-            if ref.get("resolved_at") or ref.get("state") not in ("open", "closing", "closed", "fallback"):
+            if ref.get("resolved_at"):
+                if ref.get("state") == "open" and not ref.get("resumed") and not dry:
+                    conversation.finish(ledger)  # reopened for a late request, or remade: closed again
+                    say(f"{ledger}: work resolved earlier; its topic closes again")
+                continue
+            if ref.get("state") not in ("open", "closing", "closed", "fallback"):
                 continue
             if ledger_status(ledger) != "done":
                 continue  # running, archived (the gateway retires it) or unknown

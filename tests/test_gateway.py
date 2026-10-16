@@ -1756,7 +1756,8 @@ def test_the_bots_own_or_another_chats_close_notice_changes_nothing(forum):
 
 
 def test_two_runs_close_and_reopen_independently(forum):
-    a, b = opened(forum, "ledA", "r#1 A"), opened(forum, "ledB", "r#2 B")
+    a = opened(forum, "ledA", "r#1 A")
+    opened(forum, "ledB", "r#2 B")
     run(gateway.topic_toggled(fh.topic_toggled(GROUP_CHAT, int(a)), None))
     conversation.finish("ledB")
     tick(forum, 0)
@@ -1777,3 +1778,27 @@ def test_a_close_that_fails_never_claims_closed_and_backs_off(forum, monkeypatch
     ref = conversation.load("led1")
     assert ref["state"] == "closing" and ref["retry_delay"] == gateway.RETRY_MAX and int(thread) not in forum.bot.closed
     assert "Timed out" in ref["why"]
+
+
+def test_a_waiting_build_request_reads_its_pull_request_at_most_every_30_s(forum, monkeypatch):
+    thread = opened(forum)
+    decisions.create("build", "led1", **{**dict(actions=["merge", "send-back", "nothing"], recommended="merge",
+                                                head="a" * 40, pr="https://github.com/o/r/pull/1", cycle=1,
+                                                choices=[["Merge", "Send back", "Do nothing"]]),
+                                         "questions": [question("Review", ("Merge", "Send back", "Do nothing"))],
+                                         "run": {"repo": "o/r", "issue": 7}})
+    reads = []
+    monkeypatch.setattr(decisions, "obsolete", lambda req: reads.append(req["id"]))
+    forum.clock[0] = time.time() + 60
+    conversation.finish("led1")
+    tick(forum, 0)
+    tick(forum, 2, n=10)
+    assert len(reads) == 1 and int(thread) in forum.bot.closed
+    tick(forum, 30)
+    assert len(reads) == 2
+
+
+def test_a_human_reopen_marks_the_run_resumed(forum):
+    thread = closed_later(forum, by="human")
+    run(gateway.topic_toggled(fh.topic_toggled(GROUP_CHAT, int(thread), closed=False), None))
+    assert conversation.load("led1")["resumed"] is True
