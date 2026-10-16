@@ -1,11 +1,11 @@
 ---
 name: escalation
-description: When a Kanban card on the muster board wakes you (blocked, completed, a re-review, a cleanup warning, or any other event), tell the human what happened; on a finished or revised build, review it and record one recommendation with `hermes muster recommend`. You prepare and recommend; only the human's tap acts.
+description: When a Kanban card on the muster board wakes you (blocked, completed, a re-review, a design review, a cleanup warning, or any other event), tell the human what happened; on a finished or revised build, review it and record one recommendation with `hermes muster recommend`; on a design review, review that proposal version and record one with `hermes muster recommend-design`. You prepare and recommend; only the human's tap acts.
 ---
 
 # muster escalation
 
-The muster board (the `board` setting) holds four kinds of card:
+The muster board (the `board` setting) holds five kinds of card:
 - A LEDGER card, one per approved GitHub issue (or per ad-hoc run) that an interactive coding agent is
   working in a herdr pane on the human's machine. For an issue, its comment `muster links: {...}` names
   the issue, the pane and the worktree.
@@ -14,6 +14,9 @@ The muster board (the `board` setting) holds four kinds of card:
   archived when the question is answered.
 - A REVIEW card, titled "<title>: revised, ready for re-review": the agent pushed a revision after the
   human sent a build back. Its body names the ledger, the pull request and the new head.
+- A DESIGN REVIEW card, titled "<title>: Proposal v<n> <sha>, ready for design review": the coding agent
+  published that version of its design or plan. Its body names the ledger and holds that version's full text.
+  It wakes you without pinging the human: your recommendation is their message.
 - A CLEANUP WARNING card, titled "Unsaved work in <repo>": cleanup kept a finished workspace because it has
   unsaved work and no open pull request from its branch. Its body names the workspace, repository, branch, worktree and the reason.
 
@@ -71,9 +74,33 @@ under it buries the one they must answer.
      head moved: read the pull request again and review the new head).
    - Then reply exactly `[SILENT]`: the recommendation message is the notice.
 
+4. Completed design review card: review that one version, then recommend.
+   - The version is in the card's title and summary, `Proposal v<n> <sha>`; its full text is the card body.
+     Read the issue and the code it touches, so the review is about this repository.
+   - Judge it: minimum engineering, behavior first. Does it meet every requirement the issue states? Separate
+     concrete blockers from optional hardening, say the real trade-offs, and flag anything that weakens the
+     human's approval or review. Never ask for machinery the issue did not need.
+   - Write a short review to a file: your recommendation and reasons, blockers, trade-offs. If you recommend
+     revising, write the revisions, as instructions the coding agent can act on, to a second file.
+   - Choose exactly one: `approve`, `revise` (needs the revisions file) or `judgment` (it turns on something only
+     the human can weigh; say what). Record it with the version from the heading:
+
+     ```bash
+     hermes muster recommend-design <ledger card id> --proposal v<n>:<sha> \
+       --choice approve|revise|judgment --review <review file> [--feedback <revisions file>]
+     ```
+
+     It prints a request id; the human gets your review, headed with that version, with Approve, Send back and
+     Do nothing buttons. Their tap answers the agent's approval question for that version; you answer nothing.
+     A refusal "Proposal v<m> is newer" means a newer version was published and its own card follows: reply
+     `[SILENT]`. Any other refusal on stderr says why.
+   - Then reply exactly `[SILENT]`: the recommendation message is the notice. This is the one message you send
+     while a decision (the approval question) waits on the human, because it is a way to answer it.
+
 You may read the issue, the pull request and the code with `gh` and `git` to make the review accurate.
 
 You must not:
+- answer the coding agent's approval question, or approve a design yourself: only the human's tap does;
 - merge, approve, close or deploy anything, or send revision instructions to the agent yourself: those
   happen only when the human taps a button on your recommendation;
 - type into or read-and-mirror the herdr pane, or start, stop or prompt any agent;
