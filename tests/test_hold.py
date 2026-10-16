@@ -420,3 +420,22 @@ def test_a_released_run_with_a_topic_pings_only_in_its_topic(fake):
     conversation.update(card, state="open", thread_id="41")  # the topic the launch asks the gateway for
     assert hold.release(card) == 0
     assert [r["thread_id"] for r in fake.subs[card]] == ["41"]
+
+
+def test_a_delivery_without_evidence_is_sent_at_most_twice(fake, monkeypatch):
+    fake.world.on_submit = None  # the prompt arrives but the hook leaves no evidence
+    tick()
+    now = [time.time()]
+    monkeypatch.setattr(hold, "clock", lambda: now[0])
+    for _ in range(5):
+        fake.idle(493)
+        tick()
+        now[0] += hold.RESEND_AFTER + 1
+    sent = [p for p in fake.prompts(fake.pane(493)) if "#494" in p]
+    assert len(sent) == 2 and sent[0] == sent[1] == held(fake, 494)["delivery"]["text"]
+
+
+def test_a_damaged_hold_record_does_not_block_another_verdict(fake):
+    delivered(fake)
+    hold.path(fake.card_of(495)).write_text("{torn")
+    assert hook(fake, 494, "same") == 0

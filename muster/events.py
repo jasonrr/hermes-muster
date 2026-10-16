@@ -418,10 +418,6 @@ def log(line):
 AGENT_RUN = ("done", "propose", "duplicate")  # run by the pane agent from its shell, never by Claude's hooks
 
 
-def event_is(args, name):
-    return getattr(args, "event", None) == name
-
-
 def duplicate(link, number, verdict):
     """`hook duplicate <n> same|different`: this run's agent evaluated a held report muster sent it (muster.hold)."""
     from . import hold  # hold imports events
@@ -442,7 +438,7 @@ def duplicate(link, number, verdict):
 
 def hook(args):
     if args.card:
-        if event_is(args, "duplicate"):
+        if args.event == "duplicate":
             print("hook duplicate: run it from the issue run's worktree, without --card", file=sys.stderr)
             return 1
         from . import runs  # lazy: runs imports events at module level

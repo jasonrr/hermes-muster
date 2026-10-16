@@ -30,6 +30,7 @@ TEXT = 8000  # chars of each issue's title and body the model reads
 REASON = 600  # chars of the model's reason kept
 REMIND_AFTER = 86400  # s a hold waits for delivery or a verdict before its one notice
 RESEND_AFTER = 600  # s before an unconfirmed delivery is tried again
+SENDS = 2  # the most a delivery is ever sent: a prompt that arrived without hook evidence is never sent a third time
 HELD = "held.json"
 FAILURES = (core.CommandError, core.LaunchError, OSError, ValueError, KeyError, TypeError, AttributeError)
 SCHEMA = {
@@ -182,9 +183,10 @@ def hold(repo, issue, card, event, auto, cand, reason):
     rec = {"card": card, "repo": repo, "issue": issue["number"], "title": issue["title"], "event": event["id"],
            "auto": auto, "created": issue.get("created_at"), "candidates": [{"card": cand["card"], "issue": cand["issue"]}],
            "reason": reason, "held_at": clock(), "steps": {"subscribed": False, "blocked": False, "noted": False},
-           "delivery": {"sha": None, "sent_at": None, "delivered": False}, "verdict": None, "reminder": None,
-           "resolution": None, "finished": False}
-    rec["delivery"]["sha"] = hashlib.sha256(wire(rec).encode()).hexdigest()
+           "delivery": {"text": None, "sha": None, "sent_at": None, "sends": 0, "delivered": False}, "verdict": None,
+           "reminder": None, "resolution": None, "finished": False}
+    text = wire(rec)  # fixed at hold time: the evidence must match what is sent, whatever changes later
+    rec["delivery"].update(text=text, sha=hashlib.sha256(text.encode()).hexdigest())
     with core.launch_lock(core.intake_dir() / card):
         save(rec)
         setup(rec)
@@ -256,16 +258,17 @@ def deliver(rec):
         return
     if clock() - rec["held_at"] >= REMIND_AFTER:
         remind(rec, f"the agent of {rec['repo']}#{cand['issue']} could not be reached for 24 h")
-    if agent.get("agent_status") not in core.READY or delivery["sent_at"] and clock() - delivery["sent_at"] < RESEND_AFTER:
+    if (agent.get("agent_status") not in core.READY or delivery["sends"] >= SENDS
+            or delivery["sent_at"] and clock() - delivery["sent_at"] < RESEND_AFTER):
         return
     git_dir = Path(core.run(["git", "-C", run["launch"]["path"], "rev-parse", "--absolute-git-dir"]).strip())
     from . import runs  # runs imports events, which imports core
     if (git_dir / core.WAIT_KIND).exists() or runs.pending(cand["card"]):
         return  # the human's answer is awaited there: our prompt would read as that answer
-    delivery["sent_at"] = clock()
-    save(rec)  # before the send: a crash after it never sends twice within RESEND_AFTER
+    delivery["sent_at"], delivery["sends"] = clock(), delivery["sends"] + 1
+    save(rec)  # before the send: a crash after it counts as a send
     try:
-        core.herdr_result("agent", "prompt", run["launch"]["pane"], wire(rec), "--wait", "--until", "working",
+        core.herdr_result("agent", "prompt", run["launch"]["pane"], delivery["text"], "--wait", "--until", "working",
                           "--until", "blocked", "--timeout", "30000")
     except core.CommandError as error:  # not proof it did not arrive: the hook's evidence decides
         core.log("hold", f"{rec['card']}: herdr prompt: {error}")
@@ -349,7 +352,10 @@ def record_verdict(link, number, verdict):
     """`hook duplicate <n> same|different` from the live run's worktree: the verdict on the hold sent to it."""
     mine = []
     for file in core.intake_dir().glob(f"*/{HELD}"):
-        rec = json.loads(file.read_text())
+        try:
+            rec = json.loads(file.read_text())
+        except (OSError, ValueError):
+            continue  # another card's damaged record is not this verdict's business
         if (rec.get("repo") == link["repo"] and rec.get("issue") == number and not rec.get("resolution")
                 and rec["candidates"][0]["card"] == link["card"]):
             mine.append(rec)

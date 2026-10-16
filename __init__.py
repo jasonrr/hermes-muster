@@ -25,7 +25,7 @@ def register(ctx):
                 hold.TASK, display_name="muster duplicate check",
                 description="Judges whether a new error issue reports the same incident as a run already under way; "
                             "a cheap model is enough")
-        except ValueError as error:  # never stop the plugin loading: the check then fails open
+        except Exception as error:  # noqa: BLE001 - never stop the plugin loading: the check then fails open
             print(f"muster: auxiliary task {hold.TASK} not registered: {error}")
     if hasattr(ctx, "register_telegram_handler"):
         ctx.register_telegram_handler(gateway.telegram_factory)
