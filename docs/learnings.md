@@ -93,3 +93,8 @@
 - A first design keyed duplicates on arrival time (60 min window) → it holds every unrelated report in the window and still cannot tell one incident from two; the human redirected to a cheap model judgment through Hermes's own `ctx.llm` + `register_auxiliary_task`, with the live run's agent making the final call.
 - Blocking a held card `--kind needs_input`, then unblocking it on release → the run's own later `needs_input` block sends the card to triage (same-kind re-block); hold with a generic block.
 - A herdr prompt to an idle agent with a muster wait card open → the prompt hook takes it as the human's answer and closes the wait; deliver only when no `muster-wait` marker and no queued event exist in that run.
+
+## design review (issue #36, 2026-10-16)
+
+- A side effect riding on an event the agent waits for (the coordinator's wake inside the `proposal` delivery) → its failure kept the version from arming, and as a queued entry it would stop the queue and switch off `reconcile`'s backstops; give it its own outbox event that `drain`, `reconcile` and cleanup's owner check step past (`runs.owned`).
+- A one-tap action whose payload another agent wrote (Send back's revisions) → the human would send words they never saw, labelled as theirs; put the payload on the message itself, capped so the cut never reaches it.
