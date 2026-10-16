@@ -415,15 +415,39 @@ def log(line):
     core.log("events", line)
 
 
+AGENT_RUN = ("done", "propose", "duplicate")  # run by the pane agent from its shell, never by Claude's hooks
+
+
+def duplicate(link, number, verdict):
+    """`hook duplicate <n> same|different`: this run's agent evaluated a held report muster sent it (muster.hold)."""
+    from . import hold  # hold imports events
+
+    if not (number or "").isdigit() or verdict not in ("same", "different") or link.get("issue") is None:
+        print("usage: hermes muster hook duplicate <issue number> same|different (from an issue run's worktree)",
+              file=sys.stderr)
+        return 2
+    try:
+        print(hold.record_verdict(link, int(number), verdict))
+        return 0
+    except (core.LaunchError, core.CommandError, OSError, ValueError, KeyError, TypeError) as caught:
+        line = f"duplicate {number} {verdict}: {' '.join(str(caught).split())}"
+        log(line)
+        print(line, file=sys.stderr)
+        return 1
+
+
 def hook(args):
     if args.card:
+        if args.event == "duplicate":
+            print("hook duplicate: run it from the issue run's worktree, without --card", file=sys.stderr)
+            return 1
         from . import runs  # lazy: runs imports events at module level
         return runs.hook(args)
     event = args.event
     if event == "stop":
         return 0  # fires at every turn end; an issue run has nothing to do with it
     payload = {}
-    if event not in ("done", "propose"):  # run by the agent from its shell: stdin is no hook payload
+    if event not in AGENT_RUN:  # run by the agent from its shell: stdin is no hook payload
         try:
             payload = json.loads(sys.stdin.read() or "{}")
         except ValueError:
@@ -440,12 +464,12 @@ def hook(args):
         # hook still must not crash the agent, and `done` still must not report false success.
         line = f"{event}: {' '.join(str(caught).split())}"
         log(line)
-        if event in ("done", "propose"):
+        if event in AGENT_RUN:
             print(line, file=sys.stderr)
             return 1
         return 0
     if found is None:
-        if event in ("done", "propose"):
+        if event in AGENT_RUN:
             cwd = payload.get("cwd") or os.getcwd()
             line = f"{event}: not inside a muster worktree (cwd {cwd})"
             log(line)
@@ -453,6 +477,8 @@ def hook(args):
             return 1
         return 0
     git_dir, link = found
+    if event == "duplicate":
+        return duplicate(link, args.url, getattr(args, "verdict", None))
     if event == "propose":
         return propose(link["card"], args.url, git_dir=str(git_dir), link=link)
     if event == "permission":  # before the gate and the outbox: it waits, and prints only a decision

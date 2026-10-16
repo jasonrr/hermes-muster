@@ -117,6 +117,24 @@ The Project move runs after each launch or recover delivers the brief, and is ne
 - Every card is subscribed `notify+wake`: the gateway pings you, then queues a Hermes agent turn. The skills `muster:escalation` and `muster:run` tell that agent to inform you and never act on the pane, the issue or the pull request.
 - If a launch failed ("The coding agent did not start", "did not become ready", "its first prompt may not have arrived", "The launch was refused"), fix the cause and run `hermes muster recover <ledger card id>`. For "may not have arrived", look at the pane first and add `--resend` only if it shows no brief. Add `--adopt` when a launch refused a branch that already has commits ahead of base, or a worktree muster did not make, and you want the agent to work on it as is (it also resumes an ad-hoc run from before launch records). An issue card from before launch records cannot be recovered: remove and re-apply the label. Never re-launch the work on a new branch.
 
+## Duplicate error reports
+
+An error tracker often files several issues for one incident within seconds (#34: three Sentry issues, three builders). Before an automatic approval (an `auto_approvers` bot) launches, muster compares it with the repository's *live runs*: issue runs whose ledger is not archived and whose agent is still in its pane. It makes one model call through Hermes (`ctx.llm`, muster's auxiliary task `muster_dedupe`), which can only name one of those runs or none. Muster picks no model. To use a cheap one, set it in `$HERMES_HOME/config.yaml`:
+
+```yaml
+auxiliary:
+  muster_dedupe:
+    model: <a cheap model your provider offers>
+```
+
+- **None, or any failure** (no model, a timeout, an unusable answer): the issue launches as before. A failure is also noted on its card ("dedupe check failed").
+- **Duplicate of a live run:** the issue's card is held: blocked ("Possible duplicate of …; not dispatched"), with no worktree and no agent. Muster hands the judgment to that run's agent in its pane, as one line plus JSON data, once its agent is idle and no question of yours is open there. It counts as delivered only when the pane's prompt hook confirms it. The agent evaluates it:
+  - **Same incident:** it comments on the report, adds `Closes #<n>` to its own pull request body, and runs `hermes muster hook duplicate <n> same`. The held card says so and stays held. When that pull request merges, GitHub closes the report and the tick archives the held card.
+  - **Different incident:** it runs `hermes muster hook duplicate <n> different`, and the next tick launches the report normally (the approval is re-checked).
+- **You decide instead:** `hermes muster recover <held card>` launches it, and closing the issue drops it. A reopened issue is not dispatched again on its old approval: only a new approving label event makes a new card.
+- **Notices:** the block pings once, and at most one more card follows: if the run's agent is gone, or nothing was delivered or answered within 24 hours.
+- Human-labelled issues are never checked: you judged each one when you labelled it.
+
 ## Decisions in the channel
 
 Herdr is optional: every routine decision can be made from Telegram. Pane ids appear on messages as provenance only.
@@ -159,6 +177,10 @@ The branch must match `feat|fix|chore|deps/<name>`. It makes a card, opens the p
 ## Cleanup
 
 `hermes muster cleanup` covers only workspaces muster has a record for: issue worktrees, ad-hoc runs, and analysis workspaces. A coding worktree is removed (never with `--force`; the branch stays) only when its pull request(s) are merged with HEAD as the head, the checkout is clean (agent scaffolding copied from the main checkout aside), everything is pushed, and every pane has been quiet for 30 minutes (agents idle or done, no job running under a shell). An analysis workspace needs only the quiet window; closing it deletes no file. Any failed check restarts the 30-minute window.
+
+A run whose work ended without a merge is removed under the same clean, pushed and quiet checks once its ledger card is archived and no pull request from its branch is open. That covers a duplicate whose pull request you closed in favour of another. Nothing may still own the run: no open decision, no undelivered hook event, no launch or recover under way. A read that fails or comes back incomplete keeps the workspace.
+
+A run whose issue was closed as not planned or a duplicate, with no open pull request, is retired first: one "retired" comment that keeps the close reason, then its ledger is archived. A quiet run whose pull requests all closed unmerged while its issue stays open gets one card, "Closed pull request in <repo>", asking you to archive its ledger or keep it.
 
 A coding worktree that is quiet but has unsaved work is never removed: unless a pull request from its branch is still open (work under way), once per state a blocked card "Unsaved work in <repo>" pings you and asks whether to push or commit, discard, or keep. `hermes muster cleanup --dry-run` reports what it would do without acting. `hermes muster open` is described under Ad-hoc runs.
 

@@ -964,6 +964,7 @@ def launch(repo, issue, card, event=None, auto=None):
             base, why = base_of(clone, configured)
             record = {"card": card, "repo": repo, "issue": number, "title": issue["title"],
                       "event": (event or {}).get("id"), "auto": auto, "bug": bool(auto) or is_bug(issue),
+                      "created": issue.get("created_at"),
                       "launch": plan(card, repo, clone, f"{config.settings['branch_prefix']}{number}", base,
                                      f"{short}#{number}", agent_name("muster", f"{short}-{number}"),
                                      config.settings["agent_model"], directory / SETTINGS_FILE, "muster", pane_env())}
@@ -1014,6 +1015,13 @@ def recover(args):
         if (config.data_dir() / "runs" / args.card / "run.json").is_file():  # an issue card may have an outbox there
             from . import runs
             return runs.recover(args.card, args.resend, args.adopt)
+        from . import hold
+        if hold.path(args.card).is_file() and not (intake_dir() / args.card / "launch.json").is_file():
+            try:
+                return hold.release(args.card)
+            except (hold.FAILURES) as error:
+                print(f"recover {args.card}: {' '.join(str(error).split())}", file=sys.stderr)
+                return 1
         return recover_card(args.card, args.resend, args.adopt)
 
 
@@ -1074,11 +1082,15 @@ def recover_card(card, resend=False, adopt=False):
 
 
 def intake(repo, dry=False):
-    """One card and one pane per newly approved open issue in one repository. True if anything failed."""
+    """One card and one pane per newly approved open issue in one repository; an automatic approval soon after
+    another is held instead (muster.hold). True if anything failed."""
+    from . import hold
+
     clone = config.repos()[repo][0]
     if not (clone / ".git").exists():
         print(f"{repo}: skipped, clone {clone} has no .git")
         return False
+    failed = hold.sweep(repo, dry)
     label = config.settings["label"]
     # REST, not `gh issue list`: that one is GraphQL, whose quota is far smaller.
     # The REST issues endpoint also returns pull requests; those carry `pull_request`.
@@ -1086,14 +1098,22 @@ def intake(repo, dry=False):
                f"repos/{repo}/issues?labels={urllib.parse.quote(label)}&state=open&per_page=100"])
     issues = [i for i in (json.loads(line) for line in out.splitlines() if line.strip())
               if "pull_request" not in i]
-    failed = False
-    for issue in sorted(issues, key=lambda item: item["number"]):
+    # Oldest first: an issue is judged against the runs launched before it.
+    for issue in sorted(issues, key=lambda item: (item.get("created_at") or "", item["number"])):
         number = issue["number"]
         try:
             event, auto = approve(repo, issue, timeline(repo, number))
             if event is None:
                 print(f"{repo}#{number} skipped: newest {label} label is not {config.settings['approver_login']}'s "
                       f"and no auto_approvers entry approves it")
+                continue
+            if hold.resolved(repo, number, event["id"]):
+                print(f"{repo}#{number} skipped: approval event {event['id']} already resolved; a new label event "
+                      f"is needed")
+                continue
+            if dry and auto and hold.live(repo):
+                print(f"{repo}#{number} would judge against "
+                      + ", ".join(f"#{c['issue']}" for c in hold.live(repo)))
                 continue
             if dry:
                 print(f"{repo}#{number} would launch{' automatically' if auto else ''}: {repo}#{number}@{event['id']} "
@@ -1104,17 +1124,35 @@ def intake(repo, dry=False):
             # The create is idempotent: an existing card comes back with its old created_at,
             # and only a card made just now gets a pane.
             # ...unless a tick was killed between that create and launch()'s first save.
+            if hold.path(task["id"]).is_file():
+                continue  # hold.sweep owns it
             if task["created_at"] < before and (task.get("status") != "ready"
                                                 or (intake_dir() / task["id"] / "launch.json").is_file()):
                 print(f"{repo}#{number} task {task['id']} ({task.get('status')}) card exists")
                 continue
+            unjudged = None
+            cands = hold.live(repo, task["id"]) if auto else []
+            if cands:
+                try:
+                    duplicate, reason = hold.judge(repo, issue, cands)
+                except hold.Unjudged as why:
+                    duplicate, unjudged = None, str(why)
+                if duplicate is not None:
+                    cand = next(c for c in cands if c["issue"] == duplicate)
+                    hold.hold(repo, issue, task["id"], event, auto, cand, reason)
+                    print(f"{repo}#{number} task {task['id']} held: possible duplicate of #{duplicate}")
+                    continue
             launched = launch(repo, issue, task["id"], event, auto)
+            if unjudged:  # launched as before; the card says why it was not judged
+                print(f"{repo}#{number}: dedupe check failed: {unjudged}")
+                with contextlib.suppress(CommandError, OSError):
+                    kanban("comment", task["id"], f"dedupe check failed: {unjudged}; launched without it")
             if launched is None:
                 failed = True
                 continue
             state, pane = launched
             print(f"{repo}#{number} task {task['id']} pane {pane} (first prompt: {state})")
-        except (CommandError, OSError, ValueError, KeyError, AttributeError, TypeError) as error:
+        except (CommandError, LaunchError, OSError, ValueError, KeyError, AttributeError, TypeError) as error:
             # One bad issue is named and the rest of the repository still runs.
             print(f"{repo}#{number}: {error}")
             failed = True

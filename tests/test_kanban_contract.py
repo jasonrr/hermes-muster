@@ -66,6 +66,17 @@ def test_a_second_same_kind_block_routes_to_triage_and_triage_is_a_dead_end(k):
     k("complete", card, "--summary", "s", ok=False)
 
 
+def test_a_held_card_blocks_without_a_kind_so_its_later_blocks_still_block(k):
+    """muster.hold: a generic block, an unblock on release, then the run's own needs_input or capability block."""
+    for later in ("needs_input", "capability"):
+        card = new(k)["id"]
+        k("block", "--", card, "Possible duplicate; not dispatched")
+        assert status(k, card) == "blocked"
+        k("unblock", card)
+        k("block", "--kind", later, card, "the run asks")
+        assert status(k, card) == "blocked"
+
+
 def test_a_reason_after_double_dash_that_looks_like_a_flag_is_kept_whole(k):
     """events.open_wait passes `--` before the card: a question may start with `--kind=`."""
     card = new(k)["id"]

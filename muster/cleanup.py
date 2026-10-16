@@ -38,6 +38,14 @@ drops the record, so the 30-minute window starts over. Before that remove, the s
 are read again, backed up under backups/cleanup with a manifest, and deleted, since git refuses to
 remove a checkout with untracked files; any change to them since the check keeps the workspace.
 
+A run whose work ended without a merge (issue #34) is removed under the same clean, pushed and quiet
+checks when its ledger card reads `archived` and no pull request from its branch is open, and nothing still owns
+the run: no open, answered or executing decision request, no undelivered outbox event, no launch or recover
+holding its lock. Any evidence that cannot be read completely keeps the worktree. A run whose issue was closed as
+not planned or a duplicate, with no open pull request, is retired first: a neutral `retired` comment and an
+archived ledger, after its quiet window. A quiet run whose pull requests were all closed unmerged while its issue
+stays open gets one notice asking the human to archive its ledger or keep it.
+
 A coding worktree that is quiet for 30 minutes but not clean or not pushed is never removed.
 Unless a pull request from its branch is open (work under way), once per state, a card on the muster
 board, subscribed notify+wake and blocked, pings the human and wakes the agent with the workspace,
@@ -45,6 +53,7 @@ branch and reason, and asks what to do. The card is archived when that state cha
 opens a new card. This job never pushes, commits, discards, deletes a branch, merges or deploys.
 """
 
+import contextlib
 import fcntl
 import hashlib
 import json
@@ -57,7 +66,7 @@ import tomllib
 from datetime import datetime
 from pathlib import Path
 
-from . import config, conversation, core, events, runs
+from . import config, conversation, core, decisions, events, runs
 
 
 def state_path():
@@ -317,10 +326,47 @@ def merged_gate(link, prs, head, now):
     return None
 
 
-def coding(link, wt, now, clone):
-    """(fingerprint, warning, gate, copies) of a quiet tracked worktree. warning is (reason, signature)
-    when work would be lost; gate says why the pull requests do not allow removal yet; copies are the
-    scaffolding files to delete before removal."""
+def pull_requests(repo, branch):
+    """Every pull request from the branch, all pages. NotReady unless the lookup is complete."""
+    out = core.run(["gh", "api", "--paginate", "--slurp",
+                    f"repos/{repo}/pulls?head={repo.split('/')[0]}:{branch}&state=all&per_page=100"])
+    try:
+        pages = json.loads(out)
+    except ValueError:
+        raise NotReady("pull request lookup incomplete: not JSON") from None
+    if not (isinstance(pages, list) and all(isinstance(page, list) for page in pages)
+            and all(isinstance(pr, dict) for page in pages for pr in page)):
+        raise NotReady("pull request lookup incomplete: not a list of pages")
+    return [pr for page in pages for pr in page]
+
+
+def ledger_status(ledger):
+    """The ledger card's board status, or None when unknown (a missing card is never `archived`)."""
+    try:
+        return events.status(ledger)
+    except FAILURES:
+        return None
+
+
+def owner_free(ledger):
+    """NotReady while anything still owns the run: an open decision request or an undelivered outbox event.
+    Unreadable evidence counts as an owner. Terminal requests are the only ones archived, so only decisions/ is read."""
+    try:
+        for path in sorted(decisions.root().glob("*.json")):
+            req = json.loads(path.read_text())
+            if req.get("ledger") == ledger and req.get("status") in decisions.OPEN:
+                raise NotReady(f"decision request {req.get('id') or path.stem} is {req.get('status')}")
+        if runs.pending(ledger):
+            raise NotReady("an outbox event is not delivered yet")
+    except (OSError, ValueError, AttributeError) as error:
+        raise NotReady(f"run ownership unknown: {error}") from None
+
+
+def coding(link, wt, now, clone, ledger=None):
+    """(fingerprint, warning, gate, copies, retire) of a quiet tracked worktree. warning is (reason, signature),
+    or (reason, signature, "stranded"), when the human must decide; gate says why the pull requests do not allow
+    removal yet; copies are the scaffolding files to delete before removal; retire is the closed issue's
+    (reason, comment) when the run should be retired first."""
     path, workspace = wt["path"], wt.get("open_workspace_id")
     if not workspace or (link["worktree"], link["workspace"], link["branch"]) != (path, workspace, wt.get("branch")):
         raise NotReady(f"record names {link['branch']} {link['worktree']} {link['workspace']}; "
@@ -328,8 +374,7 @@ def coding(link, wt, now, clone):
     repo, branch = link["repo"], link["branch"]
     head = git(path, "rev-parse", "HEAD").strip()
     status = git(path, "status", "--porcelain", "--untracked-files=all")
-    prs = json.loads(core.run(
-        ["gh", "api", f"repos/{repo}/pulls?head={repo.split('/')[0]}:{branch}&state=all&per_page=100"]))
+    prs = pull_requests(repo, branch)
     copies, rest = scaffolding(path, clone, status)
     problems = []
     if rest:
@@ -344,8 +389,41 @@ def coding(link, wt, now, clone):
     under_way = any(pr.get("state") == "open" for pr in prs)
     warning = ("; ".join(problems), digest([link, head, status])) if problems and not under_way else None
     prs_seen = [[pr["number"], pr["merged_at"], pr["head"]["sha"]] for pr in prs]
-    return (digest([link, head, status, copies, prs_seen, seen]), warning, merged_gate(link, prs, head, now),
-            copies)
+    gate, retire, standing = merged_gate(link, prs, head, now), None, None
+    if gate and ledger and not under_way:
+        standing = ledger_status(ledger)
+        if standing == "archived":
+            owner_free(ledger)
+            gate = None
+        elif standing is not None and "issue" in link:
+            retire, notice = closure(link, prs, ledger)
+            if notice and not warning:
+                warning = (notice, digest([link, "closed-unmerged", prs_seen]), "stranded")
+            if retire:
+                owner_free(ledger)
+        elif standing is None:
+            gate = f"{gate}; ledger {ledger} status unknown"
+    return (digest([link, head, status, copies, prs_seen, seen, standing]), warning, gate, copies, retire)
+
+
+def closure(link, prs, ledger):
+    """(retire, notice) for a run with no open pull request whose ledger is not archived. retire is (reason,
+    comment) when its issue was closed as not planned or a duplicate; notice when every pull request closed
+    unmerged and the issue did not close that way. Unreadable issue: neither."""
+    try:
+        issue = json.loads(core.run(["gh", "api", f"repos/{link['repo']}/issues/{link['issue']}"]))
+        state, reason = issue["state"], issue.get("state_reason")
+    except FAILURES:
+        return None, None
+    closed = [pr for pr in prs if not pr.get("merged_at")]
+    listed = ", ".join(f"#{pr['number']}" for pr in closed)
+    if state == "closed" and reason in ("not_planned", "duplicate"):
+        prs_line = f"PR {listed} closed unmerged" if closed else "no pull request"
+        return (reason, f"retired {ledger}: {link['repo']}#{link['issue']} closed ({reason}); {prs_line}; "
+                        f"no open PR; branch kept"), None
+    if prs and len(closed) == len(prs):
+        return None, f"PR {listed} closed unmerged"
+    return None, None
 
 
 def analysis(rec):
@@ -359,20 +437,29 @@ def analysis(rec):
     return digest([rec, quiet(workspace)]), None, None
 
 
-def escalate(link, reason, signature, ledger=None):
-    """Open (or find) this state's warning card, subscribed notify+wake and blocked once. Its id."""
+def escalate(link, reason, signature, ledger=None, stranded=False):
+    """Open (or find) this state's warning card, subscribed notify+wake and blocked once. Its id. `stranded`: the
+    run's pull requests all closed unmerged, so the question is whether to retire it, not what to do with work."""
     where = f"workspace {link['workspace']} | {link['repo']} {link['branch']} | worktree {link['worktree']}"
+    name = link["repo"].split("/")[-1]
+    if stranded:
+        body = (f"Cleanup notice. {where}\n{reason}.\nDecision for the human: archive ledger {ledger} to retire "
+                f"this workspace (cleanup then removes it; the branch stays), or keep it.")
+        title, block = f"Closed pull request in {name}", (f"{reason}. Archive ledger {ledger} to retire this "
+                                                          f"workspace, or keep it.\nOpen Herdr workspace {link['workspace']}.")
+    else:
+        body = (f"Cleanup warning. {where}\nNot removed: {reason}.\nDecision for the human: push or commit the "
+                f"work, discard it, or keep the workspace? Cleanup waits until the checkout is clean and pushed.")
+        title, block = f"Unsaved work in {name}", (f"Cleanup kept a workspace because it has unsaved work: {reason}. "
+                                                   f"Push or commit it, discard it, or keep the workspace?\nOpen "
+                                                   f"Herdr workspace {link['workspace']}.")
     card = json.loads(core.kanban(
-        "create", "--body",
-        f"Cleanup warning. {where}\nNot removed: {reason}.\nDecision for the human: push or commit the work, "
-        f"discard it, or keep the workspace? Cleanup waits until the checkout is clean and pushed.\n{ASK_LINE}\n{core.PROVENANCE}",
+        "create", "--body", f"{body}\n{ASK_LINE}\n{core.PROVENANCE}",
         "--idempotency-key", f"muster-cleanup:{signature}", "--created-by", "muster-cleanup", "--json",
-        "--", f"Unsaved work in {link['repo'].split('/')[-1]}"))["id"]
+        "--", title))["id"]
     if events.status(card) == "ready":
         core.subscribe(card, ledger)  # in the run's topic, when it has one
-        core.kanban("block", "--kind", "needs_input", card,
-                         f"Cleanup kept a workspace because it has unsaved work: {reason}. Push or commit it, "
-                         f"discard it, or keep the workspace?\nOpen Herdr workspace {link['workspace']}.")
+        core.kanban("block", "--kind", "needs_input", card, block)
         events.expect(card, "blocked", "cleanup warning")
     return card
 
@@ -413,25 +500,53 @@ def step(target, state, dry):
         say(f"{name}: kept, quiet {int(now - since) // 60} of {IDLE // 60} min")
         return False
     if warning:
-        reason, signature = warning
+        reason, signature, *kind = warning
         if warned.get(key, {}).get("sig") == signature:
             return False  # the human already has this exact state
         if dry:
             say(f"{name}: would warn the human: {reason}")
             return False
         try:
-            card = escalate(target["link"], reason, signature, ledger_of(target))
+            card = escalate(target["link"], reason, signature, ledger_of(target), stranded=bool(kind))
         except FAILURES as error:
             say(f"{name}: kept, {reason}; warning failed: {error}")
             return True
         warned[key] = {"sig": signature, "card": card}
         say(f"{name}: kept, {reason}; human warned on card {card}")
         return False
+    ledger = ledger_of(target)
+    if target.get("retire"):
+        reason, comment = target["retire"][0]
+        if dry:
+            say(f"{name}: would retire ledger {ledger}: issue closed ({reason})")
+            return False
+        try:
+            retire(target, ledger, reason, comment)
+        except core.LaunchFailure:
+            say(f"{name}: kept, a launch or recover holds the run")
+            return False
+        except FAILURES as error:
+            say(f"{name}: retiring ledger {ledger} failed: {error}")
+            return True
+        say(f"{name}: ledger {ledger} retired: issue closed ({reason}); removal waits for a quiet window")
+        return False
     if gate:
         say(f"{name}: kept, {gate}")
         return False
-    # Read everything again, right before removing: any change since the check above keeps it.
-    del new[key]
+    try:
+        with ledger_lock(ledger) if ledger else contextlib.nullcontext():
+            return remove(target, fingerprint, (now, since), new, dry)
+    except core.LaunchFailure:
+        say(f"{name}: kept, a launch or recover holds the run")
+        return False
+
+
+def remove(target, fingerprint, times, new, dry):
+    """Read everything again, right before removing: any change since the check keeps the workspace. Runs under
+    the run's launch lock, so no launch or recover starts in between."""
+    name, key, check = target["name"], target["key"], target["check"]
+    now, since = times
+    held = new.pop(key)
     try:
         later = clock()
         if not now <= later <= now + MAX_GAP or check(later) != (fingerprint, None, None):
@@ -446,7 +561,7 @@ def step(target, state, dry):
     argv, what = target["remove"]()
     if dry:
         say(f"{name}: would {what}")
-        new[key] = {"fingerprint": fingerprint, "since": since, "seen": now}
+        new[key] = held
         return False
     try:
         if target.get("clear"):
@@ -472,22 +587,53 @@ def step(target, state, dry):
     return False
 
 
+def card_of(link):
+    card = link.get("card")
+    return card.get("card") if isinstance(card, dict) else None
+
+
 def ledger_of(target):
     """The run's ledger card: a run record's directory, or an issue worktree's card file (link["card"])."""
-    card = target.get("link", {}).get("card")
-    return target.get("ledger") or (card.get("card") if isinstance(card, dict) else None)
+    return target.get("ledger") or card_of(target.get("link", {}))
+
+
+def ledger_lock(ledger):
+    """The lock a launch or recover of this run holds: the ad-hoc run's directory, else the intake record's.
+    A no-op when the run has neither (nothing could be launching it)."""
+    for directory in (runs.run_dir(ledger), core.intake_dir() / ledger):
+        if directory.is_dir() and (directory != runs.run_dir(ledger) or (directory / "run.json").is_file()):
+            return core.launch_lock(directory)
+    return contextlib.nullcontext()
+
+
+def retire(target, ledger, reason, comment):
+    """Record the run as retired, say so once on its ledger, archive it. Each part reads state first, so a
+    failure is finished by the next run."""
+    with ledger_lock(ledger):
+        record = core.intake_dir() / ledger / "launch.json"
+        if record.is_file():
+            rec = json.loads(record.read_text())
+            if isinstance(rec.get("launch"), dict) and not rec.get("retired"):
+                rec["retired"] = {"reason": reason, "at": int(clock())}
+                core.save_json(record, rec)
+        shown = json.loads(core.kanban("show", ledger, "--json")).get("comments", [])
+        if not any((c.get("body") or "").startswith(f"retired {ledger}:") for c in shown):
+            core.kanban("comment", ledger, comment)
+        if events.status(ledger) != "archived":
+            core.kanban("archive", ledger)
 
 
 def coding_target(name, repo, clone, path, link=None, record=None, ledger=None):
     """A worktree whose link is known up front (run, coding) or read from its card each check (intake)."""
-    held, copies = dict(link or {}), []
+    held, copies, retire = dict(link or {}), [], []
 
     def check(now):
         wt = find(clone, path)
         if link is None:
             held.clear()
             held.update(intake_link(repo, wt))
-        fingerprint, warning, gate, copies[:] = coding(held, wt, now, clone)
+        fingerprint, warning, gate, copies[:], why = coding(held, wt, now, clone, ledger or card_of(held))
+        retire[:] = [why] if why else []
         return fingerprint, warning, gate
 
     def remove():
@@ -495,7 +641,7 @@ def coding_target(name, repo, clone, path, link=None, record=None, ledger=None):
         return (["herdr", "worktree", "remove", "--workspace", held["workspace"]],
                 f"remove worktree {path} and workspace {held['workspace']}{also}")
     return {"name": name, "key": path, "link": held, "check": check, "remove": remove, "record": record,
-            "ledger": ledger,
+            "ledger": ledger, "retire": retire,
             "clear": lambda: copies and clear(held, clone, list(copies))}
 
 
