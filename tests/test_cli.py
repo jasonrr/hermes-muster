@@ -114,6 +114,15 @@ def test_recommend_dispatches_to_decisions(monkeypatch):
     assert cli.main(args, StubCtx()) == 1
 
 
+def test_recommend_design_takes_its_choices_and_dispatches_to_decisions(monkeypatch):
+    with pytest.raises(SystemExit):
+        parse(["recommend-design", "t_1", "--proposal", "v1:abc", "--choice", "merge", "--review", "r"])
+    monkeypatch.setitem(sys.modules, "muster.decisions", types.SimpleNamespace(recommend_design=lambda args: 7))
+    args = parse(["recommend-design", "t_1", "--proposal", "v1:abc", "--choice", "revise", "--review", "r",
+                  "--feedback", "f"])
+    assert (args.proposal, args.feedback) == ("v1:abc", "f") and cli.main(args, StubCtx()) == 7
+
+
 def test_hook_duplicate_takes_only_same_or_different():
     assert parse(["hook", "duplicate", "494", "different"]).verdict == "different"
     with pytest.raises(SystemExit):

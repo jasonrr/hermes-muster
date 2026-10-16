@@ -247,7 +247,7 @@ async def scan():
     if not S.recovered:  # once per boot: what an earlier boot left half done
         S.recovered = True
         for req in reqs:
-            if req["kind"] not in ("build", "feedback"):
+            if req["kind"] not in ("build", "feedback", "design"):
                 continue
             if req["status"] == "executing" and req.get("executing_boot") != BOOT:
                 background(decisions.recover, req)
@@ -598,8 +598,8 @@ def background(fn, *args):
 
 def on_answered(req):
     """An answered request. question and permission need nothing more: the pane's hook picks the answer up.
-    build and feedback are executed here, off the loop; a request they create is presented by the next scan."""
-    if req["kind"] in ("build", "feedback"):
+    build, feedback and design are executed here, off the loop; a request they create is presented by the next scan."""
+    if req["kind"] in ("build", "feedback", "design"):
         background(decisions.execute, req["id"], BOOT)
 
 

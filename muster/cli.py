@@ -13,6 +13,7 @@ SUBCOMMANDS = {  # name → (sibling module, function); resolved relative to thi
     "cleanup": ("cleanup", "cleanup"),
     "open": ("cleanup", "open_workspace"),
     "recommend": ("decisions", "recommend"),
+    "recommend-design": ("decisions", "recommend_design"),
 }
 
 
@@ -44,6 +45,12 @@ def setup(parser):
     p.add_argument("--choice", required=True, choices=["merge", "send-back", "nothing"])
     p.add_argument("--review", required=True, help="file with the review text")
     p.add_argument("--feedback", default=None, help="file with the feedback to send the agent (needed for send-back)")
+    p = sub.add_parser("recommend-design", help="record the coordinator's review of one proposal version")
+    p.add_argument("ledger")
+    p.add_argument("--proposal", required=True, help="v<n>:<sha>, as in the design review card's heading")
+    p.add_argument("--choice", required=True, choices=["approve", "revise", "judgment"])
+    p.add_argument("--review", required=True, help="file with the review text")
+    p.add_argument("--feedback", default=None, help="file with the revisions Send back gives the agent (needed for revise)")
     p = sub.add_parser("open", help="open an analysis workspace muster owns")
     p.add_argument("--cwd", required=True)
     p.add_argument("--label", required=True)

@@ -1032,6 +1032,15 @@ def test_an_archived_run_whose_pr_closed_unmerged_is_removed_and_its_topic_finis
     assert not any("--force" in c for c in world.calls)
 
 
+def test_an_untapped_design_review_does_not_hold_an_archived_run(world):
+    closed_unmerged(world, "archived")
+    (core.config.data_dir() / "decisions").mkdir(parents=True)
+    (core.config.data_dir() / "decisions" / "r1.json").write_text(
+        json.dumps({"ledger": "t_1", "kind": "design", "status": "open"}))  # advisory: nothing waits on it
+    window(world)
+    assert removes(world) == [["herdr", "worktree", "remove", "--workspace", "wR"]]
+
+
 @pytest.mark.parametrize("case", ["done", "blocked", "missing", "open-pr", "decision", "unreadable-decision",
                                   "outbox", "pulls-error", "pulls-not-json", "pulls-flat", "ps-fails", "other-workspace"])
 def test_an_archived_run_is_kept_on_any_owner_or_unknown_evidence(world, capsys, case):
