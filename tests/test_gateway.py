@@ -859,19 +859,19 @@ def tap_request(kind, status="answered", **fields):
     return req["id"]
 
 
-def test_an_answered_build_or_feedback_request_is_executed_on_the_pool_with_this_boot(monkeypatch):
+def test_an_answered_build_feedback_or_design_request_is_executed_on_the_pool_with_this_boot(monkeypatch):
     calls = []
     monkeypatch.setattr(decisions, "execute", lambda rid, boot="": calls.append((rid, boot, threading.current_thread())))
     q = tap_request("question", "open")
-    b, f = tap_request("build"), tap_request("feedback")
+    b, f, d = tap_request("build"), tap_request("feedback"), tap_request("design")
 
     async def go():
-        for rid in (q, b, f):
+        for rid in (q, b, f, d):
             gateway.on_answered(decisions.load(rid))
-        await until(lambda: len(calls) == 2)
+        await until(lambda: len(calls) == 3)
 
     run(go())
-    assert sorted(c[0] for c in calls) == sorted([b, f]) and all(c[1] == gateway.BOOT for c in calls)
+    assert sorted(c[0] for c in calls) == sorted([b, f, d]) and all(c[1] == gateway.BOOT for c in calls)
     assert all(c[2] is not threading.main_thread() for c in calls)
 
 
@@ -943,14 +943,15 @@ def test_the_first_scan_recovers_executing_requests_of_an_older_boot_once(monkey
     mine = tap_request("feedback", "executing", executing_boot=gateway.BOOT)
     pending = tap_request("feedback", "answered")
     asked = tap_request("question", "answered")
+    design = tap_request("design", "executing", executing_boot="older")
 
     async def go():
         await gateway.scan()
         await gateway.scan()
-        await until(lambda: rec and ex)
+        await until(lambda: len(rec) == 2 and ex)
 
     run(go())
-    assert rec == [old] and ex == [pending] and mine not in rec + ex and asked not in rec + ex
+    assert sorted(rec) == sorted([old, design]) and ex == [pending] and mine not in rec + ex and asked not in rec + ex
 
 
 # -- run topics (#24) -----------------------------------------------------------------------------

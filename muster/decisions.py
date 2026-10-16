@@ -12,6 +12,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import secrets
 import sys
 import time
@@ -269,6 +270,64 @@ def recommend(args):
     return 0
 
 
+# -- recommend-design: the coordinator's review of one proposal version becomes a `design` request ----------
+
+DESIGN_LABELS = {"approve": "Approve", "send-back": "Send back", "nothing": "Do nothing"}
+DESIGN_CHOICE = {"approve": "approve", "revise": "send-back", "judgment": None}
+PIN = re.compile(r"v(\d+):([0-9a-f]{12})")
+FEEDBACK_MAX = 1500  # characters: Send back's text leads the message, so the human sees all of it before a tap
+
+
+def recommend_design(args):
+    """`hermes muster recommend-design`: print the id of the open `design` request, or the refusal on stderr and 1.
+
+    Bound to the reviewed version: refused unless it is the ledger's newest and its saved text has that hash."""
+    core.prepare_env()
+    config.require()
+    try:
+        match = PIN.fullmatch(args.proposal or "")
+        if not match:
+            raise ValueError("--proposal must be v<n>:<sha> from the card's heading")
+        if args.choice == "revise" and not args.feedback:
+            raise ValueError("--choice revise needs --feedback FILE")
+        pin = {"version": int(match[1]), "sha": match[2]}
+        saved = events.versions(args.ledger)
+        if pin["version"] not in saved:
+            raise ValueError(f"ledger {args.ledger} has no Proposal v{pin['version']}")
+        if saved[-1] != pin["version"]:
+            raise ValueError(f"Proposal v{saved[-1]} is newer: review that one")
+        text = (events.proposals(args.ledger) / f"v{pin['version']}.md").read_text()
+        if hashlib.sha256(text.encode()).hexdigest()[:12] != pin["sha"]:
+            raise ValueError(f"Proposal v{pin['version']} does not have hash {pin['sha']}")
+        review = read_text(args.review, "review")
+        feedback = read_text(args.feedback, "feedback") if args.feedback else None
+        if feedback and len(feedback) > FEEDBACK_MAX:
+            raise ValueError(f"the revisions are {len(feedback)} characters, over {FEEDBACK_MAX}: the human must "
+                             f"see all of them on the message, so shorten them")
+        for req in for_ledger(args.ledger, "design"):
+            if req["status"] == "open" and req.get("proposal") == pin:
+                print("an open design request already exists for this version; the new text was ignored",
+                      file=sys.stderr)
+                print(req["id"])
+                return 0
+        run = run_of(args.ledger)
+    except (ValueError, OSError, core.CommandError) as caught:
+        print(f"recommend-design: {caught}", file=sys.stderr)
+        return 1
+    chosen = DESIGN_CHOICE[args.choice]
+    order = [chosen] + [a for a in DESIGN_LABELS if a != chosen] if chosen else list(DESIGN_LABELS)
+    labels = [DESIGN_LABELS[a] + (" (recommended)" if a == chosen else "") for a in order]
+    sends = f"Send back sends the agent:\n{feedback}\n\n" if feedback else ""  # before the review: never cut
+    text = f"Design review of {events.heading(pin)}\n\n{sends}{review}"
+    req = create("design", args.ledger, run=run, proposal=pin, review=review, feedback=feedback, wait=None,
+                 actions=order, choices=[labels], recommended=chosen,
+                 questions=[{"text": text, "header": "Design", "multi": False,
+                             "options": [{"label": label, "description": ""} for label in labels]}])
+    stale_others(args.ledger, ("design",), req["id"], "superseded by a newer design review")
+    print(req["id"])
+    return 0
+
+
 # -- execute: the human's tap on a build or feedback request becomes an effect --------------------------
 
 READBACK_WAIT = 2  # s between the read-backs after a merge call
@@ -336,7 +395,9 @@ def _execute(rid, boot):
         return  # a second delivery of the same tap: nothing new happens
     answer = req.get("answer") or {}
     action, text = answer.get("action"), answer.get("text")
-    if req["kind"] == "build":
+    if req["kind"] == "design":
+        _design(req, boot)
+    elif req["kind"] == "build":
         if text is None and action == "nothing":
             transition(rid, ("answered",), "done", outcome="No action. PR open, not merged.")
         elif text is not None or action == "send-back":
@@ -352,6 +413,67 @@ def _execute(rid, boot):
         transition(rid, ("answered",), "done", outcome="Not sent")
     else:
         _send(req, boot)
+
+
+def _design(req, boot):
+    """The human's tap on a design review: the reply their approval question gets, or nothing."""
+    rid, head, answer = req["id"], events.heading(req["proposal"]), req.get("answer") or {}
+    if "text" not in answer and answer.get("action") == "nothing":
+        transition(rid, ("answered",), "done", outcome="No action. The approval question stays open.")
+        return
+    if "text" in answer or answer.get("action") == "send-back":
+        revisions = amend(req.get("feedback"), answer["text"]) if "text" in answer else req.get("feedback")
+        if not revisions:
+            fail(rid, "no revisions were proposed; reply to the message with yours")
+            return
+        reply = f"Revise {head} before building. Revisions from the human:\n{revisions}"
+    elif answer.get("action") == "approve":
+        reply = f"Approve: the human approved {head}."
+    else:
+        fail(rid, f"unknown action {answer.get('action')!r}")
+        return
+    req, ok = transition(rid, ("answered",), "executing", executing_boot=boot, intent={"reply": reply})
+    if ok:
+        _answer_approval(req)
+
+
+def _answer_approval(req):
+    """Answer the open approval question that carries the reviewed version, through its own open -> answered
+    move: the pane's bridge delivers it as if the human had answered the question itself. Safe to repeat."""
+    rid, pin, intent = req["id"], req["proposal"], req["intent"]
+    head, reply = events.heading(pin), intent["reply"]
+    outcome = "Approval sent to the agent" if reply.startswith("Approve") else "Revisions sent to the agent"
+    if intent.get("question"):
+        # A recovery: only the question this request chose. The human may have answered it since; never pick another.
+        try:
+            ask = load(intent["question"])
+        except (OSError, ValueError) as caught:
+            fail(rid, f"the approval question it chose is unreadable ({caught}); nothing sent")
+            return
+        if ask.get("answer") == {ask["questions"][0]["text"]: reply}:
+            transition(rid, ("executing",), "done", outcome=outcome)
+        elif ask["status"] == "open" and transition(ask["id"], ("open",), "answered",
+                                                    answer={ask["questions"][0]["text"]: reply})[1]:
+            transition(rid, ("executing",), "done", outcome=outcome)
+        else:
+            fail(rid, f"the approval question about {head} was answered or ended meanwhile; nothing sent")
+        return
+    asks = [r for r in for_ledger(req["ledger"], "question") if r.get("proposal") == pin]
+    ask = next((r for r in asks if r["status"] == "open"), None)
+    if not asks:
+        # Tapped before the agent asked: offer the same review again, so the tap is not lost.
+        create("design", req["ledger"], **{k: req.get(k) for k in (
+            "run", "proposal", "review", "feedback", "wait", "actions", "choices", "recommended", "questions")})
+        fail(rid, f"the agent has not asked for approval of {head} yet; tap again on the new message")
+    elif ask is None:
+        fail(rid, f"the approval question about {head} is no longer waiting; nothing sent")
+    elif len(ask["questions"]) != 1:
+        fail(rid, "the approval request asks more than one question; answer it on its own message")
+    elif (update(rid, intent={**intent, "question": ask["id"]})  # recorded first: a recovery acts on this one only
+          and transition(ask["id"], ("open",), "answered", answer={ask["questions"][0]["text"]: reply})[1]):
+        transition(rid, ("executing",), "done", outcome=outcome)
+    else:
+        fail(rid, f"the approval question about {head} was answered meanwhile; nothing sent")
 
 
 def _feedback_from_build(req):
@@ -473,7 +595,9 @@ def _send(req, boot):
 
 def _recover(req):
     rid, answer = req["id"], req.get("answer") or {}
-    if req["kind"] == "build" and ("text" in answer or answer.get("action") == "send-back"):
+    if req["kind"] == "design":
+        _answer_approval(req)
+    elif req["kind"] == "build" and ("text" in answer or answer.get("action") == "send-back"):
         _feedback_from_build(req)
     elif req["kind"] == "build":
         try:

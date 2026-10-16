@@ -88,6 +88,11 @@ def pending(card):
     return sorted((run_dir(card) / "outbox").glob("*.json"))
 
 
+def owned(card):
+    """Saved events that still own the run: all but a design wake, which retries on its own and holds nothing up."""
+    return [p for p in pending(card) if not p.name.endswith("-design.json")]
+
+
 def sent(card):
     """Delivered events still waiting for the gateway's ack."""
     return sorted((run_dir(card) / "sent").glob("*.json"))
@@ -155,6 +160,9 @@ def deliver(run, entry):
     if event == "proposal":
         events.post_proposal(card, entry["proposal"])
         return None  # a comment is no notifier event: nothing to ack
+    if event == "design":
+        events.review(card, entry["proposal"], run.get("title"))
+        return None  # wake only: Hermes retries the wake itself, and there is no ping to ack
     if event == "prompt":
         events.close_wait(directory, event)
         return None
@@ -271,8 +279,8 @@ def drain(card, wait=False):
                 return True
             except ERRORS as error:
                 note(card, path, entry, error)
-                if entry["event"] == "stop":
-                    continue  # it only checks for a finished PR: a later ask must not wait behind it
+                if entry["event"] in ("stop", "design"):
+                    continue  # a PR check, or the coordinator's wake: a later ask must not wait behind it
                 return True
             log(f"{card} {entry['event']}: delivered, ack {ack}")
         for path in sent(card):
@@ -299,7 +307,7 @@ def reconcile(run):
     if its pull request is finished, else silent); idle and unchanged for IDLE_AFTER -> idle (pages).
     """
     card, directory = run["card"], run_dir(run["card"])
-    if not run.get("launched") or pending(card) or (directory / core.WAIT_KIND).exists():
+    if not run.get("launched") or owned(card) or (directory / core.WAIT_KIND).exists():
         return
     if events.status(card) != "ready":
         return

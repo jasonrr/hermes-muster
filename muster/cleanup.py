@@ -360,9 +360,11 @@ def owner_free(ledger):
     try:
         for path in sorted(decisions.root().glob("*.json")):
             req = json.loads(path.read_text())
+            if req.get("kind") == "design" and req.get("status") == "open":
+                continue  # advisory: nothing waits on an untapped design review (stale_requests ends it)
             if req.get("ledger") == ledger and req.get("status") in decisions.OPEN:
                 raise NotReady(f"decision request {req.get('id') or path.stem} is {req.get('status')}")
-        if runs.pending(ledger):
+        if runs.owned(ledger):
             raise NotReady("an outbox event is not delivered yet")
     except (OSError, ValueError, AttributeError) as error:
         raise NotReady(f"run ownership unknown: {error}") from None

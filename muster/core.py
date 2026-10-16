@@ -316,8 +316,9 @@ def notify_target():
     return {"chat_id": chat, "user_id": chat, "chat_type": "dm"}
 
 
-def subscribe(card, ledger=None):
-    """notify+wake: the gateway pings the human, then queues a fresh agent turn, for every card event. With the
+def subscribe(card, ledger=None, mode="notify+wake"):
+    """notify+wake: the gateway pings the human, then queues a fresh agent turn, for every card event (`wake`: the
+    turn only, no ping). With the
     run's ledger, in the run's topic when it has one: Hermes's notifier sends the ping and runs the wake in the
     subscription's thread, so the coordinator's commentary lands there too."""
     from . import conversation  # conversation imports core
@@ -326,12 +327,12 @@ def subscribe(card, ledger=None):
     thread = target.pop("thread_id")
     kanban("notify-subscribe", card, "--platform", config.settings["notify_platform"], "--chat-id", target["chat_id"],
            *(["--thread-id", thread] if thread else []), "--user-id", target["user_id"], "--chat-type",
-           target["chat_type"], "--notifier-profile", "default", "--delivery-mode", "notify+wake")
+           target["chat_type"], "--notifier-profile", "default", "--delivery-mode", mode)
     subs = json.loads(kanban("notify-list", card, "--json"))
     want = {**target, **({"thread_id": thread} if thread else {}), "notifier_profile": "default",
-            "delivery_mode": "notify+wake"}
+            "delivery_mode": mode}
     if not any(all(str(s.get(k)) == str(v) for k, v in want.items()) for s in subs):
-        raise LaunchError("the notify+wake subscription did not read back")
+        raise LaunchError(f"the {mode} subscription did not read back")
     if ledger:
         conversation.add_card(ledger, card)
 

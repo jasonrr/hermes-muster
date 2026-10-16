@@ -98,3 +98,8 @@
 
 - Cleanup found runs only through worktrees that still exist, and retired a topic only after a removal it made itself → a `done` run whose checkout vanished another way (#480) was never seen again, and the gateway's probe kept its topic open forever; reconcile from the durable records (conversation.json, launch.json, run.json) by path, not only from herdr's listing.
 - Wrapping an existing locked helper (`retire` takes `core.launch_lock`, non-blocking per open file) inside the same lock → the run refuses itself as "busy"; split the body out so one lock covers the recheck and the write.
+
+## design review (issue #36, 2026-10-16)
+
+- A side effect riding on an event the agent waits for (the coordinator's wake inside the `proposal` delivery) → its failure kept the version from arming, and as a queued entry it would stop the queue and switch off `reconcile`'s backstops; give it its own outbox event that `drain`, `reconcile` and cleanup's owner check step past (`runs.owned`).
+- A one-tap action whose payload another agent wrote (Send back's revisions) → the human would send words they never saw, labelled as theirs; put the payload on the message itself, capped so the cut never reaches it.

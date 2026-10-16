@@ -1,5 +1,6 @@
 """decisions: a persisted request store; transition is the one guard against double clicks and replays."""
 
+import hashlib
 import json
 import threading
 
@@ -776,3 +777,174 @@ def test_gateway_up_reads_hermess_runtime_status(monkeypatch):
     rec["platforms"]["telegram"]["state"] = "connected"
     status.runtime_status_is_stale = lambda r: True
     assert decisions.gateway_up() is False
+
+
+# -- design reviews (#36) -----------------------------------------------------------------------------
+
+def save_versions(*texts, ledger="t_1"):
+    directory = events.proposals(ledger)
+    directory.mkdir(parents=True, exist_ok=True)
+    for n, text in enumerate(texts, 1):
+        (directory / f"v{n}.md").write_text(text)
+    return [hashlib.sha256(t.encode()).hexdigest()[:12] for t in texts]
+
+
+def design_args(tmp_path, proposal, choice="approve", feedback=None):
+    r, f = files(tmp_path, "Small and right.", feedback)
+    return argparse.Namespace(ledger="t_1", proposal=proposal, choice=choice, review=r, feedback=f)
+
+
+@pytest.mark.parametrize("proposal, choice, feedback, why", [
+    ("v1:{s1}", "approve", None, "Proposal v2 is newer"),
+    ("v2:000000000000", "approve", None, "does not have hash"),
+    ("v3:{s2}", "approve", None, "has no Proposal v3"),
+    ("2:{s2}", "approve", None, "must be v<n>:<sha>"),
+    ("v2:{s2}", "revise", None, "needs --feedback"),
+    ("v2:{s2}", "revise", "x" * (decisions.FEEDBACK_MAX + 1), "shorten them"),
+])
+def test_recommend_design_refuses_anything_but_the_newest_version_as_saved(world, tmp_path, capsys, proposal, choice,
+                                                                           feedback, why):
+    s1, s2 = save_versions("plan one", "plan two")
+    assert decisions.recommend_design(design_args(tmp_path, proposal.format(s1=s1, s2=s2), choice, feedback)) == 1
+    assert why in capsys.readouterr().err and decisions.for_ledger("t_1", "design") == []
+
+
+def test_recommend_design_creates_a_request_bound_to_the_version(world, tmp_path, capsys):
+    s1, s2 = save_versions("plan one", "plan two")
+    assert decisions.recommend_design(design_args(tmp_path, f"v2:{s2}", "revise", "Drop the cache.")) == 0
+    req = decisions.load(capsys.readouterr().out.strip())
+    assert req["kind"] == "design" and req["status"] == "open" and req["proposal"] == {"version": 2, "sha": s2}
+    assert req["actions"] == ["send-back", "approve", "nothing"]
+    assert req["choices"] == [["Send back (recommended)", "Approve", "Do nothing"]]
+    # what Send back sends is on the message, ahead of the review, so the human sees it before tapping
+    assert req["questions"][0]["text"] == (f"Design review of Proposal v2 {s2}\n\nSend back sends the agent:\n"
+                                           "Drop the cache.\n\nSmall and right.")
+    assert req["feedback"] == "Drop the cache." and req["run"]["repo"] == "acme/app"
+    assert decisions.recommend_design(design_args(tmp_path, f"v2:{s2}")) == 0  # the same version again
+    assert capsys.readouterr().out.strip() == req["id"] and len(decisions.for_ledger("t_1", "design")) == 1
+
+
+def test_judgment_marks_no_choice_and_a_newer_review_stales_the_older(world, tmp_path, capsys):
+    (s1,) = save_versions("plan one")
+    decisions.recommend_design(design_args(tmp_path, f"v1:{s1}"))
+    old = capsys.readouterr().out.strip()
+    s1, s2 = save_versions("plan one", "plan two")
+    decisions.recommend_design(design_args(tmp_path, f"v2:{s2}", "judgment"))
+    new = decisions.load(capsys.readouterr().out.strip())
+    assert new["actions"] == ["approve", "send-back", "nothing"] and "(recommended)" not in str(new["choices"])
+    assert decisions.load(old)["status"] == "stale"
+
+
+PIN = {"version": 2, "sha": "abcdef012345"}
+HEADING = "Proposal v2 abcdef012345"
+
+
+def approval(pin=PIN, questions=1):
+    return decisions.create("question", "t_1", proposal=pin, questions=[
+        {"text": f"Approve this design {n}?", "header": "Approval", "options": [], "multi": False}
+        for n in range(questions)])["id"]
+
+
+def design(answer, feedback="Drop the cache.", pin=PIN):
+    rid = decisions.create("design", "t_1", proposal=pin, feedback=feedback, actions=["approve", "send-back", "nothing"],
+                           choices=[["Approve", "Send back", "Do nothing"]], questions=[{"text": "review"}])["id"]
+    decisions.transition(rid, ("open",), "answered", answer=answer)
+    return rid
+
+
+@pytest.mark.parametrize("answer, reply", [
+    ({"action": "approve"}, f"Approve: the human approved {HEADING}."),
+    ({"action": "send-back"}, f"Revise {HEADING} before building. Revisions from the human:\nDrop the cache."),
+    ({"text": "also X"}, f"Revise {HEADING} before building. Revisions from the human:\nDrop the cache.\n\n"
+                         "Additional instructions from the human:\nalso X"),
+    ({"text": "replace: only Y"}, f"Revise {HEADING} before building. Revisions from the human:\nonly Y"),
+])
+def test_a_tap_answers_the_approval_question_that_carries_the_reviewed_version(world, answer, reply):
+    ask, rid = approval(), design(answer)
+    decisions.execute(rid)
+    assert decisions.load(ask)["status"] == "answered"
+    assert decisions.load(ask)["answer"] == {"Approve this design 0?": reply}  # the bridge delivers it to the pane
+    assert state(rid)[0] == "done"
+    decisions.execute(rid)  # a second delivery of the same tap
+    assert len(decisions.load(ask)["audit"]) == 2
+
+
+def test_do_nothing_leaves_the_approval_question_open(world):
+    ask, rid = approval(), design({"action": "nothing"})
+    decisions.execute(rid)
+    assert state(rid)[0] == "done" and decisions.load(ask)["status"] == "open"
+
+
+@pytest.mark.parametrize("setup, answer, why", [
+    (lambda: approval({"version": 1, "sha": "0" * 12}), {"action": "approve"}, "has not asked"),
+    (lambda: decisions.transition(approval(), ("open",), "stale"), {"action": "approve"}, "no longer waiting"),
+    (lambda: approval(questions=2), {"action": "approve"}, "more than one question"),
+])
+def test_a_tap_never_answers_another_version_or_an_ended_question(world, setup, answer, why):
+    setup()
+    rid = design(answer)
+    decisions.execute(rid)
+    status, outcome = state(rid)
+    assert status == "failed" and why in outcome
+    assert not [r for r in decisions.for_ledger("t_1", "question") if r["status"] == "answered"]
+
+
+def test_a_tap_before_the_agent_asked_offers_the_review_again(world):
+    rid = design({"action": "approve"})
+    decisions.execute(rid)
+    assert state(rid)[0] == "failed"
+    (again,) = [r for r in decisions.for_ledger("t_1", "design") if r["status"] == "open"]
+    assert again["proposal"] == PIN and again["feedback"] == "Drop the cache."
+    ask = approval()
+    decisions.transition(again["id"], ("open",), "answered", answer={"action": "approve"})
+    decisions.execute(again["id"])
+    assert decisions.load(ask)["answer"] == {"Approve this design 0?": f"Approve: the human approved {HEADING}."}
+
+
+def test_send_back_without_revisions_sends_nothing(world):
+    ask, rid = approval(), design({"action": "send-back"}, feedback=None)
+    decisions.execute(rid)
+    assert state(rid)[0] == "failed" and decisions.load(ask)["status"] == "open"
+
+
+def test_recover_a_design_tap_answers_once(world):
+    ask, rid = approval(), design({"action": "approve"})
+    reply = f"Approve: the human approved {HEADING}."
+    decisions.transition(rid, ("answered",), "executing", intent={"reply": reply})
+    decisions.recover(decisions.load(rid))
+    assert decisions.load(ask)["answer"] == {"Approve this design 0?": reply} and state(rid)[0] == "done"
+    rid2 = design({"action": "approve"})  # killed after it answered its question
+    decisions.transition(rid2, ("answered",), "executing", intent={"reply": reply, "question": ask})
+    decisions.recover(decisions.load(rid2))
+    assert state(rid2)[0] == "done" and len(decisions.load(ask)["audit"]) == 2
+
+
+def test_recovery_acts_only_on_the_question_it_chose(world):
+    q1, rid = approval(), design({"action": "approve"})
+    reply = f"Approve: the human approved {HEADING}."
+    decisions.transition(rid, ("answered",), "executing", intent={"reply": reply, "question": q1})  # then killed
+    decisions.transition(q1, ("open",), "answered", answer={"Approve this design 0?": "Revise; do not implement."})
+    q2 = approval()  # the same pin asked again
+    decisions.recover(decisions.load(rid))
+    status, outcome = state(rid)
+    assert status == "failed" and "answered or ended meanwhile" in outcome
+    assert decisions.load(q2)["status"] == "open"
+    assert decisions.load(q1)["answer"] == {"Approve this design 0?": "Revise; do not implement."}
+
+
+def test_recovery_answers_the_chosen_question_when_it_is_still_open(world):
+    q1, rid = approval(), design({"action": "approve"})
+    reply = f"Approve: the human approved {HEADING}."
+    decisions.transition(rid, ("answered",), "executing", intent={"reply": reply, "question": q1})  # killed before
+    decisions.recover(decisions.load(rid))
+    assert decisions.load(q1)["answer"] == {"Approve this design 0?": reply} and state(rid)[0] == "done"
+
+
+def test_an_earlier_question_answered_alike_does_not_count_as_this_taps_answer(world):
+    first = approval()
+    decisions.execute(design({"action": "approve"}))
+    decisions.transition(first, ("answered",), "done")
+    second = approval()  # the same version proposed again and asked again
+    rid = design({"action": "approve"})
+    decisions.execute(rid)
+    assert decisions.load(second)["status"] == "answered" and state(rid)[0] == "done"
