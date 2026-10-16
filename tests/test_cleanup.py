@@ -1170,3 +1170,109 @@ def test_a_dry_run_retires_nothing(world):
     world.issue.update(state="closed", state_reason="not_planned")
     window(world, argv=["--dry-run"])
     assert world.cards["t_1"] == {"status": "done", "comments": []} and removes(world) == []
+
+
+# vanished (#33): a done run whose worktree is already gone, removed by anyone, is retired too -------------------
+
+def vanished(world, adhoc=False, state="open"):
+    """#480's shape: ledger done, no pull request, the checkout gone from herdr and disk, its topic still open."""
+    from muster import conversation
+    ledger = "t_1"
+    if adhoc:
+        as_run(world)
+        ledger = "t_run1"
+    else:
+        core.save_json(core.intake_dir() / "t_1" / "launch.json", {
+            "card": "t_1", "repo": REPO, "issue": 15, "event": 7, "launch": {
+                "clone": str(world.clone), "branch": world.branch, "base": "main", "path": world.path,
+                "workspace": "wR", "pane": "wR:p2", "step": "done"}})
+    world.removed, world.pulls = True, []
+    world.cards[ledger] = {"status": "done", "comments": []}
+    conversation.update(ledger, state=state, chat_id="c", thread_id="624", cards=[])
+    return ledger
+
+
+@pytest.mark.parametrize("adhoc,state", [(False, "open"), (False, "closed"), (True, "open")])
+def test_a_done_run_whose_worktree_is_gone_is_retired_once(world, adhoc, state):
+    ledger = vanished(world, adhoc, state)
+    assert main([]) == 0
+    assert world.cards[ledger]["status"] == "archived" and removes(world) == []
+    [comment] = world.cards[ledger]["comments"]
+    assert comment.startswith(f"retired {ledger}:") and world.path in comment and "branch kept" in comment
+    assert tick(world, 5) == 0 and len(world.cards[ledger]["comments"]) == 1
+    if not adhoc:
+        from muster import hold
+        assert hold.resolved(REPO, 15, 7)  # a reopen with the same approval never relaunches
+
+
+def test_a_dry_run_retires_no_vanished_run(world, capsys):
+    vanished(world)
+    assert main(["--dry-run"]) == 0
+    assert world.cards["t_1"] == {"status": "done", "comments": []}
+    assert "would retire ledger t_1" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("case", ["blocked", "ready", "missing", "listed", "on-disk", "list-fails", "open-pr",
+                                  "pulls-not-json", "decision", "outbox", "locked", "no-record", "never-launched",
+                                  "fallback", "deleted"])
+def test_a_vanished_run_is_kept_on_any_owner_or_unknown_evidence(world, case):
+    from muster import conversation
+    vanished(world)
+    if case in ("blocked", "ready"):
+        world.cards["t_1"]["status"] = case
+    elif case == "missing":
+        del world.cards["t_1"]
+    elif case == "listed":  # still a checkout herdr knows, even with no open workspace
+        world.removed, world.no_workspace = False, True
+    elif case == "on-disk":
+        Path(world.path).mkdir()
+    elif case == "list-fails":
+        world.fail_on = {("herdr", "worktree", "list")}
+    elif case == "open-pr":
+        world.pulls = [dict(world._pr(), state="open", merged_at=None)]
+    elif case == "pulls-not-json":
+        world.pulls_out = "<html>rate limited</html>"
+    elif case == "decision":
+        (config.data_dir() / "decisions").mkdir(parents=True)
+        (config.data_dir() / "decisions" / "r1.json").write_text(json.dumps({"ledger": "t_1", "status": "open"}))
+    elif case == "outbox":
+        (runs.run_dir("t_1") / "outbox").mkdir(parents=True)
+        (runs.run_dir("t_1") / "outbox" / "1.json").write_text("{}")
+    elif case == "no-record":
+        (core.intake_dir() / "t_1" / "launch.json").unlink()
+    elif case == "never-launched":  # a launch that failed before it made the worktree
+        core.save_json(core.intake_dir() / "t_1" / "launch.json", {"card": "t_1", "repo": REPO, "issue": 15, "launch": {
+            "clone": str(world.clone), "branch": world.branch, "path": world.path, "workspace": None}})
+    elif case in ("fallback", "deleted"):
+        conversation.update("t_1", state=case)
+    if case == "locked":
+        with core.launch_lock(core.intake_dir() / "t_1"):
+            code = main([])
+    else:
+        code = main([])
+    assert code == (1 if case == "list-fails" else 0)  # a failed command is reported
+    assert world.cards.get("t_1", {}).get("status") != "archived" and not world.cards.get("t_1", {}).get("comments")
+    assert removes(world) == []
+
+
+@pytest.mark.parametrize("bad", ["{oops", "[]"])
+def test_an_unreadable_record_keeps_the_run_and_the_pass_goes_on(world, bad):
+    vanished(world)
+    (core.intake_dir() / "t_1" / "launch.json").write_text(bad)
+    assert main([]) == 1  # reported, and the state file still saved
+    assert world.cards["t_1"]["status"] == "done" and cleanup.state_path().is_file()
+
+
+def test_a_run_that_changes_before_the_lock_is_checked_again_under_it(world, monkeypatch):
+    import contextlib
+    vanished(world)
+    real = cleanup.ledger_lock
+
+    @contextlib.contextmanager
+    def flip(ledger):
+        world.cards[ledger]["status"] = "blocked"  # the human reopened it between the check and the lock
+        with real(ledger):
+            yield
+    monkeypatch.setattr(cleanup, "ledger_lock", flip)
+    assert main([]) == 0
+    assert world.cards["t_1"] == {"status": "blocked", "comments": []}
