@@ -672,13 +672,15 @@ def settle(dry):
     failed = False
     for ref in conversation.every():
         ledger = ref["ledger"]
-        if ref.get("state") not in ("open", "closed") or ledger_status(ledger) != "done":
-            continue  # no topic left to retire, or not finished: nothing to say every five minutes
-        link = provenance(ledger)
-        if link is None:
-            say(f"{ledger}: kept, no record names its worktree")
-            continue
         try:
+            if ref.get("state") not in ("open", "closed") or ledger_status(ledger) != "done":
+                continue  # no topic left to retire, or not finished: nothing to say every five minutes
+            link = provenance(ledger)
+            if link is None:
+                say(f"{ledger}: kept, no record names its worktree")
+                continue
+            if os.path.lexists(link["worktree"]):
+                continue  # still checked out: targets() owns it
             vanished(ledger, link)
             comment = f"retired {ledger}: worktree {link['worktree']} already gone; no open PR; branch kept"
             if dry:

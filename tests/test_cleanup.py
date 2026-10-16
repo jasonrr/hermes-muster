@@ -1242,3 +1242,26 @@ def test_a_vanished_run_is_kept_on_any_owner_or_unknown_evidence(world, case):
     assert code == (1 if case == "list-fails" else 0)  # a failed command is reported
     assert world.cards.get("t_1", {}).get("status") != "archived" and not world.cards.get("t_1", {}).get("comments")
     assert removes(world) == []
+
+
+@pytest.mark.parametrize("bad", ["{oops", "[]"])
+def test_an_unreadable_record_keeps_the_run_and_the_pass_goes_on(world, bad):
+    vanished(world)
+    (core.intake_dir() / "t_1" / "launch.json").write_text(bad)
+    assert main([]) == 1  # reported, and the state file still saved
+    assert world.cards["t_1"]["status"] == "done" and cleanup.state_path().is_file()
+
+
+def test_a_run_that_changes_before_the_lock_is_checked_again_under_it(world, monkeypatch):
+    import contextlib
+    vanished(world)
+    real = cleanup.ledger_lock
+
+    @contextlib.contextmanager
+    def flip(ledger):
+        world.cards[ledger]["status"] = "blocked"  # the human reopened it between the check and the lock
+        with real(ledger):
+            yield
+    monkeypatch.setattr(cleanup, "ledger_lock", flip)
+    assert main([]) == 0
+    assert world.cards["t_1"] == {"status": "blocked", "comments": []}
