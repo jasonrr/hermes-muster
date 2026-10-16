@@ -1802,3 +1802,40 @@ def test_a_human_reopen_marks_the_run_resumed(forum):
     thread = closed_later(forum, by="human")
     run(gateway.topic_toggled(fh.topic_toggled(GROUP_CHAT, int(thread), closed=False), None))
     assert conversation.load("led1")["resumed"] is True
+
+
+def test_a_human_reopen_while_a_close_retries_wins_and_stays_open(forum, monkeypatch):
+    from muster import cleanup
+    thread = opened(forum)
+    req = ask()
+    tick(forum, 0)
+    real = forum.bot.close_forum_topic
+
+    async def landed_then_timed_out(chat, thread):  # Telegram closed it; the reply was lost
+        await real(chat, thread)
+        raise Exception("Timed out")
+    monkeypatch.setattr(forum.bot, "close_forum_topic", landed_then_timed_out)
+    conversation.update("led1", resolved_at=1.0)
+    conversation.finish("led1")
+    tick(forum, 0)
+    ref = conversation.load("led1")
+    assert ref["state"] == "closing" and ref["retry_at"] > 0 and int(thread) in forum.bot.closed
+    forum.bot.closed.discard(int(thread))
+    run(gateway.topic_toggled(fh.topic_toggled(GROUP_CHAT, int(thread), closed=False), None))
+    ref = conversation.load("led1")
+    assert ref["state"] == "open" and ref["resumed"] is True and ref["retry_at"] == ref["retry_delay"] == 0
+    assert "boot" not in decisions.load(req["id"])["presented"]  # eligible to present again
+    tick(forum, 3600, n=3)  # past any close retry
+    monkeypatch.setattr(cleanup, "ledger_status", lambda ledger: "done")
+    assert cleanup.resolve(False) is False
+    tick(forum, 0)
+    assert conversation.load("led1")["state"] == "open" and int(thread) not in forum.bot.closed
+    assert [s["thread"] for s in forum.adapter.sent] == [thread, thread]  # shown again in the reopened topic
+
+
+@pytest.mark.parametrize("state", ["retiring", "deleted"])
+def test_a_human_reopen_never_revives_a_retired_topic(forum, state):
+    thread = opened(forum)
+    conversation.update("led1", state=state)
+    run(gateway.topic_toggled(fh.topic_toggled(GROUP_CHAT, int(thread), closed=False), None))
+    assert conversation.load("led1")["state"] == state

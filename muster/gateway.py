@@ -1004,8 +1004,10 @@ async def topic_toggled(update, context):
             if ok:
                 log(f"{ledger}: topic {thread} closed by the human; kept closed")
         else:
-            _, ok = await asyncio.to_thread(conversation.swap, ledger, ("closed",), state="open", closed_at=None,
-                                            closed_by=None, resumed=True)  # kept open, even once resolved
+            # also from closing: a close whose reply was lost may have landed; its retry must not undo this reopen
+            _, ok = await asyncio.to_thread(conversation.swap, ledger, ("closed", "closing"), state="open",
+                                            closed_at=None, closed_by=None, resumed=True, why="", retry_at=0,
+                                            retry_delay=0)  # kept open, even once resolved
             if ok:
                 log(f"{ledger}: topic {thread} reopened by the human; its prompts show again")
                 for req in await asyncio.to_thread(decisions.for_ledger, ledger):
