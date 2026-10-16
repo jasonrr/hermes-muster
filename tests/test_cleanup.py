@@ -53,6 +53,8 @@ class World:
         self.status = ""
         self.unpushed = "0"  # git rev-list --count HEAD --not --remotes
         self.pulls = [self._pr()]
+        self.pulls_out = None  # raw `gh api` output for the PR lookup instead of the slurped self.pulls
+        self.issue = {"number": 15, "state": "open", "state_reason": None}
         self.screens = {"wR:p1": "shell prompt", "wR:p2": "claude ui", "wR:p3": "reviewer ui"}
         self.agent_status = {"wR:p2": "idle"}
         self.seq = {"wR:p2": 178}
@@ -151,7 +153,10 @@ class World:
             raise AssertionError(argv)
         if argv[:2] == ["gh", "api"] and "/pulls?head=" in argv[-1]:
             assert f"repos/{REPO}/pulls?head=o:{self.branch}&state=all&per_page=100" in argv[-1]
-            return json.dumps(self.pulls)
+            assert "--paginate" in argv and "--slurp" in argv
+            return self.pulls_out if self.pulls_out is not None else json.dumps([self.pulls])
+        if argv[:2] == ["gh", "api"] and argv[-1] == f"repos/{REPO}/issues/15":
+            return json.dumps(self.issue)
         if argv[:3] == ["herdr", "pane", "list"]:
             panes = self._panes(argv[4])
             for pane in panes:  # like herdr: every pane has its shell from the start
@@ -191,7 +196,13 @@ class World:
                                              "title": argv[-1]})
                 return json.dumps({"id": card, "status": self.cards[card]["status"]})
             if verb == "show":
-                return json.dumps({"task": {"id": argv[5], "status": self.cards[argv[5]]["status"]}})
+                if argv[5] not in self.cards:
+                    raise core.CommandError(f"hermes kanban: exit 1\nno such task: {argv[5]}")
+                return json.dumps({"task": {"id": argv[5], "status": self.cards[argv[5]]["status"]},
+                                   "comments": [{"body": b} for b in self.cards[argv[5]].get("comments", [])]})
+            if verb == "comment":
+                self.cards[argv[5]].setdefault("comments", []).append(argv[6])
+                return ""
             if verb == "block":
                 card = argv[7]
                 assert self.cards[card]["status"] == "ready"
@@ -1001,3 +1012,150 @@ def test_removing_a_runs_worktree_closes_its_topic_and_a_dry_run_does_not(world)
     window(world)
     assert len(removes(world)) == 1 and conversation.load("t_run1")["state"] == "closing"
 
+
+
+# retire (#34): an archived run, or one whose issue was closed as not planned or a duplicate --------------------
+
+def closed_unmerged(world, ledger="done"):
+    """#496's shape: the run's only PR closed unmerged; its ledger card t_1 on the board."""
+    world.pulls[0].update(state="closed", merged_at=None)
+    world.cards["t_1"] = {"status": ledger, "comments": []}
+
+
+def test_an_archived_run_whose_pr_closed_unmerged_is_removed_and_its_topic_finished(world):
+    from muster import conversation
+    closed_unmerged(world, "archived")
+    conversation.update("t_1", state="open", thread_id="41")
+    window(world)
+    assert removes(world) == [["herdr", "worktree", "remove", "--workspace", "wR"]]
+    assert conversation.load("t_1")["state"] == "closing"
+    assert not any("--force" in c for c in world.calls)
+
+
+@pytest.mark.parametrize("case", ["done", "blocked", "missing", "open-pr", "decision", "unreadable-decision",
+                                  "outbox", "pulls-error", "pulls-not-json", "pulls-flat", "ps-fails", "other-workspace"])
+def test_an_archived_run_is_kept_on_any_owner_or_unknown_evidence(world, capsys, case):
+    closed_unmerged(world, "archived")
+    if case in ("done", "blocked"):
+        world.cards["t_1"]["status"] = case
+    elif case == "missing":
+        del world.cards["t_1"]
+    elif case == "open-pr":
+        world.pulls[0]["state"] = "open"
+    elif case == "decision":
+        (core.config.data_dir() / "decisions").mkdir(parents=True)
+        (core.config.data_dir() / "decisions" / "r1.json").write_text(json.dumps({"ledger": "t_1", "status": "answered"}))
+    elif case == "unreadable-decision":
+        (core.config.data_dir() / "decisions").mkdir(parents=True)
+        (core.config.data_dir() / "decisions" / "r1.json").write_text("{not json")
+    elif case == "outbox":
+        (runs.run_dir("t_1") / "outbox").mkdir(parents=True)
+        (runs.run_dir("t_1") / "outbox" / "1.json").write_text("{}")
+    elif case == "pulls-error":
+        world.fail_on = {("gh", "api")}
+    elif case == "pulls-not-json":
+        world.pulls_out = "<html>rate limited</html>"
+    elif case == "pulls-flat":
+        world.pulls_out = json.dumps(world.pulls)  # not the slurped list of pages
+    elif case == "ps-fails":
+        world.fail_on = {("ps",)}
+    elif case == "other-workspace":
+        world.card["workspace"] = "wOTHER"  # herdr handed the id to another checkout
+        world._write_card()
+    codes = {main([])} | {tick(world, 5) for _ in range(6)}
+    assert codes == ({1} if case in ("pulls-error", "ps-fails") else {0})  # a failed command is reported
+    assert removes(world) == []
+    assert world.cards.get("t_1", {}).get("status") != "archived" or case not in ("done", "blocked")
+
+
+def test_an_archived_run_held_by_a_launch_or_recover_is_kept_and_its_quiet_clock_kept(world, capsys):
+    closed_unmerged(world, "archived")
+    (core.intake_dir() / "t_1").mkdir(parents=True)
+    window(world, runs=5)
+    with core.launch_lock(core.intake_dir() / "t_1"):
+        tick(world, 5)
+    assert removes(world) == [] and "a launch or recover holds the run" in capsys.readouterr().out
+    tick(world, 5)
+    assert len(removes(world)) == 1  # the quiet window was not restarted
+
+
+def test_an_archived_run_with_unsaved_work_warns_and_is_never_removed(world):
+    closed_unmerged(world, "archived")
+    world.status = " M a.py\n"
+    window(world)
+    assert removes(world) == []
+    assert [c["title"] for k, c in world.cards.items() if k != "t_1"] == ["Unsaved work in r"]
+
+
+def test_unarchiving_the_ledger_during_the_window_keeps_the_worktree(world):
+    closed_unmerged(world, "archived")
+    window(world, runs=5)
+    world.cards["t_1"]["status"] = "done"
+    tick(world, 5)
+    assert removes(world) == []
+
+
+@pytest.mark.parametrize("reason", ["not_planned", "duplicate"])
+def test_an_issue_closed_as_not_planned_or_duplicate_retires_the_run_then_removes_it(world, reason):
+    closed_unmerged(world)
+    world.issue.update(state="closed", state_reason=reason)
+    core.save_json(core.intake_dir() / "t_1" / "launch.json", {"card": "t_1", "repo": REPO, "issue": 15, "event": 7,
+                                                               "launch": {"step": "done"}})
+    window(world)
+    assert world.cards["t_1"]["status"] == "archived" and removes(world) == []
+    [comment] = world.cards["t_1"]["comments"]
+    assert comment.startswith("retired t_1:") and f"{REPO}#15 closed ({reason})" in comment
+    assert "PR #16 closed unmerged" in comment and "branch kept" in comment
+    retired = json.loads((core.intake_dir() / "t_1" / "launch.json").read_text())["retired"]
+    assert retired["reason"] == reason
+    window(world)  # a second quiet window under the archived gate
+    assert len(removes(world)) == 1 and len(world.cards["t_1"]["comments"]) == 1
+    from muster import hold
+    assert hold.resolved(REPO, 15, 7)  # a reopen with the same approval never relaunches
+
+
+@pytest.mark.parametrize("case", ["completed", "open-pr", "open-issue"])
+def test_a_completed_closure_or_an_open_pr_retires_nothing(world, case):
+    closed_unmerged(world)
+    world.issue.update(state="closed", state_reason="not_planned")
+    if case == "completed":
+        world.issue["state_reason"] = "completed"
+    elif case == "open-pr":  # #494's shape: its issue closed, its PR #497 the canonical one
+        world.pulls[0]["state"] = "open"
+    else:
+        world.issue.update(state="open", state_reason=None)
+    window(world)
+    assert world.cards["t_1"]["status"] == "done" and world.cards["t_1"]["comments"] == []
+    assert removes(world) == []
+
+
+def test_a_failing_retire_archive_is_retried_and_comments_once(world):
+    closed_unmerged(world)
+    world.issue.update(state="closed", state_reason="not_planned")
+    world.fail_on = {("hermes", "kanban", "--board", config.settings["board"], "archive")}
+    window(world)
+    assert world.cards["t_1"]["status"] == "done"
+    world.fail_on = set()
+    tick(world, 5)
+    assert world.cards["t_1"]["status"] == "archived" and len(world.cards["t_1"]["comments"]) == 1
+
+
+def test_a_stranded_run_gets_one_notice_to_archive_its_ledger(world):
+    """#493's shape: its PR #496 closed unmerged, its issue still open (closed later by another branch's PR)."""
+    closed_unmerged(world)
+    window(world)
+    window(world)
+    notices = [c for k, c in world.cards.items() if k != "t_1"]
+    assert len(notices) == 1 and notices[0]["title"] == "Closed pull request in r"
+    assert "PR #16 closed unmerged" in notices[0]["body"] and "archive ledger t_1" in notices[0]["body"]
+    assert removes(world) == [] and world.cards["t_1"]["status"] == "done"
+    world.cards["t_1"]["status"] = "archived"  # the human retires it
+    window(world)
+    assert len(removes(world)) == 1 and notices[0]["status"] == "archived"
+
+
+def test_a_dry_run_retires_nothing(world):
+    closed_unmerged(world)
+    world.issue.update(state="closed", state_reason="not_planned")
+    window(world, argv=["--dry-run"])
+    assert world.cards["t_1"] == {"status": "done", "comments": []} and removes(world) == []
