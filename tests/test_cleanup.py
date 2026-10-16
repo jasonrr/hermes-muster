@@ -1032,11 +1032,13 @@ def test_an_archived_run_whose_pr_closed_unmerged_is_removed_and_its_topic_finis
     assert not any("--force" in c for c in world.calls)
 
 
-def test_an_untapped_design_review_does_not_hold_an_archived_run(world):
+def test_an_untapped_design_review_or_a_retrying_wake_does_not_hold_an_archived_run(world):
     closed_unmerged(world, "archived")
     (core.config.data_dir() / "decisions").mkdir(parents=True)
     (core.config.data_dir() / "decisions" / "r1.json").write_text(
         json.dumps({"ledger": "t_1", "kind": "design", "status": "open"}))  # advisory: nothing waits on it
+    (runs.run_dir("t_1") / "outbox").mkdir(parents=True)  # nor a design wake still retrying
+    (runs.run_dir("t_1") / "outbox" / "1-design.json").write_text("{}")
     window(world)
     assert removes(world) == [["herdr", "worktree", "remove", "--workspace", "wR"]]
 

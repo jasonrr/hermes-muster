@@ -800,6 +800,7 @@ def design_args(tmp_path, proposal, choice="approve", feedback=None):
     ("v3:{s2}", "approve", None, "has no Proposal v3"),
     ("2:{s2}", "approve", None, "must be v<n>:<sha>"),
     ("v2:{s2}", "revise", None, "needs --feedback"),
+    ("v2:{s2}", "revise", "x" * (decisions.FEEDBACK_MAX + 1), "shorten them"),
 ])
 def test_recommend_design_refuses_anything_but_the_newest_version_as_saved(world, tmp_path, capsys, proposal, choice,
                                                                            feedback, why):
@@ -815,7 +816,9 @@ def test_recommend_design_creates_a_request_bound_to_the_version(world, tmp_path
     assert req["kind"] == "design" and req["status"] == "open" and req["proposal"] == {"version": 2, "sha": s2}
     assert req["actions"] == ["send-back", "approve", "nothing"]
     assert req["choices"] == [["Send back (recommended)", "Approve", "Do nothing"]]
-    assert req["questions"][0]["text"] == f"Design review of Proposal v2 {s2}\n\nSmall and right."
+    # what Send back sends is on the message, ahead of the review, so the human sees it before tapping
+    assert req["questions"][0]["text"] == (f"Design review of Proposal v2 {s2}\n\nSend back sends the agent:\n"
+                                           "Drop the cache.\n\nSmall and right.")
     assert req["feedback"] == "Drop the cache." and req["run"]["repo"] == "acme/app"
     assert decisions.recommend_design(design_args(tmp_path, f"v2:{s2}")) == 0  # the same version again
     assert capsys.readouterr().out.strip() == req["id"] and len(decisions.for_ledger("t_1", "design")) == 1
@@ -910,7 +913,17 @@ def test_recover_a_design_tap_answers_once(world):
     decisions.transition(rid, ("answered",), "executing", intent={"reply": reply})
     decisions.recover(decisions.load(rid))
     assert decisions.load(ask)["answer"] == {"Approve this design 0?": reply} and state(rid)[0] == "done"
-    rid2 = design({"action": "approve"})  # killed after the question was answered
-    decisions.transition(rid2, ("answered",), "executing", intent={"reply": reply})
+    rid2 = design({"action": "approve"})  # killed after it answered its question
+    decisions.transition(rid2, ("answered",), "executing", intent={"reply": reply, "question": ask})
     decisions.recover(decisions.load(rid2))
     assert state(rid2)[0] == "done" and len(decisions.load(ask)["audit"]) == 2
+
+
+def test_an_earlier_question_answered_alike_does_not_count_as_this_taps_answer(world):
+    first = approval()
+    decisions.execute(design({"action": "approve"}))
+    decisions.transition(first, ("answered",), "done")
+    second = approval()  # the same version proposed again and asked again
+    rid = design({"action": "approve"})
+    decisions.execute(rid)
+    assert decisions.load(second)["status"] == "answered" and state(rid)[0] == "done"

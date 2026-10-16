@@ -275,6 +275,7 @@ def recommend(args):
 DESIGN_LABELS = {"approve": "Approve", "send-back": "Send back", "nothing": "Do nothing"}
 DESIGN_CHOICE = {"approve": "approve", "revise": "send-back", "judgment": None}
 PIN = re.compile(r"v(\d+):([0-9a-f]{12})")
+FEEDBACK_MAX = 1500  # characters: Send back's text leads the message, so the human sees all of it before a tap
 
 
 def recommend_design(args):
@@ -300,6 +301,9 @@ def recommend_design(args):
             raise ValueError(f"Proposal v{pin['version']} does not have hash {pin['sha']}")
         review = read_text(args.review, "review")
         feedback = read_text(args.feedback, "feedback") if args.feedback else None
+        if feedback and len(feedback) > FEEDBACK_MAX:
+            raise ValueError(f"the revisions are {len(feedback)} characters, over {FEEDBACK_MAX}: the human must "
+                             f"see all of them on the message, so shorten them")
         for req in for_ledger(args.ledger, "design"):
             if req["status"] == "open" and req.get("proposal") == pin:
                 print("an open design request already exists for this version; the new text was ignored",
@@ -313,7 +317,8 @@ def recommend_design(args):
     chosen = DESIGN_CHOICE[args.choice]
     order = [chosen] + [a for a in DESIGN_LABELS if a != chosen] if chosen else list(DESIGN_LABELS)
     labels = [DESIGN_LABELS[a] + (" (recommended)" if a == chosen else "") for a in order]
-    text = f"Design review of {events.heading(pin)}\n\n{review}"
+    sends = f"Send back sends the agent:\n{feedback}\n\n" if feedback else ""  # before the review: never cut
+    text = f"Design review of {events.heading(pin)}\n\n{sends}{review}"
     req = create("design", args.ledger, run=run, proposal=pin, review=review, feedback=feedback, wait=None,
                  actions=order, choices=[labels], recommended=chosen,
                  questions=[{"text": text, "header": "Design", "multi": False,
@@ -435,13 +440,15 @@ def _design(req, boot):
 def _answer_approval(req):
     """Answer the open approval question that carries the reviewed version, through its own open -> answered
     move: the pane's bridge delivers it as if the human had answered the question itself. Safe to repeat."""
-    rid, pin, reply = req["id"], req["proposal"], req["intent"]["reply"]
-    head = events.heading(pin)
+    rid, pin, intent = req["id"], req["proposal"], req["intent"]
+    head, reply = events.heading(pin), intent["reply"]
     outcome = "Approval sent to the agent" if reply.startswith("Approve") else "Revisions sent to the agent"
+    if intent.get("question"):  # a recovery: did this request's move land on the question it chose?
+        chosen = load(intent["question"])
+        if reply in (chosen.get("answer") or {}).values():
+            transition(rid, ("executing",), "done", outcome=outcome)
+            return
     asks = [r for r in for_ledger(req["ledger"], "question") if r.get("proposal") == pin]
-    if any(reply in (r.get("answer") or {}).values() for r in asks):  # a repeat, or a recovery after the move
-        transition(rid, ("executing",), "done", outcome=outcome)
-        return
     ask = next((r for r in asks if r["status"] == "open"), None)
     if not asks:
         # Tapped before the agent asked: offer the same review again, so the tap is not lost.
@@ -452,7 +459,8 @@ def _answer_approval(req):
         fail(rid, f"the approval question about {head} is no longer waiting; nothing sent")
     elif len(ask["questions"]) != 1:
         fail(rid, "the approval request asks more than one question; answer it on its own message")
-    elif transition(ask["id"], ("open",), "answered", answer={ask["questions"][0]["text"]: reply})[1]:
+    elif (update(rid, intent={**intent, "question": ask["id"]})  # recorded first, so a recovery checks this one
+          and transition(ask["id"], ("open",), "answered", answer={ask["questions"][0]["text"]: reply})[1]):
         transition(rid, ("executing",), "done", outcome=outcome)
     else:
         fail(rid, f"the approval question about {head} was answered meanwhile; nothing sent")

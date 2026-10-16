@@ -319,6 +319,13 @@ def test_missed_callback_an_idle_pane_with_a_finished_pr_completes_on_flush(boar
     assert board["calls"] == []  # a closed run costs nothing
 
 
+def test_a_design_wake_that_keeps_failing_leaves_the_backstop_on(board, run1):
+    runs.enqueue(CARD, "design", "Proposal v9", proposal={"version": 9, "sha": "0" * 12})  # no v9.md: fails every try
+    board.update(agent="idle", prs=[PR])
+    runs.flush()
+    assert board["cards"][CARD] == "done" and [p.name.split("-", 1)[1] for p in runs.pending(CARD)] == ["design.json"]
+
+
 def test_an_idle_pane_without_a_pr_pages_once_after_ten_minutes(board, run1, monkeypatch):
     board["agent"] = "idle"
     runs.flush()

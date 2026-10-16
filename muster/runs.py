@@ -88,6 +88,11 @@ def pending(card):
     return sorted((run_dir(card) / "outbox").glob("*.json"))
 
 
+def owned(card):
+    """Saved events that still own the run: all but a design wake, which retries on its own and holds nothing up."""
+    return [p for p in pending(card) if not p.name.endswith("-design.json")]
+
+
 def sent(card):
     """Delivered events still waiting for the gateway's ack."""
     return sorted((run_dir(card) / "sent").glob("*.json"))
@@ -302,7 +307,7 @@ def reconcile(run):
     if its pull request is finished, else silent); idle and unchanged for IDLE_AFTER -> idle (pages).
     """
     card, directory = run["card"], run_dir(run["card"])
-    if not run.get("launched") or pending(card) or (directory / core.WAIT_KIND).exists():
+    if not run.get("launched") or owned(card) or (directory / core.WAIT_KIND).exists():
         return
     if events.status(card) != "ready":
         return
