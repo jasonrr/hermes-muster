@@ -919,6 +919,27 @@ def test_recover_a_design_tap_answers_once(world):
     assert state(rid2)[0] == "done" and len(decisions.load(ask)["audit"]) == 2
 
 
+def test_recovery_acts_only_on_the_question_it_chose(world):
+    q1, rid = approval(), design({"action": "approve"})
+    reply = f"Approve: the human approved {HEADING}."
+    decisions.transition(rid, ("answered",), "executing", intent={"reply": reply, "question": q1})  # then killed
+    decisions.transition(q1, ("open",), "answered", answer={"Approve this design 0?": "Revise; do not implement."})
+    q2 = approval()  # the same pin asked again
+    decisions.recover(decisions.load(rid))
+    status, outcome = state(rid)
+    assert status == "failed" and "answered or ended meanwhile" in outcome
+    assert decisions.load(q2)["status"] == "open"
+    assert decisions.load(q1)["answer"] == {"Approve this design 0?": "Revise; do not implement."}
+
+
+def test_recovery_answers_the_chosen_question_when_it_is_still_open(world):
+    q1, rid = approval(), design({"action": "approve"})
+    reply = f"Approve: the human approved {HEADING}."
+    decisions.transition(rid, ("answered",), "executing", intent={"reply": reply, "question": q1})  # killed before
+    decisions.recover(decisions.load(rid))
+    assert decisions.load(q1)["answer"] == {"Approve this design 0?": reply} and state(rid)[0] == "done"
+
+
 def test_an_earlier_question_answered_alike_does_not_count_as_this_taps_answer(world):
     first = approval()
     decisions.execute(design({"action": "approve"}))

@@ -443,11 +443,21 @@ def _answer_approval(req):
     rid, pin, intent = req["id"], req["proposal"], req["intent"]
     head, reply = events.heading(pin), intent["reply"]
     outcome = "Approval sent to the agent" if reply.startswith("Approve") else "Revisions sent to the agent"
-    if intent.get("question"):  # a recovery: did this request's move land on the question it chose?
-        chosen = load(intent["question"])
-        if reply in (chosen.get("answer") or {}).values():
-            transition(rid, ("executing",), "done", outcome=outcome)
+    if intent.get("question"):
+        # A recovery: only the question this request chose. The human may have answered it since; never pick another.
+        try:
+            ask = load(intent["question"])
+        except (OSError, ValueError) as caught:
+            fail(rid, f"the approval question it chose is unreadable ({caught}); nothing sent")
             return
+        if ask.get("answer") == {ask["questions"][0]["text"]: reply}:
+            transition(rid, ("executing",), "done", outcome=outcome)
+        elif ask["status"] == "open" and transition(ask["id"], ("open",), "answered",
+                                                    answer={ask["questions"][0]["text"]: reply})[1]:
+            transition(rid, ("executing",), "done", outcome=outcome)
+        else:
+            fail(rid, f"the approval question about {head} was answered or ended meanwhile; nothing sent")
+        return
     asks = [r for r in for_ledger(req["ledger"], "question") if r.get("proposal") == pin]
     ask = next((r for r in asks if r["status"] == "open"), None)
     if not asks:
@@ -459,7 +469,7 @@ def _answer_approval(req):
         fail(rid, f"the approval question about {head} is no longer waiting; nothing sent")
     elif len(ask["questions"]) != 1:
         fail(rid, "the approval request asks more than one question; answer it on its own message")
-    elif (update(rid, intent={**intent, "question": ask["id"]})  # recorded first, so a recovery checks this one
+    elif (update(rid, intent={**intent, "question": ask["id"]})  # recorded first: a recovery acts on this one only
           and transition(ask["id"], ("open",), "answered", answer={ask["questions"][0]["text"]: reply})[1]):
         transition(rid, ("executing",), "done", outcome=outcome)
     else:
