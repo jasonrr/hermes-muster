@@ -3,6 +3,7 @@ import sys
 
 from . import config
 
+AGENT_RUN = ("done", "propose", "duplicate")  # hook events the pane agent runs from its shell
 SUBCOMMANDS = {  # name → (sibling module, function); resolved relative to this package
     "tick": ("core", "tick"),
     "recover": ("core", "recover"),
@@ -29,8 +30,11 @@ def setup(parser):
     p.add_argument("--model", default=None)
     sub.add_parser("flush", help="deliver hook events a pane could not")
     p = sub.add_parser("hook", help="agent hook entry point; reads the hook payload on stdin")
-    p.add_argument("event", choices=["notification", "prompt", "session-end", "stop", "done", "propose", "permission"])
-    p.add_argument("url", nargs="?", help="done: the pull request URL; propose: the plan or design file")
+    p.add_argument("event", choices=["notification", "prompt", "session-end", "stop", "done", "propose", "permission",
+                                       "duplicate"])
+    p.add_argument("url", nargs="?", help="done: the pull request URL; propose: the plan or design file; "
+                                          "duplicate: the held report's issue number")
+    p.add_argument("verdict", nargs="?", choices=["same", "different"], help="duplicate: your evaluation")
     p.add_argument("--card", default=None)
     sub.add_parser("cleanup", help="close finished workspaces").add_argument("--dry-run", action="store_true")
     p = sub.add_parser("recommend", help="record the coordinator's recommendation on a finished build")
@@ -47,8 +51,8 @@ def setup(parser):
 
 def main(args, ctx):
     is_hook = args.muster_command == "hook"
-    # `done` and `propose` are run by the pane agent, which must see a failure.
-    failed = 1 if is_hook and args.event in ("done", "propose") else 0
+    # `done`, `propose` and `duplicate` are run by the pane agent, which must see a failure.
+    failed = 1 if is_hook and args.event in AGENT_RUN else 0
     try:
         config.load(ctx)
         module, fn = SUBCOMMANDS[args.muster_command]

@@ -29,6 +29,7 @@ def parse(argv):
         ["recover", "c1", "--adopt"],
         ["hook", "notification"],
         ["hook", "done", "https://github.com/o/r/pull/1"],
+        ["hook", "duplicate", "494", "same"],
         ["launch", "--cwd", ".", "--branch", "feat/x", "--title", "t", "--brief", "b"],
         ["open", "--cwd", ".", "--label", "x"],
         ["recommend", "t_1", "--pr", "u", "--head", "h", "--choice", "send-back", "--review", "r", "--feedback", "f"],
@@ -62,7 +63,8 @@ def test_main_config_error(monkeypatch, argv, module, expected):
     assert cli.main(parse(argv), StubCtx()) == expected
 
 
-@pytest.mark.parametrize("argv, expected", [(["hook", "notification"], 0), (["hook", "done"], 1)])
+@pytest.mark.parametrize("argv, expected", [(["hook", "notification"], 0), (["hook", "done"], 1),
+                                            (["hook", "duplicate", "494", "different"], 1)])
 def test_main_hook_bug_never_fails_the_agent_but_done_says_so(monkeypatch, argv, expected):
     def boom(args):
         raise AttributeError("bug")
@@ -110,3 +112,9 @@ def test_recommend_dispatches_to_decisions(monkeypatch):
     monkeypatch.setitem(sys.modules, "muster.decisions", types.SimpleNamespace(recommend=lambda args: 1))
     args = parse(["recommend", "t_1", "--pr", "u", "--head", "h", "--choice", "merge", "--review", "r"])
     assert cli.main(args, StubCtx()) == 1
+
+
+def test_hook_duplicate_takes_only_same_or_different():
+    assert parse(["hook", "duplicate", "494", "different"]).verdict == "different"
+    with pytest.raises(SystemExit):
+        parse(["hook", "duplicate", "494", "maybe"])

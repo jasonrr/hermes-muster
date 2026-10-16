@@ -4,7 +4,7 @@ from pathlib import Path
 
 
 def register(ctx):
-    from .muster import cli, gateway
+    from .muster import cli, gateway, hold
 
     root = Path(__file__).resolve().parent
     ctx.register_cli_command(
@@ -18,6 +18,15 @@ def register(ctx):
         if path.is_file():  # stat only; Task 7 creates the files
             ctx.register_skill(name, path)
     gateway.CTX = ctx  # config loads lazily, when Hermes connects the adapter or dispatches a message
+    hold.CTX = ctx  # ctx.llm: the duplicate check before an automatic approval launches
+    if hasattr(ctx, "register_auxiliary_task"):
+        try:
+            ctx.register_auxiliary_task(
+                hold.TASK, display_name="muster duplicate check",
+                description="Judges whether a new error issue reports the same incident as a run already under way; "
+                            "a cheap model is enough")
+        except ValueError as error:  # never stop the plugin loading: the check then fails open
+            print(f"muster: auxiliary task {hold.TASK} not registered: {error}")
     if hasattr(ctx, "register_telegram_handler"):
         ctx.register_telegram_handler(gateway.telegram_factory)
     if hasattr(ctx, "register_hook"):
