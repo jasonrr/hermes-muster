@@ -155,6 +155,9 @@ def deliver(run, entry):
     if event == "proposal":
         events.post_proposal(card, entry["proposal"])
         return None  # a comment is no notifier event: nothing to ack
+    if event == "design":
+        events.review(card, entry["proposal"], run.get("title"))
+        return None  # wake only: Hermes retries the wake itself, and there is no ping to ack
     if event == "prompt":
         events.close_wait(directory, event)
         return None
@@ -271,8 +274,8 @@ def drain(card, wait=False):
                 return True
             except ERRORS as error:
                 note(card, path, entry, error)
-                if entry["event"] == "stop":
-                    continue  # it only checks for a finished PR: a later ask must not wait behind it
+                if entry["event"] in ("stop", "design"):
+                    continue  # a PR check, or the coordinator's wake: a later ask must not wait behind it
                 return True
             log(f"{card} {entry['event']}: delivered, ack {ack}")
         for path in sent(card):

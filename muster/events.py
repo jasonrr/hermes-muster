@@ -20,6 +20,8 @@ Telegram ping for the human and a queued agent turn.
                  The approval request is denied before its dialog shows (PreToolUse) while nothing
                  is armed or another wait card is open; the armed version is consumed only once a
                  wait card carries it
+                 Each version also queues a `design` event: a design review card, subscribed `wake` in the run's
+                 topic and completed, so the coordinator reviews that version (review; muster:escalation)
 
 Every block reason and completion summary is written for the human to read whole: the board's
 "human_notices" setting makes the gateway's Telegram ping lead with the card's title and show the
@@ -200,6 +202,11 @@ def proposals(card):
     return config.data_dir() / "runs" / card / "proposals"
 
 
+def versions(card):
+    """The ledger's saved proposal version numbers, oldest first."""
+    return sorted(int(p.stem[1:]) for p in proposals(card).glob("v*.md") if p.stem[1:].isdigit())
+
+
 def heading(proposal):
     return f"Proposal v{proposal['version']} {proposal['sha']}"
 
@@ -240,6 +247,24 @@ def post_proposal(ledger, proposal):
         if not posted():
             raise core.CommandError(f"proposal: {head} did not read back on ledger {ledger}")
     return f"proposal: {head} on ledger {ledger}"
+
+
+def review(ledger, proposal, title=None):
+    """Wake the coordinator to review this version (muster:escalation): one card per version, as decisions.rereview.
+
+    Keyed by version and hash, so a replay or the same text proposed again finds the card done and wakes no one.
+    Delivery mode `wake`: the coordinator's recommendation is the human's one message, not a ping before it.
+    """
+    head = heading(proposal)
+    card = json.loads(core.kanban(
+        "create", "--body", f"Design review. ledger {ledger} | {head}\n{core.PROVENANCE}" + attached(ledger, proposal),
+        "--idempotency-key", f"design:{ledger}:v{proposal['version']}:{proposal['sha']}", "--created-by",
+        core.CREATED_BY, "--json", "--", f"{title or ledger}: {head}, ready for design review"))
+    if card["status"] == "ready":
+        core.subscribe(card["id"], ledger, mode="wake")
+        core.kanban("complete", card["id"], "--summary", f"{head} ready for design review; {core.REVIEW_CUE}")
+        expect(card["id"], "done", "design")
+    return f"design: {head} review card {card['id']}"
 
 
 def enqueue(card, event, detail, payload, pin=None, **issue):
@@ -335,13 +360,15 @@ def propose(card, file, **issue):
         directory.mkdir(parents=True, exist_ok=True)
         with open(runs.run_dir(card) / "lock", "w") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)  # released before the drain, which takes it again
-            versions = sorted(int(p.stem[1:]) for p in directory.glob("v*.md") if p.stem[1:].isdigit())
-            version = versions[-1] if versions else 0
+            saved = versions(card)
+            version = saved[-1] if saved else 0
             if not version or (directory / f"v{version}.md").read_text() != text:
                 version += 1
                 (directory / f"v{version}.md").write_text(text)
             proposal = {"version": version, "sha": sha}
             path = runs.enqueue(card, "proposal", heading(proposal), proposal=proposal, **issue)
+            # Its own event: a wake that fails must not keep the version from arming (propose waits on `path` only).
+            runs.enqueue(card, "design", heading(proposal), proposal=proposal, **issue)
         runs.drain(card, wait=True)
         if path.exists():
             error = json.loads(path.read_text()).get("error") or "not delivered"
@@ -362,6 +389,8 @@ def move(event, git_dir, link, detail, key, ask=None, proposal=None, bridged=Fal
     """This event's moves, each read back. Returns a report line; raises when a move did not land."""
     if event == "proposal":
         return post_proposal(link["card"], proposal)
+    if event == "design":
+        return review(link["card"], proposal, link.get("title"))
     if event == "notification":
         return open_wait(git_dir, link, detail, key, ask, proposal, bridged)
     if event == "prompt":

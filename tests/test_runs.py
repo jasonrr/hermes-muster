@@ -71,7 +71,9 @@ def board(tmp_path, monkeypatch):
                                 "last_event_id": state["cursor"], "last_ping_event_id": state["cursor"]}])
         if verb == "create":
             key = argv[argv.index("--idempotency-key") + 1]
-            card = state["keys"].setdefault(key, f"t_wait{len(state['keys']) + 1}")
+            # A design review card gets its own series, so the wait cards keep their numbers.
+            series = "t_design" if key.startswith("design:") else "t_wait"
+            card = state["keys"].setdefault(key, f"{series}{sum(c.startswith(series) for c in state['keys'].values()) + 1}")
             state["created_at"].setdefault(card, int(time.time()))
             cards.setdefault(card, "ready")
             state["bodies"].setdefault(card, argv[argv.index("--body") + 1])
@@ -814,7 +816,8 @@ def test_an_ad_hoc_proposal_is_a_ledger_comment_and_the_next_ask_carries_it(boar
     head = f"Proposal v1 {hashlib.sha256(design.read_bytes()).hexdigest()[:12]}"
     assert capsys.readouterr().out == f"proposal: {head} on ledger {CARD}\n"
     assert board["comments"][CARD] == [f"{head}\n\n## Approach\nOne propose hook."]
-    assert files(run1, "outbox") == [] and files(run1, "sent") == []  # a comment pings no one: no ack to wait on
+    assert files(run1, "outbox") == [] and files(run1, "sent") == []  # a comment and a wake: no ping to ack
+    assert board["cards"]["t_design1"] == "done" and f"| {head}" in board["bodies"]["t_design1"]
     fire(monkeypatch, "notification", message="", tool_name="AskUserQuestion",
          tool_input={"questions": [{"question": "Approve?", "header": "Approval",
                                  "options": [{"label": "Yes", "description": "build"}]}]})

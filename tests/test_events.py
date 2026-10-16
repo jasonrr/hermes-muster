@@ -55,7 +55,9 @@ def board(tmp_path, monkeypatch):
                 state["on_create"], nested = None, state["on_create"]
                 nested()
             key = argv[argv.index("--idempotency-key") + 1]
-            card = state["keys"].setdefault(key, f"t_wait{len(state['keys']) + 1}")
+            # A design review card gets its own series, so the wait cards keep their numbers.
+            series = "t_design" if key.startswith("design:") else "t_wait"
+            card = state["keys"].setdefault(key, f"{series}{sum(c.startswith(series) for c in state['keys'].values()) + 1}")
             cards.setdefault(card, "ready")
             state["bodies"].setdefault(card, argv[argv.index("--body") + 1])
             return json.dumps({"id": card, "status": cards[card]})
@@ -596,6 +598,51 @@ def test_a_revision_is_a_new_version_the_old_one_stays_and_the_next_ask_names_th
     assert propose(tmp_path, first) == 0  # a revert is a new revision to review, not v1 again
     assert board["comments"]["t_abc123"][-1] == f"Proposal v3 {sha(first)}\n\n{first}"
     assert sorted(p.name for p in events.proposals("t_abc123").glob("v*.md")) == ["v1.md", "v2.md", "v3.md"]
+
+
+def completes(state, card):
+    return [c[c.index("--summary") + 1] for c in state["calls"] if c[4:6] == ["complete", card]]
+
+
+def test_each_proposal_version_wakes_the_coordinator_once_in_the_run_topic(board, tmp_path):
+    first, second = "plan one", "plan two"
+    assert propose(tmp_path, first) == 0
+    head = f"Proposal v1 {sha(first)}"
+    assert board["keys"][f"design:t_abc123:v1:{sha(first)}"] == "t_design1"
+    body = board["bodies"]["t_design1"]
+    assert body.startswith(f"Design review. ledger t_abc123 | {head}\n") and body.endswith(first)  # the pinned text
+    subscribe = next(c for c in board["calls"] if c[4:6] == ["notify-subscribe", "t_design1"])
+    assert subscribe[subscribe.index("--delivery-mode") + 1] == "wake"  # the coordinator's message, no ping first
+    assert completes(board, "t_design1") == [f"{head} ready for design review; {core.REVIEW_CUE}"]
+    assert board["cards"]["t_design1"] == "done"
+    assert propose(tmp_path, first) == 0  # the same version again: no second review
+    runs.enqueue("t_abc123", "design", head, proposal={"version": 1, "sha": sha(first)},
+                 git_dir=str(board["git_dir"]), link=LINKS)
+    runs.drain("t_abc123")  # a replay
+    assert completes(board, "t_design1") == [f"{head} ready for design review; {core.REVIEW_CUE}"]
+    assert propose(tmp_path, second) == 0  # a revision is a new review; v1's card stays as it was
+    assert board["keys"][f"design:t_abc123:v2:{sha(second)}"] == "t_design2"
+    assert completes(board, "t_design2") == [f"Proposal v2 {sha(second)} ready for design review; {core.REVIEW_CUE}"]
+    assert len(completes(board, "t_design1")) == 1
+
+
+def test_a_proposal_already_on_the_ledger_still_wakes_the_coordinator(board, tmp_path):
+    (events.proposals("t_abc123")).mkdir(parents=True)
+    (events.proposals("t_abc123") / "v1.md").write_text("the plan")
+    board["comments"]["t_abc123"] = [f"Proposal v1 {sha('the plan')}\n\nthe plan"]  # posted by a killed attempt
+    assert propose(tmp_path, "the plan") == 0
+    assert len(board["comments"]["t_abc123"]) == 1 and board["cards"]["t_design1"] == "done"
+
+
+def test_a_failed_wake_keeps_the_proposal_armed_and_a_later_question_lands(board, monkeypatch, tmp_path):
+    board["fail"]["complete"] = 6  # both tries at each of the three drains before the flush
+    assert propose(tmp_path, "the plan") == 0
+    assert (events.proposals("t_abc123") / "armed").is_file()
+    assert [p.name.split("-", 1)[1] for p in runs.pending("t_abc123")] == ["design.json"]
+    assert ask(monkeypatch) == 0
+    assert board["cards"]["t_wait1"] == "blocked"  # not held behind the wake
+    runs.drain("t_abc123")  # the flush
+    assert board["cards"]["t_design1"] == "done" and not runs.pending("t_abc123")
 
 
 def test_a_redelivered_proposal_posts_no_second_comment(board, tmp_path):
