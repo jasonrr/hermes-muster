@@ -225,6 +225,20 @@ def refusal(run, url, pr, head):
     return None
 
 
+def obsolete(req):
+    """Why an open build or feedback request no longer stands, else None: a build is bound to its pull request open at
+    the reviewed head, a feedback to its pull request still open. An unreadable pull request is no proof either way:
+    None, and a merge reads it again before acting."""
+    try:
+        pr = view(req["pr"], "url,state,headRefOid,headRefName,baseRefName,isDraft,isCrossRepository")
+    except (OSError, ValueError, core.CommandError) as caught:
+        core.log("decisions", f"{req['id']}: pull request unreadable, shown anyway: {caught}")
+        return None
+    if req["kind"] == "build":
+        return refusal(req["run"], req["pr"], pr, req["head"])
+    return None if pr.get("state") == "OPEN" else f"{req['pr']} is {pr.get('state')}, not OPEN"
+
+
 def read_text(path, what):
     raw = Path(path).read_bytes()
     if len(raw) > events.PROPOSAL_MAX:

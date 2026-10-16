@@ -13,10 +13,12 @@ only what Hermes lacks (upstream asks: jasonrr/hermes-muster#20):
 - a ForceReply after "Other": in a group with privacy mode Telegram delivers only replies to the bot;
 - send retry with backoff: Hermes sends once;
 - one forum topic per run (`notify_topics`, muster.conversation): created with Hermes's create_handoff_thread, a
-  lost create reconciled from the bot's own forum_topic_created service message, a deleted topic found by a
-  reopen probe and recreated with the run's subscriptions and open prompts moved to it, closed when the run is
-  finished and reopened when it resumes, and deleted (never recreated) once its ledger card reads archived. Hermes's kanban notifier already sends pings and runs wakes in a
-  subscription's thread, so the coordinator follows the topic without any code here.
+  lost create reconciled from the bot's own forum_topic_created service message, a deleted topic (a prompt that
+  landed outside it) recreated with the run's subscriptions and open prompts moved to it, closed when the run's work
+  is resolved (cleanup) or by the human, reopened only by the human or for a request newer than the close, and
+  deleted (never recreated) once its ledger card reads archived. Nothing probes a topic: Telegram has no read of a
+  topic's state, and every call that could stand in for one changes it. Hermes's kanban notifier already sends pings
+  and runs wakes in a subscription's thread, so the coordinator follows the topic without any code here.
 Private Hermes names are reached only through muster.hermes_private. Nothing here runs at import or register
 time: Hermes calls `telegram_factory` when the Telegram adapter connects.
 """
@@ -43,7 +45,7 @@ TOPIC_RETRY = 10  # s before another try at checking the group, after a check th
 TOPIC_ATTEMPTS = 3
 NOTICE_WAIT = 20  # s to wait for Telegram's topic-created notice after a create that returned no thread
 MIGRATE_MAX = 60  # s, the longest wait between retries of a card subscription that did not move
-PROBE_EVERY = 30  # s between deleted-topic probes of an open run topic, and between board reads of its ledger
+CHECK_EVERY = 30  # s between board reads of an open run's ledger
 CLOSED_EVERY = 300  # s between board reads of a closed run's ledger
 RETRY_MAX = 3600  # s, the longest wait between retries of a topic close or delete Telegram did not confirm
 LIVE = ("pending", "creating", "open", "closing", "closed", "fallback")  # every state a run can retire from
@@ -64,8 +66,8 @@ class State:
         self.edit_failed = set()
         self.swept = False
         self.ledgers = {}  # request id -> ledger card: whose conversation (topic) the request belongs to
-        self.probed = {}  # ledger -> clock() of the last deleted-topic probe
         self.checked = {}  # ledger -> clock() of the last board read of its ledger card
+        self.vetted = {}  # build or feedback request id -> clock() of the last read of its pull request
         self.repairing = set()  # ledgers whose cards and prompts are moving to a new topic
 
 
@@ -106,6 +108,8 @@ def telegram_factory(app, adapter):
     app.add_handler(CallbackQueryHandler(guard, pattern=r"^cl:mu"), -1)
     app.add_handler(CallbackQueryHandler(approval_guard, pattern=r"^ea:"), -1)
     app.add_handler(MessageHandler(filters.StatusUpdate.FORUM_TOPIC_CREATED, topic_created), -1)
+    app.add_handler(MessageHandler(filters.StatusUpdate.FORUM_TOPIC_CLOSED | filters.StatusUpdate.FORUM_TOPIC_REOPENED,
+                                   topic_toggled), -1)
     S.adapter, S.loop = adapter, asyncio.get_running_loop()
     S.bot = getattr(app, "bot", None)  # Telegram's own bot, for the ForceReply after Other
     if S.task is None or S.task.done() or S.task.get_loop() is not S.loop:
@@ -160,14 +164,19 @@ async def refuse_unless_in_topic(query, rid):
     never answered there: present the request again, in its topic (repairing a deleted one first)."""
     from telegram.ext import ApplicationHandlerStop
 
-    if await in_topic(rid, getattr(query.message, "message_thread_id", None)):
+    thread = getattr(query.message, "message_thread_id", None)
+    if await in_topic(rid, thread):
         return
     log(f"request {rid}: tap outside its run's topic refused; presenting it again")
-    S.probed.pop(S.ledgers.get(rid), None)
     release(rid)
     with contextlib.suppress(OSError, ValueError, KeyError):
-        presented = (await asyncio.to_thread(decisions.load, rid)).get("presented") or {}
+        req = await asyncio.to_thread(decisions.load, rid)
+        presented = req.get("presented") or {}
         await asyncio.to_thread(decisions.update, rid, presented={k: v for k, v in presented.items() if k != "boot"})
+        expected = (await asyncio.to_thread(conversation.target, req["ledger"]))["thread_id"]
+        newest = {str(ids[-1]) for ids in (presented.get("messages") or {}).values() if ids}
+        if expected and thread in (None, "", "1", 1) and str(getattr(query.message, "message_id", "")) in newest:
+            await gone(req["ledger"], str(expected))  # its newest prompt fell back to General: the topic is gone
     await query.answer("Moved: answer in the run's topic")
     raise ApplicationHandlerStop
 
@@ -350,6 +359,13 @@ async def handle(req):
     wait = S.retry.get(rid)
     if wait and time.monotonic() < wait[0]:
         return
+    if kind in ("build", "feedback") and clock() - S.vetted.get(rid, float("-inf")) >= CHECK_EVERY:
+        S.vetted[rid] = clock()  # a saved approval whose pull request moved on is never shown again
+        why = await asyncio.to_thread(decisions.obsolete, req)
+        if why:
+            await asyncio.to_thread(decisions.transition, rid, ("open",), "stale", outcome=f"Not shown: {why}")
+            release(rid)
+            return
     await (present_approval(req) if kind == "permission" else present(req))
 
 
@@ -415,7 +431,7 @@ async def present(req):
     messages = {k: list(v) for k, v in (old.get("messages") or {}).items()}
     failure = None
     try:
-        ready, meta = await destination(req["ledger"])  # first: nothing is registered for a request that waits
+        ready, meta = await destination(req)  # first: nothing is registered for a request that waits
         if not ready or (await asyncio.to_thread(decisions.load, rid))["status"] != "open":
             return
         from tools import clarify_gateway
@@ -486,7 +502,7 @@ async def present_approval(req):
             raise RuntimeError(res.error or "send failed")  # Hermes then returns notify_failed
 
     try:
-        ready, meta = await destination(req["ledger"])  # before the approval wait starts
+        ready, meta = await destination(req)  # before the approval wait starts
         if not ready or (await asyncio.to_thread(decisions.load, rid))["status"] != "open":
             return
         S.approvals.add(rid)
@@ -671,9 +687,12 @@ def outcome_of(error):
     return "unknown"
 
 
-async def destination(ledger):
-    """(ready, send metadata) for a request of this run: its topic, reopened and checked first. Not ready while
-    the topic is being made, moved or closed: the request waits for a later scan."""
+async def destination(req):
+    """(ready, send metadata) for a request of this run: its topic. Not ready while the topic is being made, moved
+    or closed. A closed topic is reopened only for a request made after it closed (new work); an older one (a replay,
+    a restart, a saved approval) waits without reopening it: the pane still takes its answer, and the human may
+    reopen the topic."""
+    ledger = req["ledger"]
     ref = await asyncio.to_thread(conversation.load, ledger)
     state = (ref or {}).get("state")
     if state in ("retiring", "deleted"):
@@ -685,20 +704,37 @@ async def destination(ledger):
         return True, None  # the main chat
     if state not in ("open", "closed"):
         return False, None  # being made, or being closed
-    if state == "closed":  # before the probe, which reopens it (an open run's recreate is gated in create)
-        gone = await archived(ledger)
-        if gone is not False:
-            if gone:
+    if state == "closed":
+        if req.get("created_at", 0) <= (ref.get("closed_at") or float("inf")):
+            return False, None  # older than the close: never reopens it
+        archive = await archived(ledger)  # a fresh read: nothing reopens an archived run's topic
+        if archive is not False:
+            if archive:
                 await retire(ledger)
             return False, None
-    if await probe(ref) == "deleted":
-        return False, None
-    if state == "closed":  # the run resumed: the probe reopened it
-        _, ok = await asyncio.to_thread(conversation.swap, ledger, ("closed",), state="open")
-        if not ok:
+        if not await reopen(ref, req["id"]):
             return False, None
-        log(f"{ledger}: topic {ref['thread_id']} reopened")
     return True, {"thread_id": ref["thread_id"]}
+
+
+async def reopen(ref, rid):
+    """Reopen a closed topic for request rid, new since the close. False when it did not reopen."""
+    ledger, thread = ref["ledger"], ref["thread_id"]
+    try:
+        await S.bot.reopen_forum_topic(ref["chat_id"], int(thread))
+    except Exception as caught:  # noqa: BLE001
+        found = outcome_of(caught)
+        if found == "deleted":
+            await gone(ledger, thread)
+            return False
+        if found == "unknown":
+            log(f"{ledger}: reopening topic {thread}: {caught}")
+            return False
+    _, ok = await asyncio.to_thread(conversation.swap, ledger, ("closed",), state="open", closed_at=None,
+                                    closed_by=None)
+    if ok:
+        log(f"{ledger}: topic {thread} reopened for request {rid}, made after it closed")
+    return ok
 
 
 async def archived(ledger):
@@ -733,24 +769,17 @@ async def backoff(ref, why):
     await asyncio.to_thread(conversation.update, ref["ledger"], why=why, retry_delay=delay, retry_at=now() + delay)
 
 
-async def probe(ref):
-    """Is the run's topic still there? Reopening an open topic changes nothing (TOPIC_NOT_MODIFIED) and renames
-    nothing; a deleted one fails "thread not found". A deleted topic is recreated by the next scans."""
-    ledger, thread = ref["ledger"], ref["thread_id"]
-    S.probed[ledger] = clock()
-    try:
-        await S.bot.reopen_forum_topic(ref["chat_id"], int(thread))
-        return "alive"
-    except Exception as caught:  # noqa: BLE001
-        found, error = outcome_of(caught), caught
-    if found == "deleted":
+async def gone(ledger, thread):
+    """The run's topic `thread` was deleted: the next scans make a new one and move its cards and prompts there."""
+    ref = await asyncio.to_thread(conversation.load, ledger)
+    if not ref or str(ref.get("thread_id")) != str(thread):
+        return  # already left
+    _, ok = await asyncio.to_thread(conversation.swap, ledger, ("open", "closed"), state="creating", thread_id=None,
+                                    previous=[*ref.get("previous", []), thread], attempts=0, since=0, asked=False,
+                                    moved=None, repaired=None, migrate_at=0, migrate_delay=0, closed_at=None,
+                                    closed_by=None)
+    if ok:
         log(f"{ledger}: topic {thread} is gone; making a new one")
-        await asyncio.to_thread(conversation.swap, ledger, ("open", "closed"), state="creating", thread_id=None,
-                                previous=[*ref.get("previous", []), thread], attempts=0, since=0, asked=False,
-                                moved=None, repaired=None, migrate_at=0, migrate_delay=0)
-    elif found == "unknown":
-        log(f"{ledger}: topic {thread} probe: {error}")
-    return found
 
 
 async def topics():
@@ -766,7 +795,7 @@ async def topics():
 
 async def topic_step(ref):
     ledger, state, chat = ref["ledger"], ref.get("state"), ref.get("chat_id")
-    every = CLOSED_EVERY if state == "closed" else PROBE_EVERY
+    every = CLOSED_EVERY if state == "closed" else CHECK_EVERY
     if state != "retiring" and clock() - S.checked.get(ledger, float("-inf")) >= every and await archived(ledger):
         await retire(ledger)
         ref = await asyncio.to_thread(conversation.load, ledger)
@@ -785,7 +814,8 @@ async def topic_step(ref):
     elif state == "closing" and now() >= ref.get("retry_at", 0):
         if not ref.get("said"):  # once
             try:
-                await S.adapter.send(chat, "Run finished; worktree removed. History kept.",
+                await S.adapter.send(chat, "Work finished: this topic is closed. History kept; the worktree is "
+                                           "cleaned up separately.",
                                      metadata={"thread_id": ref["thread_id"]})
             except Exception as caught:  # noqa: BLE001
                 log(f"{ledger}: finish note: {caught}")
@@ -798,13 +828,11 @@ async def topic_step(ref):
                 return
         # closed only once Telegram confirmed it: local state alone is no proof
         await asyncio.to_thread(conversation.swap, ledger, ("closing",), state="closed", why="", retry_at=0,
-                                retry_delay=0)
-    elif state == "open":
-        if ref.get("previous") and ref.get("repaired") != ref["thread_id"]:
-            await repair(ref)  # until every card's subscription reads back here
-            ref = await asyncio.to_thread(conversation.load, ledger)
-        if ref.get("state") == "open" and clock() - S.probed.get(ledger, float("-inf")) >= PROBE_EVERY:
-            await probe(ref)  # on its own timer: a card still moving must not hide a new deletion
+                                retry_delay=0, closed_at=now(), closed_by="muster")
+    elif state == "closed" and not ref.get("closed_at"):  # closed before closed_at was kept: nothing saved reopens it
+        await asyncio.to_thread(conversation.swap, ledger, ("closed",), closed_at=now())
+    elif state == "open" and ref.get("previous") and ref.get("repaired") != ref["thread_id"]:
+        await repair(ref)  # until every card's subscription reads back here
 
 
 async def delete(ref):
@@ -898,7 +926,6 @@ async def settle(ledger, thread):
     ref, ok = await asyncio.to_thread(conversation.swap, ledger, ("pending", "creating"), state="open",
                                       thread_id=thread)
     if ok:
-        S.probed[ledger] = clock()
         log(f"{ledger}: topic {thread} open")
     elif ref and ref.get("thread_id") != thread:
         await close_duplicate(ref, thread)
@@ -951,6 +978,46 @@ async def topic_created(update, context):
             await close_duplicate(ref, thread)
     except Exception as caught:  # noqa: BLE001 - never break Hermes's own update handling
         log(f"topic notice: {caught}")
+
+
+async def topic_toggled(update, context):
+    """Telegram's forum_topic_closed or forum_topic_reopened notice of a run's topic, from a human (the bot's own
+    close and reopen are recorded where it makes them). A human close is kept: no restart, scan or saved prompt
+    reopens the topic, and the run's work goes on. A human reopen is the explicit resume: its prompts show again."""
+    try:
+        msg = update.effective_message
+        if S.bot is None or getattr(msg.from_user, "id", None) == S.bot.id:
+            return
+        ensure_config()
+        if str(msg.chat.id) != core.notify_target()["chat_id"]:
+            return
+        thread = str(msg.message_thread_id)
+        mine = [r for r in await asyncio.to_thread(conversation.every)
+                if str(r.get("thread_id")) == thread and r.get("state") in conversation.THREADED]
+        if len(mine) != 1:
+            return
+        ledger = mine[0]["ledger"]
+        if getattr(msg, "forum_topic_closed", None) is not None:
+            _, ok = await asyncio.to_thread(conversation.swap, ledger, ("open", "closing"), state="closed",
+                                            closed_at=now(), closed_by="human", resumed=False, why="", retry_at=0,
+                                            retry_delay=0)
+            if ok:
+                log(f"{ledger}: topic {thread} closed by the human; kept closed")
+        else:
+            # also from closing: a close whose reply was lost may have landed; its retry must not undo this reopen
+            _, ok = await asyncio.to_thread(conversation.swap, ledger, ("closed", "closing"), state="open",
+                                            closed_at=None, closed_by=None, resumed=True, why="", retry_at=0,
+                                            retry_delay=0)  # kept open, even once resolved
+            if ok:
+                log(f"{ledger}: topic {thread} reopened by the human; its prompts show again")
+                for req in await asyncio.to_thread(decisions.for_ledger, ledger):
+                    if req["status"] == "open":  # present again in this boot, now that the topic takes them
+                        release(req["id"])
+                        presented = req.get("presented") or {}
+                        await asyncio.to_thread(decisions.update, req["id"],
+                                                presented={k: v for k, v in presented.items() if k != "boot"})
+    except Exception as caught:  # noqa: BLE001 - never break Hermes's own update handling
+        log(f"topic close/reopen notice: {caught}")
 
 
 async def repair(ref):

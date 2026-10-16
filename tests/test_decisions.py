@@ -948,3 +948,25 @@ def test_an_earlier_question_answered_alike_does_not_count_as_this_taps_answer(w
     rid = design({"action": "approve"})
     decisions.execute(rid)
     assert decisions.load(second)["status"] == "answered" and state(rid)[0] == "done"
+
+
+# -- obsolete: a saved build or feedback request is checked against its pull request before it is shown ---------
+
+@pytest.mark.parametrize("kind, change, why", [
+    ("build", {}, None),
+    ("build", {"state": "MERGED"}, "is MERGED, not OPEN"),
+    ("build", {"state": "CLOSED"}, "is CLOSED, not OPEN"),
+    ("build", {"headRefOid": "b" * 40}, "stale: PR moved to bbbbbbb"),
+    ("feedback", {"headRefOid": "b" * 40}, None),  # a send-back still applies to a revised head
+    ("feedback", {"state": "MERGED"}, "is MERGED, not OPEN"),
+])
+def test_obsolete_reads_the_pull_request(world, kind, change, why):
+    world.pr.update(change)
+    req = decisions.create(kind, "t_1", run=world.run_dict, pr=URL, head=HEAD)
+    got = decisions.obsolete(req)
+    assert (got is None) if why is None else (why in got)
+
+
+def test_an_unreadable_pull_request_is_not_proof_it_is_obsolete(world):
+    world.gh_missing = True
+    assert decisions.obsolete(decisions.create("build", "t_1", run=world.run_dict, pr=URL, head=HEAD)) is None

@@ -203,7 +203,16 @@ class MessageHandler:
         self.filters, self.callback, self.pattern = filters, callback, None
 
 
-filters = types.SimpleNamespace(StatusUpdate=types.SimpleNamespace(FORUM_TOPIC_CREATED="forum_topic_created"))
+class Filter(str):
+    """A PTB filter as a name; `a | b` joins the names."""
+
+    def __or__(self, other):
+        return Filter(f"{self}|{other}")
+
+
+filters = types.SimpleNamespace(StatusUpdate=types.SimpleNamespace(
+    FORUM_TOPIC_CREATED=Filter("forum_topic_created"), FORUM_TOPIC_CLOSED=Filter("forum_topic_closed"),
+    FORUM_TOPIC_REOPENED=Filter("forum_topic_reopened")))
 
 
 class Application:
@@ -362,9 +371,9 @@ def t(key, **kw):
 
 
 class Query:
-    def __init__(self, user, chat, data="cl:mu0q0:0", thread=None):
+    def __init__(self, user, chat, data="cl:mu0q0:0", thread=None, mid=None):
         self.from_user = SimpleNamespace(id=user, mention_html=lambda: f'<a href="tg://user?id={user}">J</a>')
-        self.message = SimpleNamespace(chat=SimpleNamespace(id=chat), message_thread_id=thread)
+        self.message = SimpleNamespace(chat=SimpleNamespace(id=chat), message_thread_id=thread, message_id=mid)
         self.data = data
         self.answers = []
 
@@ -372,8 +381,16 @@ class Query:
         self.answers.append(text)
 
 
-def update(user, chat, data="cl:mu0q0:0", thread=None):
-    return SimpleNamespace(callback_query=Query(user, chat, data, thread))
+def update(user, chat, data="cl:mu0q0:0", thread=None, mid=None):
+    return SimpleNamespace(callback_query=Query(user, chat, data, thread, mid))
+
+
+def topic_toggled(chat, thread, closed=True, sender=42):
+    """Telegram's forum_topic_closed (or forum_topic_reopened) service message, as a PTB Update."""
+    return SimpleNamespace(effective_message=SimpleNamespace(
+        chat=SimpleNamespace(id=chat), from_user=SimpleNamespace(id=sender), message_thread_id=thread,
+        forum_topic_closed=SimpleNamespace() if closed else None,
+        forum_topic_reopened=None if closed else SimpleNamespace()))
 
 
 def topic_notice(chat, thread, name, sender=555):

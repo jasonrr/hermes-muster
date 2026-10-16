@@ -103,3 +103,8 @@
 
 - A side effect riding on an event the agent waits for (the coordinator's wake inside the `proposal` delivery) → its failure kept the version from arming, and as a queued entry it would stop the queue and switch off `reconcile`'s backstops; give it its own outbox event that `drain`, `reconcile` and cleanup's owner check step past (`runs.owned`).
 - A one-tap action whose payload another agent wrote (Send back's revisions) → the human would send words they never saw, labelled as theirs; put the payload on the message itself, capped so the cut never reaches it.
+
+## topic lifecycle (t_b9615602, 2026-10-16)
+
+- A conversation closed only as a side effect of deleting a resource (`cleanup.remove` -> `conversation.finish`) → every resource blocker (dirty tree, child process, ownership mismatch, stale request) kept a finished run's topic open; close on the work's own end (the merge) and let resource checks gate only the removal.
+- A "liveness probe" built from a mutating call (`reopen_forum_topic` on an in-memory timer) → it undid every human close and fired again on each restart; with no read API, detect a gone topic from evidence a send already leaves (a prompt that fell back to General), never by changing the thing checked.
