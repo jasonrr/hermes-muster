@@ -46,6 +46,12 @@ not planned or a duplicate, with no open pull request, is retired first: a neutr
 archived ledger, after its quiet window. A quiet run whose pull requests were all closed unmerged while its issue
 stays open gets one notice asking the human to archive its ledger or keep it.
 
+Work, conversation and resources are separate. A run's work is resolved once its ledger reads `done` and the newest
+pull request from its branch is merged, none open (an open one is still in review). Then its open build, feedback and
+design requests end, and its topic closes (conversation.finish), whatever is left of its worktree: the checks below
+gate only the removal. A resolved run whose worktree is still kept a day later by any of them gets one warning card
+per blocker, in the main chat; archiving the card keeps the worktree, and that blocker never pings again.
+
 A finished run whose worktree is already gone, whoever removed it (issue #33), is retired too: its ledger reads
 `done`, its topic is still open or closed, a record outside the worktree (run.json, launch.json) names the path,
 herdr no longer lists that path and it is not on disk, no pull request from its branch is open, and nothing still
@@ -92,6 +98,7 @@ def backups_dir():
 
 
 IDLE = 1800
+OVERDUE = 86400  # s after a run's work resolved before a worktree still kept is escalated
 # Cron runs every 300 s. A longer gap between two observations (sleep, cron off) is time nobody watched.
 MAX_GAP = 900
 # How far GitHub's merge time may run ahead of this clock before the clock is not trusted.
@@ -445,12 +452,24 @@ def analysis(rec):
     return digest([rec, quiet(workspace)]), None, None
 
 
-def escalate(link, reason, signature, ledger=None, stranded=False):
+def escalate(link, reason, signature, ledger=None, stranded=False, overdue=False):
     """Open (or find) this state's warning card, subscribed notify+wake and blocked once. Its id. `stranded`: the
-    run's pull requests all closed unmerged, so the question is whether to retire it, not what to do with work."""
-    where = f"workspace {link['workspace']} | {link['repo']} {link['branch']} | worktree {link['worktree']}"
-    name = link["repo"].split("/")[-1]
-    if stranded:
+    run's pull requests all closed unmerged, so the question is whether to retire it, not what to do with work.
+    `overdue`: the run's work resolved a day ago and `reason` still keeps its worktree. A resolved run's card goes to
+    the main chat: its topic stays closed."""
+    where = (f"workspace {link.get('workspace')} | {link.get('repo')} {link.get('branch')} | "
+             f"worktree {link.get('worktree')}")
+    name = str(link.get("repo")).split("/")[-1]
+    if overdue:
+        body = (f"Cleanup overdue. {where}\nThe work on ledger {ledger} resolved over a day ago; its worktree is "
+                f"still kept: {reason}.\nRecommended: clear that blocker and cleanup removes the worktree by itself; or, once "
+                f"nothing in it is needed, remove it by hand. Archive this card to keep it: this blocker does not ping "
+                f"again.")
+        title, block = f"Worktree kept after finished work in {name}", (
+            f"The work on ledger {ledger} resolved over a day ago; its worktree is still kept: {reason}. Clear the "
+            f"blocker, remove it by hand, or archive this card to keep it.\nOpen Herdr workspace "
+            f"{link.get('workspace')}.")
+    elif stranded:
         body = (f"Cleanup notice. {where}\n{reason}.\nDecision for the human: archive ledger {ledger} to retire "
                 f"this workspace (cleanup then removes it; the branch stays), or keep it.")
         title, block = f"Closed pull request in {name}", (f"{reason}. Archive ledger {ledger} to retire this "
@@ -466,7 +485,7 @@ def escalate(link, reason, signature, ledger=None, stranded=False):
         "--idempotency-key", f"muster-cleanup:{signature}", "--created-by", "muster-cleanup", "--json",
         "--", title))["id"]
     if events.status(card) == "ready":
-        core.subscribe(card, ledger)  # in the run's topic, when it has one
+        core.subscribe(card, None if resolved(ledger) else ledger)  # in the run's open topic, when it has one
         core.kanban("block", "--kind", "needs_input", card, block)
         events.expect(card, "blocked", "cleanup warning")
     return card
@@ -481,19 +500,12 @@ def step(target, state, dry):
         fingerprint, warning, gate = check(now)
     except NotReady as why:
         say(f"{name}: kept, {why}")
-        return False
+        return overdue(target, str(why), warned, dry)
     except FAILURES as error:
         say(f"{name}: kept, check failed: {error}")
         return True
     if key in warned and (warning is None or warned[key]["sig"] != warning[1]) and not dry:
-        card = warned[key]["card"]
-        try:
-            if events.status(card) != "archived":
-                core.kanban("archive", card)
-            say(f"{name}: state changed; warning card {card} archived")
-        except FAILURES as error:  # the card is only a notice: forget it rather than stall this target
-            say(f"{name}: state changed; archiving warning card {card} failed, archive it by hand: {error}")
-        del warned[key]
+        forget(name, key, warned)
     was = old.get(key) if isinstance(old.get(key), dict) else {}
     since, last = was.get("since"), was.get("seen")
     watched = (was.get("fingerprint") == fingerprint
@@ -540,13 +552,59 @@ def step(target, state, dry):
         return False
     if gate:
         say(f"{name}: kept, {gate}")
-        return False
+        return overdue(target, gate, warned, dry)
     try:
         with ledger_lock(ledger) if ledger else contextlib.nullcontext():
             return remove(target, fingerprint, (now, since), new, dry)
     except core.LaunchFailure:
         say(f"{name}: kept, a launch or recover holds the run")
         return False
+
+
+def forget(name, key, warned):
+    """Archive the target's warning card: the state it warned about changed."""
+    card = warned.pop(key)["card"]
+    try:
+        if events.status(card) != "archived":
+            core.kanban("archive", card)
+        say(f"{name}: state changed; warning card {card} archived")
+    except FAILURES as error:  # the card is only a notice: forget it rather than stall this target
+        say(f"{name}: state changed; archiving warning card {card} failed, archive it by hand: {error}")
+
+
+def resolved(ledger):
+    """When the run's work resolved (conversation.json `resolved_at`), or None."""
+    with contextlib.suppress(OSError, ValueError, AttributeError):
+        return (conversation.load(ledger) or {}).get("resolved_at") if ledger else None
+    return None
+
+
+def overdue(target, why, warned, dry):
+    """`why` keeps a resolved run's worktree: past OVERDUE, one warning card per blocker. True on a failed command."""
+    name, key = target["name"], target["key"]
+    # A worktree whose owner record no longer matches still names its run by path (never by a reusable workspace id)
+    ledger = ledger_of(target) or next((r["ledger"] for r in conversation.every() if r.get("resolved_at")
+                                        and (provenance(r["ledger"]) or {}).get("worktree") == key), None)
+    at = resolved(ledger)
+    if not at or clock() - at < OVERDUE:
+        return False
+    signature = digest([key, "overdue", why])
+    if warned.get(key, {}).get("sig") == signature:
+        return False  # the human already has this blocker
+    if dry:
+        say(f"{name}: would warn the human: worktree kept a day after its work resolved: {why}")
+        return False
+    if key in warned:
+        forget(name, key, warned)
+    try:
+        link = {**(provenance(ledger) or {}), **target.get("link", {})}
+        card = escalate(link, why, signature, ledger, overdue=True)
+    except FAILURES as error:
+        say(f"{name}: escalating the kept worktree failed: {error}")
+        return True
+    warned[key] = {"sig": signature, "card": card}
+    say(f"{name}: kept a day after its work resolved; human warned on card {card}")
+    return False
 
 
 def remove(target, fingerprint, times, new, dry):
@@ -702,6 +760,44 @@ def settle(dry):
     return failed
 
 
+def resolve(dry):
+    """Close the topic of every run whose work is resolved: its ledger reads done and the newest pull request from its
+    branch merged, none open. Nothing about its worktree holds this. Its open build, feedback and design requests end
+    first, so no saved approval outlives the work. True on a failure."""
+    failed = False
+    for ref in conversation.every():
+        ledger = ref["ledger"]
+        try:
+            if ref.get("resolved_at") or ref.get("state") not in ("open", "closing", "closed", "fallback"):
+                continue
+            if ledger_status(ledger) != "done":
+                continue  # running, archived (the gateway retires it) or unknown
+            link = provenance(ledger)
+            if link is None:
+                continue
+            prs = pull_requests(link["repo"], link["branch"])
+            newest = max(prs, key=lambda pr: pr["number"]) if prs else None
+            if not newest or not newest.get("merged_at") or any(pr.get("state") == "open" for pr in prs):
+                continue  # in review, or closed unmerged: the human's call
+            if dry:
+                say(f"{ledger}: would resolve: PR #{newest['number']} merged; would close its topic")
+                continue
+            for req in decisions.for_ledger(ledger):
+                if req["kind"] in ("build", "feedback", "design") and req["status"] == "open":
+                    decisions.transition(req["id"], ("open",), "stale",
+                                         outcome=f"The work is resolved: PR #{newest['number']} merged")
+            conversation.update(ledger, resolved_at=clock())
+            conversation.finish(ledger)
+            say(f"{ledger}: work resolved, PR #{newest['number']} merged; its topic closes, its worktree is cleaned "
+                f"up separately")
+        except NotReady as why:
+            say(f"{ledger}: not resolved yet, {why}")
+        except FAILURES as error:
+            say(f"{ledger}: resolve check failed: {error}")
+            failed = True
+    return failed
+
+
 def coding_target(name, repo, clone, path, link=None, record=None, ledger=None):
     """A worktree whose link is known up front (run, coding) or read from its card each check (intake)."""
     held, copies, retire = dict(link or {}), [], []
@@ -814,7 +910,9 @@ def run_once(dry):
     # Only targets seen this run carry a quiet record forward: a removed one drops out by itself.
     # ponytail: a warning for a worktree removed by hand stays in `warned`; its card stays for the human to close.
     new = {}
-    found, failed = targets(dry)
+    failed = resolve(dry)  # first: a resolved run's stale requests no longer hold its removal
+    found, listing_failed = targets(dry)
+    failed = failed or listing_failed
     for target in found:
         try:
             failed = step(target, (quiet_old, new, warned), dry) or failed

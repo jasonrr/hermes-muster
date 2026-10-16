@@ -14,6 +14,7 @@ import pytest
 import muster.cleanup as cleanup
 import muster.config as config
 import muster.core as core
+import muster.decisions as decisions
 import muster.runs as runs
 
 REPO = "o/r"
@@ -1276,3 +1277,183 @@ def test_a_run_that_changes_before_the_lock_is_checked_again_under_it(world, mon
     monkeypatch.setattr(cleanup, "ledger_lock", flip)
     assert main([]) == 0
     assert world.cards["t_1"] == {"status": "blocked", "comments": []}
+
+
+# resolved work (lifecycles): the topic closes on the merge, whatever keeps the worktree ---------------------------
+
+def resolvable(world, state="open"):
+    """Issue 15's run, its ledger done, its PR merged, its worktree still checked out, its topic in `state`."""
+    from muster import conversation
+    core.save_json(core.intake_dir() / "t_1" / "launch.json", {
+        "card": "t_1", "repo": REPO, "issue": 15, "event": 7, "launch": {
+            "clone": str(world.clone), "branch": world.branch, "base": "main", "path": world.path,
+            "workspace": "wR", "pane": "wR:p2", "step": "done"}})
+    world.cards["t_1"] = {"status": "done", "comments": []}
+    conversation.update("t_1", state=state, chat_id="c", thread_id="790", cards=[])
+
+
+def topic(ledger="t_1"):
+    from muster import conversation
+    return conversation.load(ledger)
+
+
+@pytest.mark.parametrize("blocker", ["dirty", "unpushed", "agent-working", "child", "ownership", "reused-id"])
+def test_resolved_work_closes_its_topic_and_keeps_a_blocked_worktree(world, blocker):
+    resolvable(world)
+    if blocker == "dirty":
+        world.status = "?? notes.txt\n"
+    elif blocker == "unpushed":
+        world.head_sha, world.unpushed = "def456", "1"
+    elif blocker == "agent-working":
+        world.agent_status["wR:p2"] = "working"
+    elif blocker == "child":
+        world.extra_ps = [(77, world._shell("wR:p1"), "python serve.py")]
+    elif blocker == "ownership":
+        world.card["worktree"] = "/elsewhere"
+        world._write_card()
+    elif blocker == "reused-id":  # herdr gave the run's workspace id to another workspace
+        world.workspace = "wR2"
+    assert main([]) == 0
+    ref = topic()
+    assert ref["state"] == "closing" and ref["resolved_at"] == BASE and removes(world) == []
+    window(world)
+    assert removes(world) == [] and topic()["state"] == "closing"
+
+
+def test_an_open_pull_request_is_still_in_review_and_keeps_the_topic_open(world):
+    resolvable(world)
+    world.pulls = [dict(world._pr(), state="open", merged_at=None)]
+    window(world)
+    assert topic()["state"] == "open" and "resolved_at" not in topic()
+
+
+def test_a_newer_pull_request_closed_unmerged_does_not_resolve(world):
+    resolvable(world)
+    world.pulls.append(dict(world._pr(number=20), state="closed", merged_at=None))
+    assert main([]) == 0
+    assert topic()["state"] == "open"
+
+
+@pytest.mark.parametrize("status", ["ready", "blocked", "archived"])
+def test_only_a_done_ledger_resolves_here(world, status):
+    resolvable(world)
+    world.cards["t_1"]["status"] = status
+    assert main([]) == 0
+    assert topic()["state"] == "open" and "resolved_at" not in topic()
+
+
+def test_resolving_ends_the_saved_approvals_but_not_the_agents_question(world):
+    resolvable(world)
+    ids = {kind: decisions.create(kind, "t_1")["id"] for kind in ("build", "feedback", "design", "question")}
+    other = decisions.create("build", "t_other")["id"]
+    assert main([]) == 0
+    got = {kind: decisions.load(rid)["status"] for kind, rid in ids.items()}
+    assert got == {"build": "stale", "feedback": "stale", "design": "stale", "question": "open"}
+    assert decisions.load(ids["build"])["outcome"] == "The work is resolved: PR #16 merged"
+    assert decisions.load(other)["status"] == "open"
+
+
+def test_a_human_closed_topic_is_marked_resolved_and_stays_closed(world):
+    resolvable(world, state="closed")
+    assert main([]) == 0
+    assert topic()["state"] == "closed" and topic()["resolved_at"] == BASE
+
+
+def test_resolving_is_idempotent_and_a_dry_run_changes_nothing(world, capsys):
+    resolvable(world)
+    rid = decisions.create("build", "t_1")["id"]
+    assert main(["--dry-run"]) == 0
+    assert topic()["state"] == "open" and decisions.load(rid)["status"] == "open"
+    assert "would resolve: PR #16 merged" in capsys.readouterr().out
+    assert main([]) == 0 and tick(world, 5) == 0
+    assert topic()["resolved_at"] == BASE  # the first pass's time stays
+
+
+def test_a_resolved_runs_unsaved_work_warning_goes_to_the_main_chat(world):
+    resolvable(world)
+    world.status = "?? notes.txt\n"
+    window(world)
+    assert world.subscribed and world.ledgers == [None]
+
+
+def test_a_merged_run_whose_worktree_is_gone_closes_then_retires(world):
+    vanished(world)
+    world.pulls = [world._pr()]
+    assert main([]) == 0
+    assert topic()["state"] == "closing" and world.cards["t_1"]["status"] == "done"
+    from muster import conversation
+    conversation.swap("t_1", ("closing",), state="closed")  # the gateway confirmed the close
+    assert tick(world, 5) == 0
+    assert world.cards["t_1"]["status"] == "archived"
+
+
+def test_two_runs_resolve_independently(world):
+    resolvable(world)
+    from muster import conversation
+    conversation.update("t_2", state="open", chat_id="c", thread_id="791", cards=[])
+    world.cards["t_2"] = {"status": "ready", "comments": []}  # still running
+    assert main([]) == 0
+    assert topic()["state"] == "closing" and topic("t_2")["state"] == "open"
+
+
+# cleanup overdue: a resolved run's worktree kept a day later gets one card per blocker -------------------------
+
+def overdue_cards(world):
+    return {k: v for k, v in world.cards.items() if k.startswith("t_warn")}
+
+
+def test_a_blocked_worktree_is_escalated_once_a_day_after_resolution(world):
+    resolvable(world)
+    world.agent_status["wR:p2"] = "working"
+    assert main([]) == 0
+    tick(world, 60 * 23)
+    assert overdue_cards(world) == {}
+    tick(world, 61)
+    [(card, rec)] = overdue_cards(world).items()
+    assert "Cleanup overdue" in rec["body"] and "pane wR:p2: claude is working" in rec["body"]
+    assert "ledger t_1" in rec["body"] and world.path in rec["body"] and world.ledgers == [None]
+    assert world.blocks == {card: 1}
+    for _ in range(5):
+        tick(world, 5)
+    assert list(overdue_cards(world)) == [card] and world.blocks == {card: 1}  # deduplicated
+    assert topic()["state"] == "closing"  # never reopened
+
+
+def test_a_new_blocker_replaces_the_overdue_card_and_a_cleared_one_archives_it(world):
+    resolvable(world)
+    world.agent_status["wR:p2"] = "working"
+    assert main([]) == 0
+    tick(world, 60 * 25)
+    [first] = overdue_cards(world)
+    world.agent_status["wR:p2"] = "idle"
+    world.extra_ps = [(77, world._shell("wR:p1"), "python serve.py")]
+    tick(world, 5)
+    assert world.cards[first]["status"] == "archived" and len(overdue_cards(world)) == 2
+    second = max(overdue_cards(world))
+    world.extra_ps = []
+    tick(world, 5)
+    assert world.cards[second]["status"] == "archived"
+
+
+def test_an_overdue_card_for_an_ownership_mismatch_names_the_run_by_path(world):
+    resolvable(world)
+    world.card["worktree"] = "/elsewhere"
+    world._write_card()
+    assert main([]) == 0
+    tick(world, 60 * 25)
+    [rec] = overdue_cards(world).values()
+    assert "ledger t_1" in rec["body"] and "card names" in rec["body"]
+
+
+def test_an_unresolved_runs_blocker_is_never_escalated_and_a_dry_run_warns_nobody(world, capsys):
+    resolvable(world)
+    world.agent_status["wR:p2"] = "working"
+    world.pulls = [dict(world._pr(), state="open", merged_at=None)]
+    assert main([]) == 0
+    tick(world, 60 * 48)
+    assert overdue_cards(world) == {}
+    world.pulls = [world._pr()]
+    assert main([]) == 0  # resolved now
+    world.t[0] += 86400 + 60
+    assert main(["--dry-run"]) == 0
+    assert overdue_cards(world) == {} and "would warn the human" in capsys.readouterr().out

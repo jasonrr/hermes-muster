@@ -23,6 +23,7 @@ def hermes(monkeypatch):
     from tools import approval, approval_gateway_wait
     monkeypatch.setattr(approval_gateway_wait, "TIMEOUT", 2)  # a stuck approval wait ends by itself
     monkeypatch.setattr(gateway, "S", gateway.State())
+    monkeypatch.setattr(decisions, "obsolete", lambda req: None)  # GitHub's read of the pull request: still open
     monkeypatch.setattr(gateway, "CTX", types.SimpleNamespace(
         get_config=lambda k, d: config.settings.get(k, d), spawn_task=fh.spawn_task))
     gateway.S.configured = True
@@ -106,8 +107,10 @@ def test_factory_registers_both_guards_and_one_scan_task(monkeypatch):
 
     run(go())
     assert [(g, h.pattern, h.callback) for h, g in app.handlers] == [
-        (-1, r"^cl:mu", gateway.guard), (-1, r"^ea:", gateway.approval_guard), (-1, None, gateway.topic_created)]
+        (-1, r"^cl:mu", gateway.guard), (-1, r"^ea:", gateway.approval_guard), (-1, None, gateway.topic_created),
+        (-1, None, gateway.topic_toggled)]
     assert app.handlers[2][0].filters == "forum_topic_created"
+    assert app.handlers[3][0].filters == "forum_topic_closed|forum_topic_reopened"
     assert other.handlers and prepared == [1, 1]
 
 
@@ -993,6 +996,11 @@ def opened(forum, ledger="led1", name="r#7 Fix it", cards=()):
     return str(thread)
 
 
+def found_gone(forum, ledger="led1"):
+    """The run's topic is found deleted (a prompt that fell back to General was tapped; see the tests below)."""
+    run(gateway.gone(ledger, conversation.load(ledger)["thread_id"]))
+
+
 def tick(forum, seconds, n=1):
     for _ in range(n):
         forum.clock[0] += seconds
@@ -1104,7 +1112,8 @@ def test_a_finished_run_closes_its_topic_once_and_keeps_it(forum):
     assert conversation.load("led1")["state"] == "closed" and int(thread) in forum.bot.closed
     assert int(thread) in forum.bot.topics  # never deleted
     assert [n for n in forum.adapter.notes if "finished" in n[1]] == [
-        (GROUP_CHAT, "Run finished; worktree removed. History kept.", thread)]
+        (GROUP_CHAT, "Work finished: this topic is closed. History kept; the worktree is cleaned up separately.",
+         thread)]
 
 
 def test_a_request_for_a_closed_run_reopens_its_topic_first(forum):
@@ -1121,24 +1130,28 @@ def test_a_deleted_topic_then_an_agent_prompt_lands_in_a_new_topic(forum):
     old = opened(forum, cards=["led1", "w1"])
     forum.bot.deleted.add(int(old))
     req = ask()
-    tick(forum, 0)  # the present's probe finds the topic gone: nothing is sent to General
-    assert forum.adapter.sent == [] and conversation.load("led1")["state"] == "creating"
+    tick(forum, 0)  # nothing probes the topic: Hermes resends the prompt to General
+    assert [s["thread"] for s in forum.adapter.sent] == [None] and conversation.load("led1")["state"] == "open"
+    update = fh.update(42, GROUP_CHAT, data=f"cl:mu{req['id']}q0:0", thread=None, mid=forum.adapter.sent[0]["mid"])
+    with pytest.raises(fh.ApplicationHandlerStop):
+        run(gateway.guard(update, None))  # its newest prompt landed outside the topic: the topic is gone
+    assert conversation.load("led1")["state"] == "creating" and status(req) == "open"
     tick(forum, 0, n=3)  # made, then the cards and the request move
     ref = conversation.load("led1")
     new = ref["thread_id"]
     assert ref["state"] == "open" and new != old and ref["previous"] == [old] and ref["repaired"] == new
-    assert [s["thread"] for s in forum.adapter.sent] == [new] and forum.adapter.sent[0]["cid"] == f"mu{req['id']}q0"
+    assert [s["thread"] for s in forum.adapter.sent] == [None, new]
+    assert forum.adapter.sent[1]["cid"] == f"mu{req['id']}q0"
     assert forum.subs.deliver("led1") == [new] and forum.subs.deliver("w1") == [new]
     assert (GROUP_CHAT, "The previous topic was deleted; this run continues here.", new) in forum.adapter.notes
 
 
 def test_a_deleted_topic_then_a_coordinator_wake_lands_in_the_new_topic(forum):
     old = opened(forum, cards=["led1"])
-    tick(forum, 0)  # first probe: alive
     forum.bot.deleted.add(int(old))
-    tick(forum, 10)
-    assert conversation.load("led1")["state"] == "open"  # the next probe is due 30 s after the last
-    tick(forum, 21)
+    tick(forum, 31, n=3)
+    assert conversation.load("led1")["state"] == "open" and not forum.bot.calls  # nothing probes the topic
+    found_gone(forum)
     assert conversation.load("led1")["state"] == "creating"
     tick(forum, 0, n=2)
     new = conversation.load("led1")["thread_id"]
@@ -1150,7 +1163,7 @@ def test_a_recreate_that_fails_moves_the_run_to_the_main_chat(forum):
     old = opened(forum, cards=["led1"])
     forum.bot.deleted.add(int(old))
     forum.bot.forum = False  # Topics turned off meanwhile
-    tick(forum, 0)
+    found_gone(forum)
     tick(forum, 0, n=3)
     ref = conversation.load("led1")
     assert ref["state"] == "fallback" and ref["repaired"] == "main"
@@ -1229,37 +1242,44 @@ def test_with_topics_off_nothing_carries_a_thread(hermes):
     assert gateway.S.adapter.sent[0]["thread"] is None and not (config.data_dir() / "runs").exists()
 
 
-def test_an_unknown_probe_error_changes_nothing_and_is_logged(forum, monkeypatch):
+def test_an_open_topic_is_never_probed_or_reopened(forum):
     opened(forum)
-
-    async def flaky(chat_id, message_thread_id):
-        raise Exception("Timed out")
-    monkeypatch.setattr(forum.bot, "reopen_forum_topic", flaky)
     ask()
-    tick(forum, 0)
-    assert conversation.load("led1")["state"] == "open" and len(forum.adapter.sent) == 1  # sent to its topic
-    assert "probe: Timed out" in core.log_path("gateway").read_text()
+    tick(forum, 31, n=4)
+    gateway.S = gateway.State()  # a restart
+    gateway.S.configured, gateway.S.adapter, gateway.S.bot = True, forum.adapter, forum.bot
+    tick(forum, 31, n=2)
+    assert not [c for c in forum.bot.calls if c[0] == "reopen"] and conversation.load("led1")["state"] == "open"
 
 
-def test_a_prompt_rerouted_to_general_is_not_answered_there_and_moves_to_a_new_topic(forum, monkeypatch):
-    old = opened(forum, cards=["led1"])
-    forum.bot.deleted.add(int(old))
-    real = forum.bot.reopen_forum_topic
-
-    async def flaky(chat_id, message_thread_id):  # the probe cannot tell, so the send goes out
-        raise Exception("Timed out")
-    monkeypatch.setattr(forum.bot, "reopen_forum_topic", flaky)
+def test_a_tap_on_an_older_prompt_outside_the_topic_does_not_mark_it_gone(forum):
+    thread = opened(forum)
     req = ask()
     tick(forum, 0)
-    assert [s["thread"] for s in forum.adapter.sent] == [None]  # Hermes resent it to General
-    monkeypatch.setattr(forum.bot, "reopen_forum_topic", real)
-    update = fh.update(42, GROUP_CHAT, data=f"cl:mu{req['id']}q0:0", thread=None)
+    update = fh.update(42, GROUP_CHAT, data=f"cl:mu{req['id']}q0:0", thread=None, mid="1")  # not its newest message
     with pytest.raises(fh.ApplicationHandlerStop):
         run(gateway.guard(update, None))
-    assert update.callback_query.answers == ["Moved: answer in the run's topic"] and status(req) == "open"
-    tick(forum, 0, n=4)
-    new = conversation.load("led1")["thread_id"]
-    assert new != old and [s["thread"] for s in forum.adapter.sent] == [None, new]
+    assert update.callback_query.answers == ["Moved: answer in the run's topic"]
+    ref = conversation.load("led1")
+    assert ref["state"] == "open" and ref["thread_id"] == thread
+
+
+def test_an_approval_card_that_fell_back_to_general_marks_the_topic_gone(forum):
+    old = opened(forum, cards=["led1"])
+    forum.bot.deleted.add(int(old))
+    req = permission()
+
+    async def go():
+        await gateway.scan()
+        await until(lambda: forum.adapter.sent)
+
+    run(go())
+    sent = forum.adapter.sent[0]
+    assert sent["thread"] is None
+    update = fh.update(42, GROUP_CHAT, data=f"ea:once:{sent['mid']}", thread=None, mid=sent["mid"])
+    with pytest.raises(fh.ApplicationHandlerStop):
+        run(gateway.approval_guard(update, None))
+    assert status(req) == "open" and conversation.load("led1")["state"] == "creating"
 
 
 def test_while_a_deleted_topic_is_remade_no_tap_is_taken_anywhere(forum):
@@ -1267,7 +1287,7 @@ def test_while_a_deleted_topic_is_remade_no_tap_is_taken_anywhere(forum):
     req = ask()
     tick(forum, 0)
     forum.bot.deleted.add(int(old))
-    tick(forum, 31)
+    found_gone(forum)
     assert conversation.load("led1")["state"] == "creating"
     for thread in (None, int(old)):
         update = fh.update(42, GROUP_CHAT, data=f"cl:mu{req['id']}q0:0", thread=thread)
@@ -1280,6 +1300,7 @@ def test_a_recreate_that_falls_back_presents_the_prompt_once_in_the_main_chat(fo
     old = opened(forum, cards=["led1"])
     forum.bot.deleted.add(int(old))
     forum.bot.forum = False
+    found_gone(forum)
     ask()
     tick(forum, 11, n=6)
     assert [s["thread"] for s in forum.adapter.sent] == [None]
@@ -1317,7 +1338,7 @@ def test_a_card_whose_subscription_does_not_move_is_retried_before_the_repair_is
     old = opened(forum, cards=["led1", "w1"])
     forum.bot.deleted.add(int(old))
     forum.subs.fail["led1"] = 1  # the ledger: the card the coordinator's review wake comes from
-    tick(forum, 31)  # the probe finds it gone
+    found_gone(forum)
     tick(forum, 0)  # a new topic
     new = conversation.load("led1")["thread_id"]
     tick(forum, 0)  # the repair: w1 moves, the ledger's subscribe fails
@@ -1345,7 +1366,7 @@ def test_a_card_left_subscribed_at_the_old_topic_is_not_counted_as_moved(forum, 
             return ""
         return real(self, *argv)
     monkeypatch.setattr(forum.subs.__class__, "__call__", stuck)
-    tick(forum, 31)
+    found_gone(forum)
     tick(forum, 0, n=2)
     ref = conversation.load("led1")
     assert ref["migrating"] == ["led1"] and ref.get("repaired") is None
@@ -1389,7 +1410,7 @@ def test_a_late_notice_of_the_deleted_previous_topic_is_never_adopted(forum):
     name = conversation.load("led1")["name"]
     forum.bot.deleted.add(int(old))
     forum.adapter.creates = ["lost"]
-    tick(forum, 31)  # gone
+    found_gone(forum)
     tick(forum, 0)  # the recreate's reply is lost
     new = max(forum.bot.topics)
     run(gateway.topic_created(fh.topic_notice(GROUP_CHAT, int(old), name), None))  # the old topic's notice, late
@@ -1400,16 +1421,16 @@ def test_a_late_notice_of_the_deleted_previous_topic_is_never_adopted(forum):
     assert run(gateway.settle("led1", old)) is None and conversation.load("led1")["thread_id"] == str(new)
 
 
-def test_a_card_that_never_moves_does_not_stop_the_deletion_probe(forum):
+def test_a_card_that_never_moves_does_not_stop_a_second_deletion(forum):
     old = opened(forum, cards=["led1", "w1"])
     forum.bot.deleted.add(int(old))
     forum.subs.fail["w1"] = 10 ** 6
-    tick(forum, 31)
+    found_gone(forum)
     tick(forum, 0, n=2)
     first = conversation.load("led1")["thread_id"]
     assert conversation.load("led1")["migrating"] == ["w1"]
     forum.bot.deleted.add(int(first))  # the new topic is deleted too
-    tick(forum, 31)
+    found_gone(forum)
     ref = conversation.load("led1")
     assert ref["state"] == "creating" and ref["previous"] == [old, first] and ref["migrate_at"] == 0
     tick(forum, 0, n=2)
@@ -1420,7 +1441,7 @@ def test_a_card_deleted_from_the_board_counts_as_moved(forum):
     old = opened(forum, cards=["led1", "w1"])
     forum.bot.deleted.add(int(old))
     forum.subs.missing.add("w1")
-    tick(forum, 31)
+    found_gone(forum)
     tick(forum, 0, n=2)
     ref = conversation.load("led1")
     assert ref["migrating"] == [] and ref["repaired"] == ref["thread_id"]
@@ -1440,7 +1461,7 @@ def test_a_move_to_the_main_chat_must_read_back_there(forum, monkeypatch):
         return real(self, *argv)
     monkeypatch.setattr(forum.subs.__class__, "__call__", silent)
     monkeypatch.setattr(core, "subscribe", lambda card, ledger=None: real(forum.subs, "notify-list", card))
-    tick(forum, 31)
+    found_gone(forum)
     tick(forum, 0, n=3)
     ref = conversation.load("led1")
     assert ref["state"] == "fallback" and ref["migrating"] == ["led1"] and ref.get("repaired") is None
@@ -1468,6 +1489,7 @@ def test_a_ledger_missing_from_the_board_deletes_nothing_and_makes_nothing(forum
     tick(forum, 31, n=2)
     assert conversation.load("led1")["state"] == "open" and int(thread) in forum.bot.topics
     forum.bot.deleted.add(int(thread))
+    found_gone(forum)
     tick(forum, 31, n=3)
     assert conversation.load("led1")["state"] == "creating" and list(forum.bot.topics) == [int(thread)]
 
@@ -1580,3 +1602,178 @@ def test_an_open_runs_prompts_still_arrive_while_the_board_cannot_be_read(forum,
     ask()
     tick(forum, 0)
     assert [s["thread"] for s in forum.adapter.sent] == [thread]
+
+
+# -- conversation lifecycle: closing is independent of cleanup; nothing saved reopens a closed topic ---------------
+
+def closed_later(forum, by="muster"):
+    """A run's topic closed after every request made so far (the forum clock runs ahead of request times)."""
+    thread = opened(forum)
+    forum.clock[0] = time.time() + 60
+    if by == "muster":
+        conversation.finish("led1")
+        tick(forum, 0)
+    else:
+        run(gateway.topic_toggled(fh.topic_toggled(GROUP_CHAT, int(thread)), None))
+        forum.bot.closed.add(int(thread))
+    return thread
+
+
+def restart(forum):
+    gateway.S = gateway.State()
+    gateway.S.configured, gateway.S.adapter, gateway.S.bot = True, forum.adapter, forum.bot
+
+
+def test_a_fresh_gateway_with_an_open_topic_and_a_done_ledger_changes_nothing(forum):
+    """Repro (a): the old probe reopened a topic on every boot."""
+    opened(forum)
+    forum.subs.status["led1"] = "done"
+    restart(forum)
+    tick(forum, 31, n=3)
+    assert forum.bot.calls == [] and conversation.load("led1")["state"] == "open"
+
+
+def test_a_saved_request_routed_after_a_restart_never_reopens_a_closed_topic(forum):
+    """Repro (b): a build request saved before the close (PR114's merge) reopened topic 790."""
+    thread = opened(forum)
+    forum.subs.status["led1"] = "done"
+    decisions.create("build", "led1", **{**dict(actions=["merge", "send-back", "nothing"], recommended="merge",
+                                                head="a" * 40, pr="https://github.com/o/r/pull/1", cycle=1,
+                                                choices=[["Merge", "Send back", "Do nothing"]]),
+                                         "questions": [question("Review", ("Merge", "Send back", "Do nothing"))],
+                                         "run": {"repo": "o/r", "issue": 7}})
+    forum.clock[0] = time.time() + 60
+    conversation.finish("led1")
+    tick(forum, 0)
+    restart(forum)
+    tick(forum, 31, n=3)
+    ref = conversation.load("led1")
+    assert ref["state"] == "closed" and ref["closed_by"] == "muster" and int(thread) in forum.bot.closed
+    assert forum.adapter.sent == [] and not [c for c in forum.bot.calls if c[0] == "reopen"]
+
+
+def test_an_obsolete_merge_approval_is_staled_before_it_is_shown(forum, monkeypatch):
+    opened(forum)
+    monkeypatch.setattr(decisions, "obsolete", lambda req: "https://github.com/o/r/pull/1 is MERGED, not OPEN")
+    req = decisions.create("build", "led1", **{**dict(actions=["merge", "send-back", "nothing"], recommended="merge",
+                                                      head="a" * 40, pr="https://github.com/o/r/pull/1", cycle=1,
+                                                      choices=[["Merge", "Send back", "Do nothing"]]),
+                                               "questions": [question("Review", ("Merge", "Send back", "Do nothing"))],
+                                               "run": {"repo": "o/r", "issue": 7}})
+    tick(forum, 0)
+    assert status(req) == "stale" and "is MERGED" in decisions.load(req["id"])["outcome"]
+    assert forum.adapter.sent == []
+
+
+def test_a_legacy_closed_topic_gets_a_close_time_so_nothing_saved_reopens_it(forum):
+    thread = opened(forum)
+    forum.bot.closed.add(int(thread))
+    conversation.update("led1", state="closed")  # closed before closed_at was kept
+    ask()
+    forum.clock[0] = time.time() + 60
+    tick(forum, 0, n=2)
+    assert conversation.load("led1")["closed_at"] == forum.clock[0] and forum.adapter.sent == []
+    assert conversation.load("led1")["state"] == "closed"
+
+
+def test_a_request_made_after_the_close_reopens_the_topic(forum):
+    thread = closed_later(forum)
+    forum.clock[0] = 1000.0  # requests from here on are newer than the close
+    conversation.update("led1", closed_at=1000.0)
+    ask()
+    tick(forum, 0)
+    ref = conversation.load("led1")
+    assert ref["state"] == "open" and ref["closed_at"] is None and int(thread) not in forum.bot.closed
+    assert [s["thread"] for s in forum.adapter.sent] == [thread]
+    assert "reopened for request" in core.log_path("gateway").read_text()
+
+
+def test_a_reopen_that_finds_no_thread_makes_a_new_topic(forum):
+    thread = closed_later(forum)
+    forum.bot.deleted.add(int(thread))
+    conversation.update("led1", closed_at=1000.0)
+    ask()
+    tick(forum, 0)
+    assert conversation.load("led1")["state"] == "creating" and forum.adapter.sent == []
+
+
+def test_a_reopen_that_fails_otherwise_stays_closed_and_is_logged(forum, monkeypatch):
+    closed_later(forum)
+    conversation.update("led1", closed_at=1000.0)
+
+    async def flaky(chat_id, message_thread_id):
+        raise Exception("Timed out")
+    monkeypatch.setattr(forum.bot, "reopen_forum_topic", flaky)
+    ask()
+    tick(forum, 0)
+    assert conversation.load("led1")["state"] == "closed" and forum.adapter.sent == []
+    assert "reopening topic" in core.log_path("gateway").read_text()
+
+
+def test_a_human_close_is_kept_through_scans_and_restarts_while_work_goes_on(forum):
+    req = ask()
+    thread = closed_later(forum, by="human")
+    ref = conversation.load("led1")
+    assert ref["state"] == "closed" and ref["closed_by"] == "human"
+    tick(forum, 31, n=3)
+    restart(forum)
+    tick(forum, 31, n=3)
+    assert conversation.load("led1")["state"] == "closed" and forum.adapter.sent == []
+    assert not [c for c in forum.bot.calls if c[0] == "reopen"] and int(thread) in forum.bot.closed
+    assert status(req) == "open"  # still the agent's question: the pane takes the answer
+
+
+def test_a_human_reopen_resumes_and_shows_the_prompts_again(forum):
+    req = ask()
+    thread = closed_later(forum, by="human")
+    forum.bot.closed.discard(int(thread))
+    run(gateway.topic_toggled(fh.topic_toggled(GROUP_CHAT, int(thread), closed=False), None))
+    assert conversation.load("led1")["state"] == "open"
+    tick(forum, 0)
+    assert [s["thread"] for s in forum.adapter.sent] == [thread] and status(req) == "open"
+
+
+def test_a_human_close_while_muster_closes_settles_closed(forum, monkeypatch):
+    thread = opened(forum)
+
+    async def down(chat, thread):
+        raise Exception("Timed out")
+    monkeypatch.setattr(forum.bot, "close_forum_topic", down)
+    conversation.finish("led1")
+    tick(forum, 0)
+    assert conversation.load("led1")["state"] == "closing"
+    run(gateway.topic_toggled(fh.topic_toggled(GROUP_CHAT, int(thread)), None))
+    ref = conversation.load("led1")
+    assert ref["state"] == "closed" and ref["closed_by"] == "human" and ref["retry_at"] == 0
+
+
+def test_the_bots_own_or_another_chats_close_notice_changes_nothing(forum):
+    thread = opened(forum)
+    run(gateway.topic_toggled(fh.topic_toggled(GROUP_CHAT, int(thread), sender=forum.bot.id), None))
+    run(gateway.topic_toggled(fh.topic_toggled("-100999", int(thread)), None))
+    run(gateway.topic_toggled(fh.topic_toggled(GROUP_CHAT, 999), None))  # not a run's topic
+    assert conversation.load("led1")["state"] == "open"
+
+
+def test_two_runs_close_and_reopen_independently(forum):
+    a, b = opened(forum, "ledA", "r#1 A"), opened(forum, "ledB", "r#2 B")
+    run(gateway.topic_toggled(fh.topic_toggled(GROUP_CHAT, int(a)), None))
+    conversation.finish("ledB")
+    tick(forum, 0)
+    assert conversation.load("ledA")["closed_by"] == "human" and conversation.load("ledB")["closed_by"] == "muster"
+    run(gateway.topic_toggled(fh.topic_toggled(GROUP_CHAT, int(a), closed=False), None))
+    assert conversation.load("ledA")["state"] == "open" and conversation.load("ledB")["state"] == "closed"
+
+
+def test_a_close_that_fails_never_claims_closed_and_backs_off(forum, monkeypatch):
+    thread = opened(forum)
+
+    async def down(chat, thread):
+        raise Exception("Timed out")
+    monkeypatch.setattr(forum.bot, "close_forum_topic", down)
+    conversation.finish("led1")
+    for _ in range(12):
+        tick(forum, 3600)
+    ref = conversation.load("led1")
+    assert ref["state"] == "closing" and ref["retry_delay"] == gateway.RETRY_MAX and int(thread) not in forum.bot.closed
+    assert "Timed out" in ref["why"]

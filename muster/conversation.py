@@ -1,14 +1,16 @@
 """conversation: where a run's messages go, one channel-neutral reference per ledger card (issue #24).
 
 <data dir>/runs/<ledger>/conversation.json holds {ledger, platform, chat_id, user_id, thread_id, name, state, why,
-attempts, since, previous, cards, noticed, repaired}. `thread_id` is Telegram's message_thread_id (a Slack
-thread_ts later); `user_id` is the human authorized to answer. `state`:
+attempts, since, previous, cards, noticed, repaired, resolved_at, closed_at, closed_by}. `thread_id` is Telegram's
+message_thread_id (a Slack thread_ts later); `user_id` is the human authorized to answer. `resolved_at`: when cleanup
+found the run's work resolved (its pull request merged); the topic closes then, whatever is left to clean up. `state`:
   pending  - the launch asked for a topic; the gateway (which holds the bot) creates it
   creating - an attempt is under way, or its result was lost (muster.gateway reconciles it)
   open     - the run's messages go to thread_id
-  closing  - cleanup removed the worktree; the gateway closes the topic, keeping its history (retried until
-             Telegram confirms)
-  closed   - closed in Telegram; the gateway reopens it before presenting anything new
+  closing  - the work is resolved; the gateway closes the topic, keeping its history (retried until Telegram
+             confirms). Closing never touches the worktree
+  closed   - closed in Telegram (`closed_by` muster or the human, at `closed_at`). Only the human's reopen, or a
+             request made after `closed_at`, reopens it; nothing older (a replay, a restart, a saved approval) does
   retiring - the ledger card reads archived on the board: the gateway stales the run's prompts and deletes
              the topic (retried until Telegram confirms)
   deleted  - terminal: the topic is gone and is never probed, reopened or recreated (issue #28). This file
@@ -132,7 +134,7 @@ def add_card(ledger, card):
 
 
 def finish(ledger):
-    """The run is finished (cleanup removed its worktree): the gateway closes the topic."""
+    """The run's work is resolved: the gateway closes the topic."""
     if load(ledger):
         swap(ledger, ("open",), state="closing")
 
