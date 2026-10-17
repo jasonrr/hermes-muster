@@ -470,3 +470,236 @@ def test_an_ended_question_shows_its_outcome_on_every_message(channel):
     channel.client.fail["chat_update"] = ["message_not_found"]
     assert asyncio.run(slack.outcome(decisions.load(req["id"]))) is False
     assert len(channel.client.updates) == 1 and "Answered in the pane" in json.dumps(channel.client.updates[0])
+
+
+# -- Task 9: the thread lifecycle -------------------------------------------------------------------
+
+from muster import conversation  # noqa: E402
+
+from tests import fake_hermes as fh  # noqa: E402
+
+
+@pytest.fixture
+def threads(channel, monkeypatch):
+    monkeypatch.setitem(config.settings, "notify_topics", True)
+    subs = fh.Subs()
+    monkeypatch.setattr(core, "kanban", subs)
+    clock = [1000.0]
+    monkeypatch.setattr(shared, "now", lambda: clock[0])
+    monkeypatch.setattr(shared, "clock", lambda: clock[0])
+    channel.subs, channel.clock = subs, clock
+    return channel
+
+
+def requested(ledger="led1", **fields):
+    """What the launch writes before it waits (conversation.request)."""
+    return conversation.update(ledger, **{
+        "platform": "slack", "chat_id": CHAN, "user_id": ME, "thread_id": None,
+        "name": f"r#7 Fix it · {ledger}", "attempts": 0, "since": 0, "previous": [], "cards": [], "noticed": False,
+        "why": "", "state": "pending", **fields})
+
+
+def tick(channel, seconds=0, n=1):
+    for _ in range(n):
+        channel.clock[0] += seconds
+        asyncio.run(gateway.scan())
+
+
+def opened(channel, ledger="led1", cards=()):
+    requested(ledger, cards=list(cards))
+    tick(channel)
+    for card in cards:
+        core.subscribe(card, ledger)
+    return conversation.load(ledger)["thread_id"]
+
+
+def test_presenting_through_the_gateway_saves_the_ids_once(channel):
+    req = ask([question(), question("Second?")])
+    asyncio.run(gateway.scan())
+    asyncio.run(gateway.scan())
+    assert len(channel.client.posts) == 2
+    assert decisions.load(req["id"])["presented"]["messages"] == {"0": ["1.000100"], "1": ["2.000100"]}
+
+
+def test_a_long_command_through_the_gateway_is_sent_once(channel):
+    req = permission("x" * 2901)
+    asyncio.run(gateway.scan())
+    asyncio.run(gateway.scan())
+    assert len(channel.client.posts) == 1 and decisions.load(req["id"])["status"] == "stale"
+
+
+def test_the_gateway_posts_the_thread_parent_once(threads):
+    requested()
+    seen = []
+    real = threads.client.chat_postMessage
+
+    async def post(**kw):
+        seen.append(conversation.load("led1"))
+        return await real(**kw)
+
+    threads.client.chat_postMessage = post
+    tick(threads)
+    (parent,) = threads.client.posts
+    assert seen[0]["asked"] is True and seen[0]["state"] == "creating" and seen[0]["attempts"] == 1
+    assert "thread_ts" not in parent and "· led1" in parent["text"] and "⏳ running" in parent["text"]
+    ref = conversation.load("led1")
+    assert ref["state"] == "open" and ref["thread_id"] == "1.000100"
+    req = ask()
+    tick(threads)
+    assert threads.client.posts[-1]["thread_ts"] == "1.000100" and decisions.load(req["id"])["presented"]
+
+
+@pytest.mark.parametrize("fail", ["raises", "restart mid-call"])
+def test_a_parent_that_did_not_post_falls_back_once(threads, monkeypatch, fail):
+    if fail == "raises":
+        requested()
+        threads.client.fail["chat_postMessage"] = ["ratelimited"]
+    else:
+        requested(state="creating", asked=True, attempts=1)
+    tick(threads)
+    ref = conversation.load("led1")
+    assert ref["state"] == "fallback" and ref["why"]
+    tick(threads)
+    monkeypatch.setattr(slack, "T", slack.State())
+    slack.T.client = threads.client
+    tick(threads, n=2)
+    (notice,) = threads.client.posts
+    assert "thread_ts" not in notice and notice["text"].startswith("Thread not created for r#7 Fix it · led1: ")
+    assert notice["text"].endswith("This run stays in the channel.") and conversation.load("led1")["noticed"]
+
+
+def test_an_archived_run_gets_no_parent(threads):
+    requested()
+    threads.subs.status["led1"] = "archived"
+    tick(threads, n=2)
+    assert conversation.load("led1")["state"] == "deleted" and threads.client.posts == []
+
+
+def test_closing_says_done_once_and_marks_the_parent(threads):
+    thread = opened(threads)
+    conversation.finish("led1")
+    tick(threads)
+    tick(threads)
+    (note,) = threads.client.posts[1:]
+    assert note["thread_ts"] == thread and "finished" in note["text"]
+    (parent,) = threads.client.updates
+    assert parent["ts"] == thread and "✅ done" in parent["text"]
+    ref = conversation.load("led1")
+    assert ref["state"] == "closed" and ref["closed_at"] == threads.clock[0] and ref["closed_by"] == "muster"
+
+
+def test_a_parent_update_that_fails_is_retried_after_its_backoff(threads):
+    opened(threads)
+    conversation.finish("led1")
+    threads.client.fail["chat_update"] = ["ratelimited"]
+    tick(threads)
+    ref = conversation.load("led1")
+    assert ref["state"] == "closing" and ref["retry_at"] > threads.clock[0]
+    tick(threads, 1)
+    assert conversation.load("led1")["state"] == "closing"
+    tick(threads, 10)
+    assert conversation.load("led1")["state"] == "closed" and len(threads.client.posts) == 2  # one finish note
+
+
+@pytest.mark.parametrize("error", slack.GONE)
+def test_a_gone_parent_still_closes_and_retires(threads, error):
+    opened(threads)
+    conversation.finish("led1")
+    threads.client.fail["chat_update"] = [error]
+    tick(threads)
+    assert conversation.load("led1")["state"] == "closed"
+    threads.subs.status["led1"] = "archived"
+    threads.client.fail["chat_update"] = [error]
+    tick(threads, 301, n=2)
+    assert conversation.load("led1")["state"] == "deleted"
+
+
+def test_a_newer_request_reopens_a_closed_thread_without_waiting_for_the_parent(threads):
+    thread = opened(threads)
+    conversation.finish("led1")
+    tick(threads)
+    threads.client.fail["chat_update"] = ["ratelimited"]
+    req = ask()
+    tick(threads)
+    assert threads.client.posts[-1]["thread_ts"] == thread and decisions.load(req["id"])["presented"]
+    ref = conversation.load("led1")
+    assert ref["state"] == "open" and ref["parent_text"] == "running"
+    tick(threads)
+    assert "⏳ running" in threads.client.updates[-1]["text"] and not conversation.load("led1").get("parent_text")
+
+
+def test_a_closed_thread_reopens_for_nothing_older_than_its_close(threads):
+    opened(threads)
+    req = ask()
+    tick(threads)
+    conversation.finish("led1")
+    decisions.update(req["id"], presented={})
+    threads.clock[0] = time.time()  # closed after the request was made
+    tick(threads)
+    before = len(threads.client.posts)
+    tick(threads, n=2)
+    assert len(threads.client.posts) == before and conversation.load("led1")["state"] == "closed"
+
+
+def test_a_closed_thread_of_an_archived_run_never_reopens(threads):
+    opened(threads)
+    conversation.finish("led1")
+    tick(threads)
+    threads.subs.status["led1"] = "archived"
+    req = ask()
+    tick(threads, n=2)
+    assert decisions.load(req["id"])["status"] == "stale" and conversation.load("led1")["state"] == "deleted"
+    assert not [p for p in threads.client.posts if p.get("blocks")]
+
+
+def test_retiring_stales_requests_marks_the_parent_and_unsubscribes(threads):
+    thread = opened(threads, cards=["t_card", "t_wait"])
+    req = ask()
+    tick(threads)
+    threads.subs.status["led1"] = "archived"
+    tick(threads, 31, n=2)
+    ref = conversation.load("led1")
+    assert ref["state"] == "deleted" and ref["unsubscribed"] is True
+    assert decisions.load(req["id"])["status"] == "stale"
+    assert any(u["ts"] == thread and "archived" in u["text"] for u in threads.client.updates)
+    assert threads.subs.rows["t_card"] == [] and threads.subs.rows["t_wait"] == []
+    assert ref["ledger"] not in [r["ledger"] for r in conversation.active()]
+
+
+def test_an_unsubscribe_that_fails_is_retried(threads):
+    opened(threads, cards=["t_card"])
+    real = threads.subs.__call__
+    fails = [1]
+
+    def flaky(*argv):
+        if argv[0] == "notify-unsubscribe" and fails[0]:
+            fails[0] -= 1
+            raise core.CommandError("database is locked")
+        return real(*argv)
+
+    core.kanban = flaky
+    threads.subs.status["led1"] = "archived"
+    tick(threads, 31)
+    ref = conversation.load("led1")
+    assert ref["state"] == "deleted" and ref["unsubscribed"] is False and "led1" in [
+        r["ledger"] for r in conversation.active()]
+    tick(threads, 10)
+    assert conversation.load("led1")["unsubscribed"] is True and threads.subs.rows["t_card"] == []
+
+
+@pytest.mark.parametrize("state", ["retiring", "deleted"])
+def test_a_retired_runs_request_is_staled_not_shown(threads, state):
+    requested(state=state, thread_id="5.1", unsubscribed=True)
+    req = ask()
+    tick(threads)
+    assert decisions.load(req["id"])["status"] == "stale" and not [p for p in threads.client.posts if p.get("blocks")]
+
+
+def test_a_telegram_runs_ref_is_never_stepped_and_its_requests_go_top_level(threads):
+    requested(platform="telegram", chat_id="-100123", state="open", thread_id="77")
+    req = ask()
+    tick(threads, 31)
+    assert conversation.load("led1")["state"] == "open" and threads.client.updates == []
+    (post,) = threads.client.posts
+    assert "thread_ts" not in post and post["blocks"][0]["text"]["text"].startswith("o/r #7")
+    assert decisions.load(req["id"])["presented"]

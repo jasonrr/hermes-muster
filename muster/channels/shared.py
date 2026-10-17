@@ -138,7 +138,31 @@ def stale_requests(ledger):
 
 
 async def backoff(ref, why):
-    """A topic close or delete Telegram did not confirm: the state stays, tried again later."""
+    """A conversation step the platform did not confirm: the state stays, tried again later."""
     delay = min(max(ref.get("retry_delay", 0) * 2, SCAN_EVERY), RETRY_MAX)
     log(f"{ref['ledger']}: {why}; retry in {delay} s")
     await asyncio.to_thread(conversation.update, ref["ledger"], why=why, retry_delay=delay, retry_at=now() + delay)
+
+
+def unsubscribe_cards(ref):
+    """Remove each of an archived run's card subscriptions at its conversation, so no stale one pings or wakes the
+    coordinator there. True when none is left ("no such subscription" and a card gone from the board count)."""
+    thread, left = ref.get("thread_id"), []
+    for card in ref.get("cards", []):
+        try:
+            core.kanban("notify-unsubscribe", card, "--platform", ref.get("platform", "telegram"), "--chat-id",
+                        str(ref["chat_id"]), *(["--thread-id", str(thread)] if thread else []))
+        except core.CommandError as caught:
+            if "no such" not in str(caught):
+                log(f"{ref['ledger']}: unsubscribing {card}: {caught}")
+                left.append(card)
+    return not left
+
+
+async def unsubscribe(ref):
+    if now() < ref.get("retry_at", 0):
+        return
+    if await asyncio.to_thread(unsubscribe_cards, ref):
+        await asyncio.to_thread(conversation.update, ref["ledger"], unsubscribed=True, retry_at=0, retry_delay=0)
+    else:
+        await backoff(ref, "card subscriptions not removed")

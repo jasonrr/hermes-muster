@@ -494,6 +494,9 @@ async def steps():
 
 async def topic_step(ref):
     ledger, state, chat = ref["ledger"], ref.get("state"), ref.get("chat_id")
+    if state == "deleted":
+        await shared.unsubscribe(ref)  # until every card's subscription is gone
+        return
     every = shared.CLOSED_EVERY if state == "closed" else shared.CHECK_EVERY
     if (state != "retiring" and shared.clock() - shared.checked.get(ledger, float("-inf")) >= every
             and await shared.archived(ledger)):
@@ -551,10 +554,11 @@ async def delete(ref):
                     await T.bot.close_forum_topic(chat, int(thread))
                 await shared.backoff(ref, f"deleting topic {thread}: {caught}")
                 return
-    _, ok = await asyncio.to_thread(conversation.swap, ledger, ("retiring",), state="deleted", deleted_at=shared.now(),
-                                    why="", retry_at=0, retry_delay=0)
+    ref, ok = await asyncio.to_thread(conversation.swap, ledger, ("retiring",), state="deleted",
+                                      deleted_at=shared.now(), why="", retry_at=0, retry_delay=0, unsubscribed=False)
     if ok:
         log(f"{ledger}: topic {thread} deleted")
+        await shared.unsubscribe(ref)  # pings for an archived run must not land in General
 
 
 async def create(ref):

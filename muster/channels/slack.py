@@ -17,7 +17,7 @@ import asyncio
 import json
 import re
 
-from .. import config, core, decisions
+from .. import config, conversation, core, decisions
 from ..config import ConfigError
 from . import shared
 from .shared import log
@@ -30,6 +30,8 @@ CHOICES_MAX = 25  # buttons in an actions block (Slack's limit)
 MULTI_MAX = 10  # options in a checkboxes element (Slack's limit)
 COMMAND_MAX = 2900  # characters of a command shown whole on a card with buttons; a longer one is answered in the pane
 SHOWN_MAX = 500  # characters of a too-long command, and of a card's why, shown
+GONE = ("message_not_found", "channel_not_found", "is_archived", "thread_not_found")  # the parent cannot change
+PARENT = {"running": "⏳ running", "done": "✅ done", "archived": "archived"}
 ACTIONS = re.compile(r"^muster_(choice_\d+|text|multi|submit|allow|deny|deny_text)$")
 
 
@@ -348,3 +350,176 @@ async def refuse(body_, why):
         await T.client.chat_postEphemeral(channel=channel, user=user, text="Not authorized")
     except Exception as caught:  # noqa: BLE001
         log(f"refusal notice: {error_of(caught)}")
+
+
+# -- run threads (notify_topics) ------------------------------------------------------------------
+#
+# One thread per run: the bot posts the parent once (its text names the run and its ledger id), and the run's
+# messages go under it. A thread cannot close, so "closed" is the parent marked done, and a request made after the
+# close is posted in the thread anyway. muster deletes nothing on Slack: retiring marks the parent archived.
+# Known limit: a parent whose post reply was lost stays "⏳ running" (Slack sends no created notice to adopt it).
+
+def mine(ref):
+    return bool(ref) and ref.get("platform", "telegram") == name
+
+
+async def destination(req):
+    """(ready, send metadata) for a request of this run: its thread; the channel itself without one (or with
+    another platform's conversation). A closed thread takes only a request made after its close."""
+    ledger = req["ledger"]
+    ref = await asyncio.to_thread(conversation.load, ledger)
+    if not mine(ref):
+        return True, None
+    state = ref.get("state")
+    if state in ("retiring", "deleted"):
+        await asyncio.to_thread(shared.stale_requests, ledger)
+        return False, None
+    if state == "fallback":
+        return True, None
+    if state == "closed":
+        if req.get("created_at", 0) <= (ref.get("closed_at") or float("inf")):
+            return False, None  # older than the close: a replay, a restart, a saved approval
+        archive = await shared.archived(ledger)  # a fresh read: nothing reopens an archived run's thread
+        if archive is not False:
+            if archive:
+                await shared.retire(ledger)
+            return False, None
+        ref, ok = await asyncio.to_thread(conversation.swap, ledger, ("closed",), state="open", closed_at=None,
+                                          closed_by=None, parent_text="running")
+        if not ok:
+            return False, None
+        log(f"{ledger}: thread {ref['thread_id']} in use again for request {req['id']}, made after its close")
+        await parent(ref)  # cosmetic: retried by the steps, never holds the prompt
+        return True, {"thread_id": ref["thread_id"]}
+    if state != "open":
+        return False, None  # being made, or being closed
+    return True, {"thread_id": ref["thread_id"]}
+
+
+def parent_line(ref, status):
+    return f"muster · {ref.get('name') or ref['ledger']}   {PARENT[status]}"
+
+
+async def parent(ref):
+    """Bring the parent's text to `parent_text`; kept for a later step when Slack does not take it."""
+    try:
+        await T.client.chat_update(channel=ref["chat_id"], ts=ref["thread_id"],
+                                   text=shared.slack_text(parent_line(ref, ref["parent_text"])))
+    except Exception as caught:  # noqa: BLE001
+        if error_of(caught) not in GONE:
+            log(f"{ref['ledger']}: thread parent: {error_of(caught)}")
+            return
+    await asyncio.to_thread(conversation.update, ref["ledger"], parent_text=None)
+
+
+async def steps():
+    """Once per scan, before the requests: each of this platform's run threads one step further."""
+    if T.client is None:
+        return
+    for ref in await asyncio.to_thread(conversation.active):
+        if not mine(ref):
+            continue
+        try:
+            await step(ref)
+        except Exception as caught:  # noqa: BLE001 - one run's thread must not stop the others
+            log(f"thread {ref.get('ledger')}: {caught}")
+
+
+async def step(ref):
+    ledger, state = ref["ledger"], ref.get("state")
+    if state == "deleted":
+        await shared.unsubscribe(ref)  # until every card's subscription is gone
+        return
+    every = shared.CLOSED_EVERY if state == "closed" else shared.CHECK_EVERY
+    if (state != "retiring" and shared.clock() - shared.checked.get(ledger, float("-inf")) >= every
+            and await shared.archived(ledger)):
+        await shared.retire(ledger)
+        ref = await asyncio.to_thread(conversation.load, ledger)
+        state = ref.get("state")
+    if state == "retiring":
+        await retire(ref)
+    elif state in ("pending", "creating"):
+        await create(ref)
+    elif state == "fallback" and not ref.get("noticed"):
+        await T.client.chat_postMessage(channel=ref["chat_id"], text=shared.slack_text(
+            f"Thread not created for {ref.get('name')}: {ref.get('why')}. This run stays in the channel."))
+        await asyncio.to_thread(conversation.update, ledger, noticed=True)
+    elif state == "closing" and shared.now() >= ref.get("retry_at", 0):
+        await close(ref)
+    elif state == "closed" and not ref.get("closed_at"):
+        await asyncio.to_thread(conversation.swap, ledger, ("closed",), closed_at=shared.now())
+    elif state == "open" and ref.get("parent_text"):
+        await parent(ref)
+
+
+async def create(ref):
+    """The parent, posted at most once: `asked` is saved before the call, so a post whose result was lost (an
+    error after Slack posted it, or a restart mid-call) falls back to the channel instead of posting a second."""
+    ledger = ref["ledger"]
+    if ref.get("asked"):
+        await asyncio.to_thread(conversation.swap, ledger, ("creating",), state="fallback", noticed=False,
+                                why="the thread's first message was not confirmed; not retried, so no second is made")
+        return
+    gone = await shared.archived(ledger)  # a fresh read: no thread is made for an archived run
+    if gone is not False:
+        if gone:
+            await shared.retire(ledger)
+        return
+    ref, ok = await asyncio.to_thread(conversation.swap, ledger, ("pending", "creating"), state="creating",
+                                      attempts=ref.get("attempts", 0) + 1, since=shared.now(), asked=True)
+    if not ok:
+        return
+    try:
+        res = await T.client.chat_postMessage(channel=ref["chat_id"],
+                                              text=shared.slack_text(parent_line(ref, "running")))
+        ts, why = res.get("ts"), "Slack returned no message ts"
+    except Exception as caught:  # noqa: BLE001
+        ts, why = None, error_of(caught)
+    if ts:
+        _, ok = await asyncio.to_thread(conversation.swap, ledger, ("creating",), state="open", thread_id=str(ts))
+        if ok:
+            log(f"{ledger}: thread {ts} open")
+    else:
+        await asyncio.to_thread(conversation.swap, ledger, ("creating",), state="fallback", noticed=False, why=why)
+
+
+async def close(ref):
+    """The run's work is resolved: a finish note in the thread (once), then the parent marked done. closed only
+    once Slack took the update, or the parent is gone."""
+    ledger, thread = ref["ledger"], ref["thread_id"]
+    if not ref.get("said"):
+        try:
+            await T.client.chat_postMessage(channel=ref["chat_id"], thread_ts=thread, text=(
+                "Work finished: this thread is done. History kept; the worktree is cleaned up separately."))
+        except Exception as caught:  # noqa: BLE001
+            log(f"{ledger}: finish note: {error_of(caught)}")
+        await asyncio.to_thread(conversation.update, ledger, said=True)
+    try:
+        await T.client.chat_update(channel=ref["chat_id"], ts=thread, text=shared.slack_text(parent_line(ref, "done")))
+    except Exception as caught:  # noqa: BLE001
+        if error_of(caught) not in GONE:
+            await shared.backoff(ref, f"marking thread {thread} done: {error_of(caught)}")
+            return
+    await asyncio.to_thread(conversation.swap, ledger, ("closing",), state="closed", why="", retry_at=0,
+                            retry_delay=0, closed_at=shared.now(), closed_by="muster")
+
+
+async def retire(ref):
+    """The run is archived: its open prompts end, the parent says archived, and its cards' subscriptions go."""
+    ledger, thread = ref["ledger"], ref.get("thread_id")
+    if shared.now() < ref.get("retry_at", 0):
+        return
+    await asyncio.to_thread(shared.stale_requests, ledger)
+    if thread:
+        try:
+            await T.client.chat_update(channel=ref["chat_id"], ts=thread,
+                                       text=shared.slack_text(parent_line(ref, "archived")))
+        except Exception as caught:  # noqa: BLE001
+            if error_of(caught) not in GONE:
+                await shared.backoff(ref, f"marking thread {thread} archived: {error_of(caught)}")
+                return
+    ref, ok = await asyncio.to_thread(conversation.swap, ledger, ("retiring",), state="deleted",
+                                      deleted_at=shared.now(), why="", retry_at=0, retry_delay=0, unsubscribed=False)
+    if ok:
+        log(f"{ledger}: thread {thread} archived")
+        await shared.unsubscribe(ref)

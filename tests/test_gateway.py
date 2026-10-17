@@ -1890,3 +1890,12 @@ def test_a_human_reopen_never_revives_a_retired_topic(forum, state):
     conversation.update("led1", state=state)
     run(telegram.topic_toggled(fh.topic_toggled(GROUP_CHAT, int(thread), closed=False), None))
     assert conversation.load("led1")["state"] == state
+
+
+def test_an_archived_runs_card_subscriptions_are_removed(forum):
+    thread = opened(forum, cards=["t_card"])
+    assert [r["thread_id"] for r in forum.subs.rows["t_card"]] == [thread]
+    forum.subs.status["led1"] = "archived"
+    tick(forum, 31, n=2)
+    ref = conversation.load("led1")
+    assert ref["state"] == "deleted" and ref["unsubscribed"] is True and forum.subs.rows["t_card"] == []
