@@ -1899,3 +1899,49 @@ def test_an_archived_runs_card_subscriptions_are_removed(forum):
     tick(forum, 31, n=2)
     ref = conversation.load("led1")
     assert ref["state"] == "deleted" and ref["unsubscribed"] is True and forum.subs.rows["t_card"] == []
+
+
+# -- a switch from Slack back to Telegram: Slack's conversations and messages are not Telegram's ------------------
+
+SLACK_THREAD = "1792269000.000100"
+
+
+def slack_ref(state, **fields):
+    return requested(platform="slack", chat_id="C_TEST", thread_id=SLACK_THREAD, state=state, **fields)
+
+
+@pytest.mark.parametrize("state", ["open", "closed"])
+def test_a_slack_runs_thread_is_not_a_telegram_topic_and_new_prompts_go_top_level(forum, state):
+    before = slack_ref(state, closed_at=1.0 if state == "closed" else None)
+    ask()
+    tick(forum, 0)
+    assert [s["thread"] for s in forum.adapter.sent] == [None]
+    assert forum.bot.calls == [] and conversation.load("led1") == before
+
+
+@pytest.mark.parametrize("state", ["pending", "creating", "closing", "retiring", "deleted"])
+def test_a_slack_runs_ref_gets_no_telegram_lifecycle_step(forum, state):
+    before = slack_ref(state)
+    forum.subs.status["led1"] = "archived"  # would retire a Telegram topic
+    tick(forum, 31, n=3)
+    assert forum.bot.calls == [] and forum.subs.calls == [] and forum.adapter.notes == []
+    assert conversation.load("led1") == before
+
+
+def test_saved_slack_message_ids_are_neither_reply_bound_nor_edited(hermes):
+    req = ask()
+    decisions.update(req["id"], presented={"boot": "b", "platform": "slack", "messages": {"0": [SLACK_THREAD]},
+                                           "replies": {"0": ["1792269000.000200"]}})
+    req, _ = decisions.transition(req["id"], ("open",), "done", outcome="Sent to Claude")
+    telegram.track(req)
+    assert telegram.T.messages == {}
+    assert run(telegram.outcome(req)) is True and telegram.T.adapter.edits == []
+
+
+def test_saved_ids_with_no_platform_are_still_telegrams(hermes):
+    req = ask()
+    decisions.update(req["id"], presented={"boot": "b", "messages": {"0": ["901"]}})
+    req, _ = decisions.transition(req["id"], ("open",), "done", outcome="Sent to Claude")
+    telegram.track(req)
+    assert telegram.T.messages == {"901": (req["id"], 0)}
+    assert run(telegram.outcome(req)) is True and [m for _, m, _ in telegram.T.adapter.edits] == ["901"]

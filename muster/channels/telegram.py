@@ -209,9 +209,11 @@ def add_reply(rid, n, mid):
 
 def track(req):
     """Bind a request's saved message ids (prompts and reply prompts) in this process, so a reply binds after a
-    restart."""
+    restart. Another platform's ids are not Telegram messages."""
     T.ledgers[req["id"]] = req["ledger"]
     presented = req.get("presented") or {}
+    if not mine(presented):
+        return
     for n, ids in [*(presented.get("messages") or {}).items(), *(presented.get("replies") or {}).items()]:
         for mid in ids:
             T.messages[str(mid)] = (req["id"], int(n))
@@ -248,8 +250,10 @@ async def edit(chat, mid, text):
 
 async def outcome(req):
     """Edit a finished request's newest messages (and reply prompts) to its outcome. True when every edit took."""
-    chat = core.notify_target()["chat_id"]
     presented = req.get("presented") or {}
+    if not mine(presented):
+        return True  # another platform's messages: not ours to edit
+    chat = core.notify_target()["chat_id"]
     newest = [ids[-1] for ids in (presented.get("messages") or {}).values() if ids]
     newest += [mid for ids in (presented.get("replies") or {}).values() for mid in ids]
     return all([await edit(chat, mid, req.get("outcome") or req["status"]) for mid in newest])
@@ -418,13 +422,20 @@ def outcome_of(error):
     return "unknown"
 
 
+def mine(record):
+    """A conversation ref or a request's `presented` of this platform; one without a platform predates channels."""
+    return bool(record) and record.get("platform", "telegram") == name
+
+
 async def destination(req):
     """(ready, send metadata) for a request of this run: its topic. Not ready while the topic is being made, moved
     or closed. A closed topic is reopened only for a request made after it closed (new work); an older one (a replay,
     a restart, a saved approval) waits without reopening it: the pane still takes its answer, and the human may
-    reopen the topic."""
+    reopen the topic. Another platform's conversation: the main chat, and that conversation is left alone."""
     ledger = req["ledger"]
     ref = await asyncio.to_thread(conversation.load, ledger)
+    if not mine(ref):
+        return True, None
     state = (ref or {}).get("state")
     if state in ("retiring", "deleted"):
         await asyncio.to_thread(shared.stale_requests, ledger)
@@ -486,6 +497,8 @@ async def steps():
     if T.bot is None or T.adapter is None:
         return
     for ref in await asyncio.to_thread(conversation.active):
+        if not mine(ref):
+            continue  # another platform's conversation and subscriptions stay as they are
         try:
             await topic_step(ref)
         except Exception as caught:  # noqa: BLE001 - one run's topic must not stop the others
@@ -668,12 +681,12 @@ async def topic_created(update, context):
             return
         thread = str(msg.message_thread_id)
         log(f"topic notice: thread {thread} {made.name!r}")  # the live evidence that Telegram sends these to the bot
-        mine = [r for r in await asyncio.to_thread(conversation.every) if r.get("name") == made.name]
-        if len(mine) != 1:
-            if mine:
-                log(f"topic notice: {len(mine)} runs are named {made.name!r}; ambiguous, ignored")
+        named = [r for r in await asyncio.to_thread(conversation.every) if mine(r) and r.get("name") == made.name]
+        if len(named) != 1:
+            if named:
+                log(f"topic notice: {len(named)} runs are named {made.name!r}; ambiguous, ignored")
             return
-        ref = mine[0]
+        ref = named[0]
         if thread in ref.get("previous", []):
             return  # a late notice of a topic the run already left (deleted): never adopted, never closed
         if ref.get("state") == "creating" and ref.get("asked"):
