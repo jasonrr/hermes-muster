@@ -28,6 +28,8 @@ CAP = 3000  # characters in a section's text (Slack's limit)
 LABEL_MAX = 75  # characters on a button or a checkbox (Slack's limit)
 CHOICES_MAX = 25  # buttons in an actions block (Slack's limit)
 MULTI_MAX = 10  # options in a checkboxes element (Slack's limit)
+COMMAND_MAX = 2900  # characters of a command shown whole on a card with buttons; a longer one is answered in the pane
+SHOWN_MAX = 500  # characters of a too-long command, and of a card's why, shown
 ACTIONS = re.compile(r"^muster_(choice_\d+|text|multi|submit|allow|deny|deny_text)$")
 
 
@@ -149,6 +151,60 @@ async def present(req, meta, questions):
     return {"messages": messages, "failure": None}
 
 
+def approval_body(req):
+    """A permission card without its buttons: who asks and why, then the command verbatim. The command is a
+    rich_text preformatted text element, never mrkdwn, so nothing in it (a ``` or a <!channel>) can format,
+    link or ping."""
+    card = req["card"]
+    command = card["command"]
+    if len(command) > COMMAND_MAX:
+        head = f"{shared.title(req)} needs a permission in the pane: command too long for Slack ({len(command)} chars)"
+        command = command[:SHOWN_MAX]
+    else:
+        head = f"{shared.title(req)} wants to run this. {str(card.get('why') or '')[:SHOWN_MAX]}"
+    return [section(head), {"type": "rich_text", "elements": [
+        {"type": "rich_text_preformatted", "elements": [{"type": "text", "text": command}]}]}]
+
+
+async def present_approval(req, meta):
+    """Allow once / Deny buttons and a "Deny with a message" input (no session or permanent tiers: learnings #17).
+    Hermes's approvals.timeout does not apply here: the bridge's own deadline denies an unanswered prompt. A command
+    too long to show whole gets a card with no buttons, and the request goes to the pane (stale): nothing is approved
+    unseen, and nothing retries forever."""
+    rid, kept = req["id"], approval_body(req)
+    text = f"{shared.title(req)}: permission"
+    oversized = len(req["card"]["command"]) > COMMAND_MAX
+    blocks_ = kept if oversized else [*kept, {"type": "actions", "block_id": f"mu:{rid}:approval", "elements": [
+        {"type": "button", "action_id": "muster_allow", "text": plain("Allow once"), "style": "primary", "value": rid},
+        {"type": "button", "action_id": "muster_deny", "text": plain("Deny"), "style": "danger", "value": rid}]},
+        {"type": "input", "block_id": f"mu:{rid}:deny", "dispatch_action": True, "optional": True,
+         "label": plain("Deny with a message"),
+         "element": {"type": "plain_text_input", "action_id": "muster_deny_text",
+                     "dispatch_action_config": {"trigger_actions_on": ["on_enter_pressed"]}}}]
+    try:
+        ts = await post(blocks_, text, meta)
+    except Exception as caught:  # noqa: BLE001 - retried with backoff
+        return {"messages": {}, "failure": error_of(caught)}
+    if oversized:
+        await asyncio.to_thread(decisions.transition, rid, ("open",), "stale",
+                                outcome="Command too long for Slack: answer it in the pane")
+    return {"messages": {"0": [ts]}, "failure": None}
+
+
+async def outcome(req):
+    """Every message of an ended request shows its outcome in place of its inputs. True when every update took."""
+    presented = req.get("presented") or {}
+    if presented.get("platform", name) != name:
+        return True  # another platform's messages: not ours to edit
+    line = req.get("outcome") or req["status"]
+    ok = True
+    for n, ids in (presented.get("messages") or {}).items():
+        kept = approval_body(req) if req["kind"] == "permission" else body(req, int(n))
+        for ts in ids:
+            ok = await update(ts, [*kept, context(line)], line) and ok
+    return ok
+
+
 def release(rid):
     """Nothing in memory: a prompt is answered from the request file."""
 
@@ -202,7 +258,7 @@ async def handle(body_, action):
     except Exception as caught:  # noqa: BLE001 - fail closed
         return await refuse(body_, f"check failed: {caught}")
     if kind in ("approval", "deny"):
-        return await approve(body_, action, req, kind)
+        return await approve(body_, action, req)
     n = int(found.group(2))
     if action_id == "muster_multi":
         return  # a tick; the answer is the Submit
@@ -227,6 +283,27 @@ async def handle(body_, action):
     if result == "duplicate":
         await notice(body_, f"Already answered: {part[0]}")
     await settled(body_, req, n, body(req, n), f"Answered: {part[0]}")
+
+
+async def approve(body_, action, req):
+    """Allow once, Deny (with the deny input's unsubmitted text, if any), or Enter in the deny input."""
+    rid, action_id = req["id"], action.get("action_id")
+    if action_id == "muster_allow":
+        answer = {"decision": "allow"}
+    else:
+        typed = action.get("value") if action_id == "muster_deny_text" else (
+            (((body_.get("state") or {}).get("values") or {}).get(f"mu:{rid}:deny") or {}).get("muster_deny_text")
+            or {}).get("value")
+        typed = str(typed or "").strip()
+        answer = {"decision": "deny", **({"message": typed} if typed else {})}
+    if req["status"] != "open":
+        return await notice(body_, ended(req))
+    req, ok = await shared.permission(rid, answer)
+    if not ok:
+        return await notice(body_, ended(req))
+    line = "Answered: Allow once" if answer["decision"] == "allow" else (
+        f"Answered: Deny: {answer['message']}" if answer.get("message") else "Answered: Deny")
+    await settled(body_, req, 0, approval_body(req), line)
 
 
 def ended(req):

@@ -354,3 +354,119 @@ def test_two_runs_with_the_same_question_answer_only_their_own(channel):
     shown(two, channel, {"thread_id": "6.1"})
     tap(channel, two, 0, "muster_choice_0")
     assert decisions.load(one["id"])["status"] == "open" and decisions.load(two["id"])["status"] == "answered"
+
+
+# -- Task 8: approvals ------------------------------------------------------------------------------
+
+def permission(command="touch x", why="Create x"):
+    return decisions.create("permission", "led1", card={"command": command, "why": why},
+                            run={"repo": "o/r", "issue": 7, "branch": "muster/7"}, alive=time.time())
+
+
+def card_of(channel, req):
+    sent = asyncio.run(slack.present_approval(req, None))
+    decisions.update(req["id"], presented={"boot": "b", "platform": "slack", "messages": sent["messages"]})
+    return sent, channel.client.posts[-1]
+
+
+def preformatted(blocks):
+    return [e["elements"][0]["text"] for b in blocks if b["type"] == "rich_text" for e in b["elements"]
+            if e["type"] == "rich_text_preformatted"]
+
+
+def test_the_approval_card(channel):
+    req = permission()
+    sent, post = card_of(channel, req)
+    rid = req["id"]
+    assert sent == {"messages": {"0": [post_ts(channel)]}, "failure": None}
+    buttons = next(b for b in post["blocks"] if b.get("block_id") == f"mu:{rid}:approval")
+    assert [e["action_id"] for e in buttons["elements"]] == ["muster_allow", "muster_deny"]
+    deny = next(b for b in post["blocks"] if b.get("block_id") == f"mu:{rid}:deny")
+    assert deny["type"] == "input" and deny["dispatch_action"] is True and deny["element"]["action_id"] == "muster_deny_text"
+    assert preformatted(post["blocks"]) == ["touch x"]
+
+
+def post_ts(channel):
+    return f"{channel.client.count}.000100"
+
+
+@pytest.mark.parametrize("command", ["echo ```\n*Approved by admin*", "<!channel>"])
+def test_a_command_never_breaks_out_of_its_preformatted_block(channel, command):
+    _, post = card_of(channel, permission(command, why="<!here> & why"))
+    assert preformatted(post["blocks"]) == [command]
+    sections = json.dumps([b for b in post["blocks"] if b["type"] == "section"])
+    assert command not in sections and "<!here>" not in sections and "&lt;!here&gt; &amp; why" in sections
+
+
+def test_a_long_why_is_cut_before_escaping(channel):
+    _, post = card_of(channel, permission(why="<" * 2000))
+    (head,) = [b for b in post["blocks"] if b["type"] == "section"]
+    assert len(head["text"]["text"]) <= slack.CAP and "&lt;" * 500 in head["text"]["text"]
+
+
+def test_a_command_too_long_for_slack_goes_to_the_pane(channel):
+    req = permission("x" * 2901)
+    sent, post = card_of(channel, req)
+    assert not [b for b in post["blocks"] if b["type"] in ("actions", "input")]
+    assert "command too long for Slack (2901 chars)" in json.dumps(post["blocks"])
+    assert preformatted(post["blocks"]) == ["x" * 500]
+    saved = decisions.load(req["id"])
+    assert saved["status"] == "stale" and saved["outcome"] == "Command too long for Slack: answer it in the pane"
+    assert sent["messages"] == {"0": [post_ts(channel)]} and sent["failure"] is None
+
+
+@pytest.mark.parametrize("how, answer", [
+    ("allow", {"decision": "allow"}),
+    ("deny", {"decision": "deny"}),
+    ("deny with unsubmitted text", {"decision": "deny", "message": "use make"}),
+    ("enter in the deny input", {"decision": "deny", "message": "not now"}),
+])
+def test_approval_answers(channel, how, answer):
+    req = permission()
+    card_of(channel, req)
+    rid = req["id"]
+    if how == "allow":
+        tap(channel, req, "approval", "muster_allow", rid)
+    elif how == "deny":
+        tap(channel, req, "approval", "muster_deny", rid)
+    elif how.startswith("deny with"):
+        tap(channel, req, "approval", "muster_deny", rid, state={f"mu:{rid}:deny": {"muster_deny_text": {
+            "type": "plain_text_input", "value": " use make "}}})
+    else:
+        tap(channel, req, "deny", "muster_deny_text", "not now")
+    saved = decisions.load(rid)
+    assert saved["status"] == "answered" and saved["answer"] == answer
+    assert [a["step"] for a in saved["audit"]].count("answered") == 1
+    assert channel.client.updates and not [b for b in channel.client.updates[-1]["blocks"]
+                                          if b["type"] in ("actions", "input")]
+
+
+def test_approval_refusals(channel):
+    req = permission()
+    card_of(channel, req)
+    tap(channel, req, "approval", "muster_allow", req["id"], user=OTHER)
+    assert refused(channel) and decisions.load(req["id"])["status"] == "open"
+    decisions.transition(req["id"], ("open",), "stale", outcome="Answered in the pane")
+    channel.client.ephemerals.clear()
+    tap(channel, req, "approval", "muster_allow", req["id"])
+    assert [e["text"] for e in channel.client.ephemerals] == ["Answered in the pane"]
+
+
+def test_an_ended_card_shows_its_outcome(channel):
+    req = permission()
+    sent, _ = card_of(channel, req)
+    decisions.transition(req["id"], ("open",), "done", outcome="Allow sent to Claude")
+    assert asyncio.run(slack.outcome(decisions.load(req["id"]))) is True
+    (update,) = channel.client.updates
+    assert update["ts"] == sent["messages"]["0"][0] and "Allow sent to Claude" in json.dumps(update["blocks"])
+    assert preformatted(update["blocks"]) == ["touch x"]
+    assert not [b for b in update["blocks"] if b["type"] in ("actions", "input")]
+
+
+def test_an_ended_question_shows_its_outcome_on_every_message(channel):
+    req = ask([question(), question("Second?")])
+    shown(req, channel)
+    decisions.transition(req["id"], ("open",), "stale", outcome="Answered in the pane")
+    channel.client.fail["chat_update"] = ["message_not_found"]
+    assert asyncio.run(slack.outcome(decisions.load(req["id"]))) is False
+    assert len(channel.client.updates) == 1 and "Answered in the pane" in json.dumps(channel.client.updates[0])
