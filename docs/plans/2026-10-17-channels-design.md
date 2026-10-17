@@ -69,6 +69,8 @@ muster/channels/telegram.py   today's Telegram code moved out of gateway.py: fac
                               approval card + Hermes wait, ForceReply, typed replies, forum-topic lifecycle
 muster/channels/slack.py      factory (captures adapter + app.client), Block Kit prompts, action handler,
                               thread parent lifecycle
+muster/channels/shared.py     neutral helpers both channels and the gateway import (render, lifecycle guards,
+                              the answer/permission hub); added by the plan's attack, see the plan's "seams"
 muster/hermes_private.py      unchanged; Telegram-only private names stay here (Slack adds none)
 ```
 
@@ -77,7 +79,7 @@ imports `gateway`; it reports an answer through a callback the gateway passes in
 — the same seam `gateway.answered` is today. `bridge.py` and the pane side do not change. `decisions.py` gains
 one function, `answer_part` (§9); its statuses and transitions do not change.
 
-The contract, as a `typing.Protocol` in `channels/__init__.py` (documentation and the contract tests' target;
+The contract (the plan's "seams" section holds the final method list, after its attack), as a `typing.Protocol` in `channels/__init__.py` (documentation and the contract tests' target;
 no base class):
 
 ```python
@@ -132,7 +134,7 @@ Protocol, picked by name, are the smallest shape that makes both explicit.
 - The existing generic keys (`notify_platform`, `notify_chat_id`, `notify_user_id`, `notify_chat_type`,
   `notify_topics`) cover Slack. One new key: `notify_workspace_id`, required when `notify_platform: slack`.
   No `notify_slack_*` parallel settings (the 2026-10-08 contract proposed them; this replaces that).
-- `conversation.json` gains `workspace` (Slack only). `thread_id` holds Slack's parent ts. `presented.messages`
+- `conversation.json` is unchanged; `thread_id` holds Slack's parent ts (one workspace: the team id lives in config only). `presented.messages`
   keeps message ids per question; they are scoped by the run's conversation (one chat per deployment), so ts
   collisions across channels cannot occur in the first release.
 - Concurrent runs: each run has its own thread. Each prompt is its own message whose `block_id` carries
@@ -237,7 +239,7 @@ cleaned** (cleanup removal, independent; a blocked removal never holds a convers
 |---|---|---|
 | pending/creating | `create_handoff_thread` once, adopt from the topic-created notice, else fallback | post the parent once (`chat.postMessage`, ledger id in text); save `asked` before the call; None/error → fallback to the channel, never a retry (a lost reply may have posted it) |
 | open | topic open | parent "⏳ running" |
-| closing → closed | finish note, `close_forum_topic`, retried till confirmed | finish note in thread, `chat.update` parent to "✅ done · PR #n merged"; retried till Slack confirms |
+| closing → closed | finish note, `close_forum_topic`, retried till confirmed | finish note in thread, `chat.update` parent to "✅ done"; retried till Slack confirms |
 | closed + newer request | reopen topic | post in the thread anyway (threads cannot close) and update parent to "⏳ running"; same `created_at > closed_at` rule |
 | retiring → deleted | stale open requests, `delete_forum_topic` (bounded removal, current retention policy) | stale open requests, `chat.update` parent to "archived"; terminal state named `deleted` for both (no Slack deletion; other users' replies are never deleted) |
 | fallback | main chat | the channel, top level |
@@ -299,7 +301,7 @@ firing) carries an older `created_at` or hits a non-`open` request and changes n
   the other platform is presented at the configured chat's top level, labelled with its run. Telegram topics of
   old runs are left as they are (no Telegram client is running to remove them); this is stated in the README.
 - `gateway_up()` already reads `platforms[notify_platform].state`; Slack's state is in the same file.
-  `events.muster_pages` checks "the selected channel is ready" instead of `== "telegram"`.
+  `events.muster_pages` checks `platform in channels.NAMES` instead of `== "telegram"` (readiness is `gateway_up()`).
 - Isolation (separate research): muster reads only its plugin settings and the Hermes runtime of the profile it
   is loaded in. Requirements on that work: the profile's Hermes must have the Slack platform connected with its
   own app tokens; muster's data dir is per profile (`plugin_data_dir`); nothing in this design reads the default
