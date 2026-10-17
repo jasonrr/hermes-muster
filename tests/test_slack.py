@@ -131,14 +131,18 @@ def test_no_choices_means_no_actions_block():
     assert [b["type"] for b in slack.blocks(req, 0)] == ["section", "input"]
 
 
-def test_too_many_choices_is_a_failed_send(channel):
+def test_too_many_choices_go_to_the_pane(channel):
     many = ask([question(labels=tuple(f"o{i}" for i in range(26)))])
     with pytest.raises(ValueError):
         slack.blocks(many, 0)
     with pytest.raises(ValueError):
         slack.blocks(ask([question(labels=tuple(f"o{i}" for i in range(11)), multi=True)]), 0)
-    sent = asyncio.run(slack.present(many, None, [0]))
-    assert sent["messages"] == {} and "choices" in sent["failure"] and channel.client.posts == []
+    sent = asyncio.run(slack.present(many, None, [0]))  # to the pane, never retried forever
+    (card,) = channel.client.posts
+    assert sent == {"messages": {"0": ["1.000100"]}, "failure": None} and "too many options" in json.dumps(card)
+    assert not [b for b in card["blocks"] if b["type"] in ("actions", "input")]
+    saved = decisions.load(many["id"])
+    assert saved["status"] == "stale" and saved["outcome"] == "Too many options for Slack: answer it in the pane"
 
 
 def test_ids_never_repeat_within_a_block_and_blocks_never_repeat_across_questions_and_runs():
@@ -703,3 +707,37 @@ def test_a_telegram_runs_ref_is_never_stepped_and_its_requests_go_top_level(thre
     (post,) = threads.client.posts
     assert "thread_ts" not in post and post["blocks"][0]["text"]["text"].startswith("o/r #7")
     assert decisions.load(req["id"])["presented"]
+
+
+def test_a_request_shown_on_telegram_is_posted_again_with_its_answers_forgotten(channel):
+    req = ask([question(), question("Second?")], presented={"boot": "old", "messages": {"0": ["555"], "1": ["556"]}},
+              partial={"0": ["Alpha", [0]]})  # shown before the switch: no platform recorded means Telegram
+    asyncio.run(gateway.scan())
+    assert len(channel.client.posts) == 2 and decisions.load(req["id"]).get("partial") == {}
+    channel.client.posts.clear()
+    tap(channel, req, 0, "muster_choice_1")
+    assert decisions.load(req["id"])["partial"]["0"][0] == "Beta" and channel.client.ephemerals == []
+
+
+def test_an_ended_request_shown_on_telegram_is_not_edited_here(channel):
+    req = ask(presented={"messages": {"0": ["555"]}})
+    decisions.transition(req["id"], ("open",), "stale", outcome="gone")
+    assert asyncio.run(slack.outcome(decisions.load(req["id"]))) is True and channel.client.updates == []
+
+
+def test_an_option_the_request_lacks_is_refused(channel):
+    req = ask()
+    shown(req, channel)
+    tap(channel, req, 0, "muster_choice_7")
+    tap(channel, req, 3, "muster_choice_0")
+    assert [e["text"] for e in channel.client.ephemerals] == ["Not authorized"] * 2
+    assert decisions.load(req["id"])["status"] == "open"
+
+
+def test_a_hermes_without_the_slack_surfaces_is_logged(monkeypatch):
+    class Old:
+        def get_config(self, key, default):
+            return "slack" if key == "notify_platform" else default
+
+    gateway.setup(Old())
+    assert "lacks the slack surfaces" in core.log_path("gateway").read_text()

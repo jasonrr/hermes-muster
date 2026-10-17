@@ -146,6 +146,9 @@ async def present(req, meta, questions):
     """Each question given as its own message. A failed post keeps what was sent before it."""
     messages = {}
     for n in questions:
+        q = req["questions"][n]
+        if len(req["choices"][n]) > (MULTI_MAX if q.get("multi") else CHOICES_MAX):
+            return await too_many(req, n, meta, messages)
         try:
             messages[str(n)] = [await post(blocks(req, n), f"{shared.title(req)}: {req['questions'][n]['text']}", meta)]
         except Exception as caught:  # noqa: BLE001 - reported as the send's failure, retried with backoff
@@ -196,7 +199,7 @@ async def present_approval(req, meta):
 async def outcome(req):
     """Every message of an ended request shows its outcome in place of its inputs. True when every update took."""
     presented = req.get("presented") or {}
-    if presented.get("platform", name) != name:
+    if presented.get("platform", "telegram") != name:
         return True  # another platform's messages: not ours to edit
     line = req.get("outcome") or req["status"]
     ok = True
@@ -205,6 +208,20 @@ async def outcome(req):
         for ts in ids:
             ok = await update(ts, [*kept, context(line)], line) and ok
     return ok
+
+
+async def too_many(req, n, meta, messages):
+    """A question Slack cannot show whole: a card saying so, and the request goes to the pane (stale), as a command
+    too long for Slack does. Nothing retries forever."""
+    try:
+        messages[str(n)] = [await post([section(
+            f"{shared.title(req)} has a question with too many options for Slack ({len(req['choices'][n])}): "
+            f"answer it in the pane")], f"{shared.title(req)}: answer in the pane", meta)]
+    except Exception as caught:  # noqa: BLE001 - retried with backoff
+        return {"messages": messages, "failure": error_of(caught)}
+    await asyncio.to_thread(decisions.transition, req["id"], ("open",), "stale",
+                            outcome="Too many options for Slack: answer it in the pane")
+    return {"messages": messages, "failure": None}
 
 
 def release(rid):
@@ -264,18 +281,12 @@ async def handle(body_, action):
     n = int(found.group(2))
     if action_id == "muster_multi":
         return  # a tick; the answer is the Submit
-    if action_id == "muster_submit":
-        ticked = (((body_.get("state") or {}).get("values") or {}).get(block) or {}).get("muster_multi") or {}
-        chosen = sorted(int(o["value"]) for o in ticked.get("selected_options") or [])
-        if not chosen:
-            return await notice(body_, "Tick at least one")
-        value = json.dumps([req["choices"][n][i] for i in chosen])
-    elif action_id == "muster_text":
-        value = str(action.get("value") or "").strip()
-        if not value:
-            return
-    else:
-        value = req["choices"][n][int(action_id.rsplit("_", 1)[1])]
+    try:
+        value = await choice(body_, action, req, n, block, action_id)
+    except (IndexError, KeyError, TypeError, ValueError) as caught:  # a question or option the request lacks
+        return await refuse(body_, f"no such question or option: {caught}")
+    if value is None:
+        return
     if req["status"] != "open":
         part = (req.get("partial") or {}).get(str(n))
         return await notice(body_, f"Already answered: {part[0]}" if part else ended(req))
@@ -285,6 +296,20 @@ async def handle(body_, action):
     if result == "duplicate":
         await notice(body_, f"Already answered: {part[0]}")
     await settled(body_, req, n, body(req, n), f"Answered: {part[0]}")
+
+
+async def choice(body_, action, req, n, block, action_id):
+    """The answer a tap or typed text gives question n, or None when it gives none yet."""
+    if action_id == "muster_submit":
+        ticked = (((body_.get("state") or {}).get("values") or {}).get(block) or {}).get("muster_multi") or {}
+        chosen = sorted(int(o["value"]) for o in ticked.get("selected_options") or [])
+        if not chosen:
+            await notice(body_, "Tick at least one")
+            return None
+        return json.dumps([req["choices"][n][i] for i in chosen])
+    if action_id == "muster_text":
+        return str(action.get("value") or "").strip() or None
+    return req["choices"][n][int(action_id.rsplit("_", 1)[1])]
 
 
 async def approve(body_, action, req):

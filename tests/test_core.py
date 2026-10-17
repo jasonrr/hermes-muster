@@ -811,6 +811,9 @@ def test_slack_never_reads_the_telegram_home(monkeypatch):
 def test_approvers_fall_back_to_the_dm_but_never_in_a_group(monkeypatch):
     monkeypatch.setitem(config.settings, "notify_user_id", "")
     assert core.approvers() == ["4242"]  # TELEGRAM_HOME_CHANNEL: the DM chat is the human
+    monkeypatch.setitem(config.settings, "notify_user_id", "55")
+    assert core.approvers() == ["4242"]  # a DM has only its human in it, as before
+    monkeypatch.setitem(config.settings, "notify_user_id", "")
     monkeypatch.setitem(config.settings, "notify_chat_id", "-100123")
     assert core.approvers() == []
 

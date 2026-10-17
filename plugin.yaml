@@ -18,7 +18,7 @@ config_schema:
   agent_model: {type: str, default: opus, description: Model passed to the agent CLI}
   branch_prefix: {type: str, default: "muster/", description: Issue branches are <prefix><number>}
   notify_platform: {type: str, default: telegram, choices: [telegram, slack]}
-  notify_chat_id: {type: str, default: "", description: Empty = DM the TELEGRAM_HOME_CHANNEL from $HERMES_HOME/.env}
+  notify_chat_id: {type: str, default: "", description: "Telegram: empty = DM the TELEGRAM_HOME_CHANNEL from $HERMES_HOME/.env. Slack: the channel id, required"}
   notify_user_id: {type: str, default: "", description: "Who may answer: one id, or approver ids separated by commas"}
   notify_chat_type: {type: str, default: group}
   notify_topics: {type: bool, default: false, description: "One forum topic (Telegram) or thread (Slack) per run in the notify_chat_id chat; see README"}

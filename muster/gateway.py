@@ -49,7 +49,8 @@ def setup(ctx):
     except config.ConfigError as caught:  # the plugin still loads; `hermes muster` reports it through require()
         log(f"no channel: {caught}")
         return
-    CHANNEL.register(ctx)
+    if not CHANNEL.register(ctx):
+        log(f"this Hermes lacks the {platform} surfaces muster needs; no prompt will be shown")
 
 
 def start_scan():
@@ -150,7 +151,8 @@ async def handle(req):
     if CHANNEL.durable_prompts and await obsolete(req):  # first: a durable Merge button stays live otherwise
         return
     shown = req.get("presented") or {}
-    if shown.get("platform", CHANNEL.name) != CHANNEL.name:  # another platform's ids: not ours to trust or edit
+    if shown and shown.get("platform", "telegram") != CHANNEL.name:  # shown on another platform (none: Telegram)
+        await asyncio.to_thread(decisions.update, rid, presented={}, partial={})  # its ids and answers are not ours
         shown = {}
     if shown.get("boot") == BOOT:
         return

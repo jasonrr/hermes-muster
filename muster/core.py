@@ -313,12 +313,11 @@ def approver_entries(value):
 
 
 def approvers():
-    """Who may answer a muster prompt: the configured ids; else the DM chat's human. A group with no notify_user_id
-    authorizes nobody."""
-    ids = [i for i in approver_entries(config.settings["notify_user_id"]) if i]
-    if ids or config.settings["notify_chat_id"]:
-        return ids
-    return [notify_target()["user_id"]]
+    """Who may answer a muster prompt: the configured ids in a chat (a group with no notify_user_id authorizes
+    nobody); in the DM fallback, the DM's human, as only they are in it."""
+    if not config.settings["notify_chat_id"]:
+        return [notify_target()["user_id"]]
+    return [i for i in approver_entries(config.settings["notify_user_id"]) if i]
 
 
 def notify_target():
@@ -327,7 +326,7 @@ def notify_target():
     s = config.settings
     if s["notify_chat_id"]:
         # YAML parses an unquoted Telegram id as an int; argv needs strings.
-        return {"chat_id": str(s["notify_chat_id"]), "user_id": (approvers() or [str(s["notify_chat_id"])])[0],
+        return {"chat_id": str(s["notify_chat_id"]), "user_id": ([*approvers(), str(s["notify_chat_id"])])[0],
                 "chat_type": s["notify_chat_type"]}
     from . import channels  # channels imports config only; its modules import core
 
