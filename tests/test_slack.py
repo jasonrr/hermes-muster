@@ -184,3 +184,173 @@ def test_in_process_state_is_a_no_op_and_replies_go_to_hermes():
     slack.track({"id": "x"})
     event = types.SimpleNamespace(text="hello", source=types.SimpleNamespace(platform="slack"))
     assert asyncio.run(slack.reply(event)) is None
+
+
+# -- Task 7: the action handler ---------------------------------------------------------------------
+
+def shown(req, channel, meta=None):
+    """Present the request as the gateway would, so its message ids are saved."""
+    sent = asyncio.run(slack.present(req, meta, list(range(len(req["questions"])))))
+    decisions.update(req["id"], presented={"boot": "b", "platform": "slack", "messages": sent["messages"]})
+    channel.client.posts.clear()
+    channel.order.clear()
+    return {n: ids[0] for n, ids in sent["messages"].items()}
+
+
+def tap(channel, req, n, action_id, value=None, user=ME, chan=CHAN, kind=None, state=None, message_ts=None):
+    kind = kind or ("text" if action_id == "muster_text" else "multi" if action_id in ("muster_multi", "muster_submit")
+                    else "choices")
+    block = f"mu:{req['id']}:{n}:{kind}" if isinstance(n, int) else f"mu:{req['id']}:{n}"
+    body, action = fs.body(user, chan, block, action_id, value, message_ts=message_ts or "1.000100", state=state)
+    return answer_tap(channel, body, action)
+
+
+def answer_tap(channel, body, action):
+    async def go():
+        ack = fs.Ack(channel.order)
+        await slack.on_action(ack, body, action)
+        for task in [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]:
+            await task
+        return ack
+
+    return asyncio.run(go())
+
+
+def refused(channel):
+    return [e["text"] for e in channel.client.ephemerals] == ["Not authorized"]
+
+
+def test_ack_comes_before_any_slack_call(channel):
+    req = ask()
+    shown(req, channel)
+    tap(channel, req, 0, "muster_choice_1", f"{req['id']}|0|1")
+    assert channel.order[0] == "ack" and "chat_update" in channel.order
+
+
+def test_a_choice_answers_and_the_message_keeps_its_text(channel):
+    req = ask()
+    ts = shown(req, channel)
+    tap(channel, req, 0, "muster_choice_1", f"{req['id']}|0|1", message_ts=ts["0"])
+    saved = decisions.load(req["id"])
+    assert saved["status"] == "answered" and saved["answer"] == {"Which?": "Beta"}
+    (update,) = channel.client.updates
+    assert update["ts"] == ts["0"] and update["channel"] == CHAN and update["blocks"]
+    section, context = update["blocks"]
+    assert section == slack.blocks(req, 0)[0] and "Answered: Beta" in json.dumps(context)
+    assert not [b for b in update["blocks"] if b["type"] in ("actions", "input")]
+    assert channel.client.ephemerals == []
+
+
+def test_the_first_answer_of_two_gets_no_notice(channel):
+    req = ask([question(), question("Second?")])
+    shown(req, channel)
+    tap(channel, req, 0, "muster_choice_0", f"{req['id']}|0|0")
+    assert decisions.load(req["id"])["status"] == "open" and channel.client.ephemerals == []
+    assert len(channel.client.updates) == 1
+
+
+def test_typed_text_answers_its_question(channel):
+    req = ask()
+    shown(req, channel)
+    tap(channel, req, 0, "muster_text", "use sqlite")
+    assert decisions.load(req["id"])["answer"] == {"Which?": "use sqlite"}
+
+
+def test_multi_answers_on_submit_only(channel):
+    req = ask([question(labels=("A", "B", "C"), multi=True)])
+    shown(req, channel)
+    rid = req["id"]
+    tap(channel, req, 0, "muster_multi")
+    assert decisions.load(rid)["status"] == "open" and channel.client.updates == [] == channel.client.ephemerals
+    tap(channel, req, 0, "muster_submit", f"{rid}|0", state={f"mu:{rid}:0:multi": {"muster_multi": {
+        "type": "checkboxes", "selected_options": []}}})
+    assert [e["text"] for e in channel.client.ephemerals] == ["Tick at least one"]
+    tap(channel, req, 0, "muster_submit", f"{rid}|0", state={f"mu:{rid}:0:multi": {"muster_multi": {
+        "type": "checkboxes", "selected_options": [{"value": "0"}, {"value": "2"}]}}})
+    assert decisions.load(rid)["answer"] == {"Which?": "A, C"}
+
+
+@pytest.mark.parametrize("how", ["not an approver", "another channel", "unknown block", "no such request",
+                                 "check raises"])
+def test_each_refusal_answers_nothing(channel, monkeypatch, how):
+    req = ask()
+    shown(req, channel)
+    if how == "not an approver":
+        tap(channel, req, 0, "muster_choice_0", user=OTHER)
+    elif how == "another channel":
+        tap(channel, req, 0, "muster_choice_0", chan="C2")
+    elif how == "unknown block":
+        body, action = fs.body(ME, CHAN, "mu:zz:0:choices", "muster_choice_0")
+        answer_tap(channel, body, action)
+    elif how == "no such request":
+        body, action = fs.body(ME, CHAN, "mu:00000000000000aa:0:choices", "muster_choice_0")
+        answer_tap(channel, body, action)
+    else:
+        monkeypatch.setattr(core, "approvers", lambda: 1 / 0)
+        tap(channel, req, 0, "muster_choice_0")
+    assert refused(channel) and channel.client.updates == []
+    assert decisions.load(req["id"])["status"] == "open"
+    assert "refused a Slack tap" in core.log_path("gateway").read_text()
+
+
+def test_a_refused_user_learns_nothing_about_the_request(channel, monkeypatch):
+    req = ask()
+    shown(req, channel)
+    read = []
+    monkeypatch.setattr(decisions, "load", lambda rid: read.append(rid) or 1 / 0)
+    tap(channel, req, 0, "muster_choice_0", user=OTHER)
+    assert read == [] and refused(channel)
+
+
+def test_a_double_tap_answers_once(channel):
+    req = ask()
+    shown(req, channel)
+    tap(channel, req, 0, "muster_choice_1")
+    tap(channel, req, 0, "muster_choice_0")  # a second tap, or Slack redelivering the first
+    assert decisions.load(req["id"])["answer"] == {"Which?": "Beta"}
+    assert [e["text"] for e in channel.client.ephemerals] == ["Already answered: Beta"]
+
+
+def test_two_approvers_racing_both_see_the_stored_answer(channel):
+    req = ask([question(), question("Second?")])
+    shown(req, channel)
+    rid = req["id"]
+    a, _ = fs.body(ME, CHAN, f"mu:{rid}:0:choices", "muster_choice_0")
+    b, _ = fs.body("U2", CHAN, f"mu:{rid}:0:choices", "muster_choice_1")
+
+    async def go():
+        await asyncio.gather(slack.handle(a, a["actions"][0]), slack.handle(b, b["actions"][0]))
+
+    asyncio.run(go())
+    stored = decisions.load(rid)["partial"]["0"][0]
+    assert len(channel.client.updates) == 2
+    assert all(f"Answered: {stored}" in json.dumps(u["blocks"]) for u in channel.client.updates)
+    assert [e["text"] for e in channel.client.ephemerals] == [f"Already answered: {stored}"]
+
+
+def test_after_a_restart_the_last_question_completes_the_request(channel, monkeypatch):
+    req = ask([question(), question("Second?")])
+    shown(req, channel)
+    tap(channel, req, 0, "muster_choice_0")
+    monkeypatch.setattr(slack, "T", slack.State())  # a restarted gateway, the same files
+    slack.T.client = channel.client
+    tap(channel, req, 1, "muster_choice_1")
+    saved = decisions.load(req["id"])
+    assert saved["status"] == "answered" and saved["answer"] == {"Which?": "Alpha", "Second?": "Beta"}
+
+
+def test_a_retired_runs_prompt_says_its_outcome(channel):
+    req = ask()
+    shown(req, channel)
+    decisions.transition(req["id"], ("open",), "stale", outcome="The run is archived")
+    tap(channel, req, 0, "muster_choice_0")
+    assert [e["text"] for e in channel.client.ephemerals] == ["The run is archived"]
+    assert "answer" not in decisions.load(req["id"])
+
+
+def test_two_runs_with_the_same_question_answer_only_their_own(channel):
+    one, two = ask(), ask(ledger="led2")
+    shown(one, channel, {"thread_id": "5.1"})
+    shown(two, channel, {"thread_id": "6.1"})
+    tap(channel, two, 0, "muster_choice_0")
+    assert decisions.load(one["id"])["status"] == "open" and decisions.load(two["id"])["status"] == "answered"

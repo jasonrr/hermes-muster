@@ -13,9 +13,11 @@ presented again on boot, and nothing about a request is kept in memory. Posting 
 wrote goes through shared.slack_text before a Block Kit section shows it.
 """
 
+import asyncio
+import json
 import re
 
-from .. import config, core
+from .. import config, core, decisions
 from ..config import ConfigError
 from . import shared
 from .shared import log
@@ -172,8 +174,94 @@ async def on_action(ack, body_, action):
     shared.CTX.spawn_task(handle(body_, action))
 
 
+BLOCK = re.compile(r"mu:([0-9a-f]{16}):(?:(\d+):(choices|text|multi)|(approval|deny))")
+KINDS = {"choices": r"muster_choice_\d+", "text": "muster_text", "multi": "muster_multi|muster_submit",
+         "approval": "muster_allow|muster_deny", "deny": "muster_deny_text"}  # the ids each block may carry
+
+
 async def handle(body_, action):
-    await refuse(body_, "not wired yet")
+    """A tap or a typed answer. Authorized before any request is read, so nothing about a request reaches a
+    refused user: only an approver, in the configured channel. The block_id binds the tap to its request (only the
+    bot posts muster blocks, and only where destination put them), so there is no thread or workspace check: user
+    ids are unique across workspaces, and a check on an unverified payload field would refuse every tap if its
+    shape differed. Any error in the check refuses (fail closed)."""
+    try:
+        block, action_id = str(action.get("block_id") or ""), str(action.get("action_id") or "")
+        found = BLOCK.fullmatch(block)
+        kind = found and (found.group(3) or found.group(4))
+        if not found or not re.fullmatch(KINDS[kind], action_id):
+            return await refuse(body_, f"unknown block {block!r} or action {action_id!r}")
+        shared.ensure_config()
+        user, channel = (body_.get("user") or {}).get("id"), (body_.get("channel") or {}).get("id")
+        if str(channel) != chat() or str(user) not in core.approvers():
+            return await refuse(body_, "not an approver in the notify channel")
+        rid = found.group(1)
+        req = await asyncio.to_thread(decisions.load, rid)
+    except FileNotFoundError:
+        return await refuse(body_, "no such request")
+    except Exception as caught:  # noqa: BLE001 - fail closed
+        return await refuse(body_, f"check failed: {caught}")
+    if kind in ("approval", "deny"):
+        return await approve(body_, action, req, kind)
+    n = int(found.group(2))
+    if action_id == "muster_multi":
+        return  # a tick; the answer is the Submit
+    if action_id == "muster_submit":
+        ticked = (((body_.get("state") or {}).get("values") or {}).get(block) or {}).get("muster_multi") or {}
+        chosen = sorted(int(o["value"]) for o in ticked.get("selected_options") or [])
+        if not chosen:
+            return await notice(body_, "Tick at least one")
+        value = json.dumps([req["choices"][n][i] for i in chosen])
+    elif action_id == "muster_text":
+        value = str(action.get("value") or "").strip()
+        if not value:
+            return
+    else:
+        value = req["choices"][n][int(action_id.rsplit("_", 1)[1])]
+    if req["status"] != "open":
+        part = (req.get("partial") or {}).get(str(n))
+        return await notice(body_, f"Already answered: {part[0]}" if part else ended(req))
+    req, result, part = await shared.answer(rid, n, value)
+    if result == "closed":
+        return await notice(body_, ended(req))
+    if result == "duplicate":
+        await notice(body_, f"Already answered: {part[0]}")
+    await settled(body_, req, n, body(req, n), f"Answered: {part[0]}")
+
+
+def ended(req):
+    return req.get("outcome") or f"This request is {req['status']}"
+
+
+async def notice(body_, text):
+    """A line only the tapper sees."""
+    user, channel = (body_.get("user") or {}).get("id"), (body_.get("channel") or {}).get("id")
+    try:
+        await T.client.chat_postEphemeral(channel=channel, user=user, text=text)
+    except Exception as caught:  # noqa: BLE001
+        log(f"notice to {user}: {error_of(caught)}")
+
+
+def context(line):
+    return {"type": "context", "elements": [{"type": "mrkdwn", "text": shared.slack_text(line)[:CAP]}]}
+
+
+async def update(ts, blocks_, text):
+    """Replace a message's blocks (its buttons and inputs go). True when Slack took it."""
+    try:
+        await T.client.chat_update(channel=chat(), ts=ts, text=shared.slack_text(text), blocks=blocks_)
+        return True
+    except Exception as caught:  # noqa: BLE001
+        log(f"update {ts}: {error_of(caught)}")
+        return False
+
+
+async def settled(body_, req, n, kept, line):
+    """The tapped message, and every saved message of the same question, show `line` instead of their inputs."""
+    tapped = ((body_.get("container") or {}).get("message_ts"))
+    saved = ((req.get("presented") or {}).get("messages") or {}).get(str(n)) or []
+    for ts in dict.fromkeys([*saved, *([str(tapped)] if tapped else [])]):
+        await update(ts, [*kept, context(line)], line)
 
 
 async def refuse(body_, why):
