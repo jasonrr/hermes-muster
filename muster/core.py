@@ -305,12 +305,28 @@ def telegram_home():
     raise LaunchError("TELEGRAM_HOME_CHANNEL is not set in $HERMES_HOME/.env")
 
 
+def approver_entries(value):
+    """notify_user_id's entries, stripped: one id, ids separated by commas ("42,43"), an int or a YAML list. A blank
+    entry is kept, so validation can refuse it."""
+    items = value if isinstance(value, list) else [] if value in (None, "") else str(value).split(",")
+    return [str(v).strip() for v in items]
+
+
+def approvers():
+    """Who may answer a muster prompt: the configured ids; else the DM chat's human. A group with no notify_user_id
+    authorizes nobody."""
+    ids = [i for i in approver_entries(config.settings["notify_user_id"]) if i]
+    if ids or config.settings["notify_chat_id"]:
+        return ids
+    return [notify_target()["user_id"]]
+
+
 def notify_target():
     """The notify target: the configured chat, or the human's DM when notify_chat_id is empty."""
     s = config.settings
     if s["notify_chat_id"]:
         # YAML parses an unquoted Telegram id as an int; argv needs strings.
-        return {"chat_id": str(s["notify_chat_id"]), "user_id": str(s["notify_user_id"] or s["notify_chat_id"]),
+        return {"chat_id": str(s["notify_chat_id"]), "user_id": (approvers() or [str(s["notify_chat_id"])])[0],
                 "chat_type": s["notify_chat_type"]}
     chat = telegram_home()
     return {"chat_id": chat, "user_id": chat, "chat_type": "dm"}
