@@ -17,7 +17,6 @@ def register(ctx):
         path = root / "skills" / name / "SKILL.md"
         if path.is_file():  # stat only; Task 7 creates the files
             ctx.register_skill(name, path)
-    gateway.CTX = ctx  # config loads lazily, when Hermes connects the adapter or dispatches a message
     hold.CTX = ctx  # ctx.llm: the duplicate check before an automatic approval launches
     if hasattr(ctx, "register_auxiliary_task"):
         try:
@@ -27,7 +26,6 @@ def register(ctx):
                             "a cheap model is enough")
         except Exception as error:  # noqa: BLE001 - never stop the plugin loading: the check then fails open
             print(f"muster: auxiliary task {hold.TASK} not registered: {error}")
-    if hasattr(ctx, "register_telegram_handler"):
-        ctx.register_telegram_handler(gateway.telegram_factory)
+    gateway.setup(ctx)  # the configured channel's surfaces; config loads lazily, when Hermes connects the adapter
     if hasattr(ctx, "register_hook"):
         ctx.register_hook("pre_gateway_dispatch", gateway.on_dispatch)

@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from muster import config, core, decisions, gateway
+from muster.channels import shared, telegram
 
 from tests import fake_hermes as fh
 
@@ -23,16 +24,19 @@ def hermes(monkeypatch):
     from tools import approval, approval_gateway_wait
     monkeypatch.setattr(approval_gateway_wait, "TIMEOUT", 2)  # a stuck approval wait ends by itself
     monkeypatch.setattr(gateway, "S", gateway.State())
+    monkeypatch.setattr(telegram, "T", telegram.State())
+    monkeypatch.setattr(gateway, "CHANNEL", telegram)
+    monkeypatch.setattr(shared, "checked", {})
     monkeypatch.setattr(decisions, "obsolete", lambda req: None)  # GitHub's read of the pull request: still open
-    monkeypatch.setattr(gateway, "CTX", types.SimpleNamespace(
+    monkeypatch.setattr(shared, "CTX", types.SimpleNamespace(
         get_config=lambda k, d: config.settings.get(k, d), spawn_task=fh.spawn_task))
-    gateway.S.configured = True
-    gateway.S.adapter = fh.Adapter()
+    monkeypatch.setattr(shared, "configured", True)
+    telegram.T.adapter = fh.Adapter()
     before = set(threading.enumerate())
     LOOP.append(asyncio.new_event_loop())  # one loop per test: waiter threads hand answers back to the loop of the scan
     yield clarify
-    for rid in [*gateway.S.shown, *gateway.S.approvals]:  # waiter threads block in the fakes: release them all
-        gateway.release(rid)
+    for rid in [*telegram.T.shown, *telegram.T.approvals]:  # waiter threads block in the fakes: release them all
+        telegram.release(rid)
     for key in list(clarify._index):
         clarify.clear_session(key)
     for key, queue in list(approval._gateway_queues.items()):
@@ -82,7 +86,7 @@ async def until(check, seconds=2):
 
 
 def sent():
-    return gateway.S.adapter.sent
+    return telegram.T.adapter.sent
 
 
 def status(req):
@@ -92,23 +96,23 @@ def status(req):
 # -- the factory ------------------------------------------------------------------------------------
 
 def test_factory_registers_both_guards_and_one_scan_task(monkeypatch):
-    monkeypatch.setattr(gateway, "SCAN_EVERY", 0.01)
+    monkeypatch.setattr(shared, "SCAN_EVERY", 0.01)
     prepared = []
     monkeypatch.setattr(core, "prepare_env", lambda: prepared.append(1))
     app, other = fh.Application(), fh.Application()
 
     async def go():
-        gateway.telegram_factory(app, fh.Adapter())
+        telegram.telegram_factory(app, fh.Adapter())
         first = gateway.S.task
         new = fh.Adapter()
-        gateway.telegram_factory(other, new)  # an app rebuild
-        assert gateway.S.task is first and gateway.S.adapter is new and gateway.S.bot is other.bot
+        telegram.telegram_factory(other, new)  # an app rebuild
+        assert gateway.S.task is first and telegram.T.adapter is new and telegram.T.bot is other.bot
         first.cancel()
 
     run(go())
     assert [(g, h.pattern, h.callback) for h, g in app.handlers] == [
-        (-1, r"^cl:mu", gateway.guard), (-1, r"^ea:", gateway.approval_guard), (-1, None, gateway.topic_created),
-        (-1, None, gateway.topic_toggled)]
+        (-1, r"^cl:mu", telegram.guard), (-1, r"^ea:", telegram.approval_guard), (-1, None, telegram.topic_created),
+        (-1, None, telegram.topic_toggled)]
     assert app.handlers[2][0].filters == "forum_topic_created"
     assert app.handlers[3][0].filters == "forum_topic_closed|forum_topic_reopened"
     assert other.handlers and prepared == [1, 1]
@@ -132,7 +136,7 @@ def test_an_open_request_is_presented_once(hermes):
     cid = f"mu{req['id']}q0"
     assert (msg["chat"], msg["cid"], msg["session"], msg["parse_mode"]) == (DM, cid, f"muster:{req['id']}:0", "HTML")
     assert msg["buttons"] == [("Alpha", f"cl:{cid}:0"), ("Beta", f"cl:{cid}:1"), (fh.OTHER, f"cl:{cid}:other")]
-    assert gateway.S.adapter._clarify_state == {cid: f"muster:{req['id']}:0"}  # Hermes's tap handler needs it
+    assert telegram.T.adapter._clarify_state == {cid: f"muster:{req['id']}:0"}  # Hermes's tap handler needs it
     for part in ("❓ o/r #7", "Which?", "• Alpha: about Alpha", "Proposal v2 abcdef12", "full text on ledger led1",
                  "reply to this message"):
         assert part in msg["text"]
@@ -166,7 +170,7 @@ def test_a_multi_select_hint_is_shown():
 
 def test_a_send_failure_leaves_it_unpresented_then_succeeds_later(hermes):
     req = ask()
-    gateway.S.adapter.fail_sends = 1
+    telegram.T.adapter.fail_sends = 1
     run(gateway.scan())
     assert not sent() and "boot" not in decisions.load(req["id"])["presented"]
     assert hermes._entries == {} or all(e.event.is_set() for e in hermes._entries.values())  # released
@@ -180,7 +184,7 @@ def test_a_send_failure_leaves_it_unpresented_then_succeeds_later(hermes):
 
 def test_a_request_that_ends_unsent_stops_retrying():
     req = ask()
-    gateway.S.adapter.fail_sends = 1
+    telegram.T.adapter.fail_sends = 1
     run(gateway.scan())
     assert req["id"] in gateway.S.retry
     decisions.transition(req["id"], ("open",), "done", outcome="Answered in the pane")
@@ -192,7 +196,7 @@ def test_the_backoff_doubles_up_to_a_minute():
     req = ask()
     delays = []
     for _ in range(7):
-        gateway.S.adapter.fail_sends = 1
+        telegram.T.adapter.fail_sends = 1
         run(gateway.scan())
         delays.append(gateway.S.retry[req["id"]][1])
         gateway.S.retry[req["id"]] = (0, delays[-1])
@@ -203,7 +207,7 @@ def test_oversize_text_is_capped_and_points_to_the_wait_card():
     ask(text="x" * 6000)
     run(gateway.scan())
     text = sent()[0]["text"]
-    assert len(text) <= gateway.CAP + len("❓ ")
+    assert len(text) <= telegram.CAP + len("❓ ")
     assert "Full options on wait card w1" in text and "pane" not in text
 
 
@@ -219,7 +223,7 @@ def test_long_descriptions_are_cut_first():
         {"label": "A", "description": "d" * 2000}, {"label": "B", "description": "e" * 2000}]}])
     run(gateway.scan())
     text = sent()[0]["text"]
-    assert len(text) <= gateway.CAP + len("❓ ") and "d" * 100 not in text and "wait card w1" in text
+    assert len(text) <= telegram.CAP + len("❓ ") and "d" * 100 not in text and "wait card w1" in text
 
 
 def test_a_build_review_shows_its_actions_on_the_buttons():
@@ -241,7 +245,7 @@ def test_a_long_label_is_cut_on_its_button_and_kept_whole_in_the_text():
     run(gateway.scan())
     (msg,) = sent()
     button = msg["buttons"][0][0]
-    assert len(button) == gateway.LABEL_MAX and button == long[:gateway.LABEL_MAX - 1] + "…"
+    assert len(button) == telegram.LABEL_MAX and button == long[:telegram.LABEL_MAX - 1] + "…"
     assert f"• {long}\n" in msg["text"] and "• Beta: about Beta" in msg["text"]
 
 
@@ -251,7 +255,7 @@ def test_a_long_label_stays_whole_in_oversize_text():
         {"label": long, "description": "d" * 500}, {"label": "B", "description": "e" * 500}]}])
     run(gateway.scan())
     text = sent()[0]["text"]
-    assert f"• {long}" in text and "d" * 100 not in text and len(text) <= gateway.CAP + len("❓ ")
+    assert f"• {long}" in text and "d" * 100 not in text and len(text) <= telegram.CAP + len("❓ ")
 
 
 def test_cut_labels_that_would_look_alike_are_numbered_on_buttons_and_text():
@@ -308,10 +312,10 @@ def presented(hermes, **fields):
 def test_other_sends_a_force_reply_bound_to_the_question(hermes):
     req, mid = presented(hermes)
     app = fh.Application()
-    gateway.S.bot = app.bot
+    telegram.T.bot = app.bot
 
     async def go():
-        await gateway.guard(fh.update(4242, 4242, data=f"cl:mu{req['id']}q0:other"), None)
+        await telegram.guard(fh.update(4242, 4242, data=f"cl:mu{req['id']}q0:other"), None)
         (prompt,) = app.bot.sent
         assert isinstance(prompt["markup"], fh.ForceReply) and prompt["markup"].selective
         assert "reply to this message" in prompt["text"] and "tg://user?id=4242" in prompt["text"]
@@ -324,15 +328,15 @@ def test_other_sends_a_force_reply_bound_to_the_question(hermes):
 
     assert run(go()) == {"action": "skip"}
     assert decisions.load(req["id"])["answer"] == {"Which?": "typed words"}
-    assert (DM, mid, "Received ✓: typed words") not in gateway.S.adapter.edits  # the prompt's own message is edited
-    assert gateway.S.adapter.edits[-1][2] == "Received ✓: typed words"
+    assert (DM, mid, "Received ✓: typed words") not in telegram.T.adapter.edits  # the prompt's own message is edited
+    assert telegram.T.adapter.edits[-1][2] == "Received ✓: typed words"
 
 
 def test_ask_for_text_without_a_bot_or_on_foreign_data_sends_nothing():
     app = fh.Application()
-    run(gateway.ask_for_text(fh.Query(4242, 4242, "cl:mu00q0:other")))  # no bot yet
-    gateway.S.bot = app.bot
-    run(gateway.ask_for_text(fh.Query(4242, 4242, "cl:other")))
+    run(telegram.ask_for_text(fh.Query(4242, 4242, "cl:mu00q0:other")))  # no bot yet
+    telegram.T.bot = app.bot
+    run(telegram.ask_for_text(fh.Query(4242, 4242, "cl:other")))
     assert app.bot.sent == []
 
 
@@ -366,7 +370,7 @@ def test_a_tap_answers_the_request(hermes, monkeypatch):
 
     run(go())
     assert decisions.load(rid)["answer"] == {"Which?": "Beta"} and [c["id"] for c in called] == [rid]
-    assert gateway.S.adapter.edits == []  # Hermes edits the message on a tap, not muster
+    assert telegram.T.adapter.edits == []  # Hermes edits the message on a tap, not muster
 
 
 def test_every_question_must_be_answered_and_a_double_answer_counts_once(monkeypatch):
@@ -405,14 +409,14 @@ def test_a_leaving_request_releases_its_clarifies(hermes):
     entry = hermes._entries[f"mu{req['id']}q0"]
     decisions.transition(req["id"], ("open",), "done", outcome="Answered in the pane")
     run(gateway.scan())
-    assert entry.response == hermes.CANCELLED and gateway.S.shown == {}
+    assert entry.response == hermes.CANCELLED and telegram.T.shown == {}
     assert hermes._entries == {} or f"mu{req['id']}q0" not in hermes._entries
 
 
 def test_a_cancelled_waiter_answers_nothing(hermes):
     req = ask()
     run(gateway.scan())
-    gateway.release(req["id"])
+    telegram.release(req["id"])
     time.sleep(0.2)
     assert status(req) == "open" and "answer" not in decisions.load(req["id"])
 
@@ -437,7 +441,7 @@ def test_a_reply_by_label_or_number_resolves_the_question(hermes):
         req, mid = presented(hermes)
         assert reply_and_wait(req, text, mid) == {"action": "skip"}
         assert decisions.load(req["id"])["answer"] == {"Which?": expect}
-        assert gateway.S.adapter.edits[-1] == (DM, mid, f"Received ✓: {text}")
+        assert telegram.T.adapter.edits[-1] == (DM, mid, f"Received ✓: {text}")
 
 
 def test_a_reply_to_a_multi_select_takes_numbers(hermes):
@@ -456,7 +460,7 @@ def test_a_reply_to_an_already_resolved_question_passes_through(hermes):
     req, mid = presented(hermes)
     hermes.resolve_gateway_clarify(f"mu{req['id']}q0", "Alpha")
     assert dispatch("beta", reply=mid) is None
-    assert gateway.S.adapter.edits == []
+    assert telegram.T.adapter.edits == []
 
 
 def test_a_reply_to_something_else_passes_through(hermes):
@@ -502,7 +506,7 @@ def test_dispatch_refuses_another_platform_chat_or_unauthorized_user(hermes):
     assert dispatch("words", user=999, reply=mid) is None
     assert dispatch("words", chat=999, reply=mid) is None
     assert dispatch("   ") is None
-    assert hermes._entries[f"mu{req['id']}q0"].response is None and gateway.S.adapter.edits == []
+    assert hermes._entries[f"mu{req['id']}q0"].response is None and telegram.T.adapter.edits == []
 
 
 def test_dispatch_with_nothing_presented_passes_through():
@@ -510,10 +514,10 @@ def test_dispatch_with_nothing_presented_passes_through():
 
 
 def test_dispatch_errors_pass_through(monkeypatch):
-    async def boom(event, gateway):
+    async def boom(event):
         raise RuntimeError("x")
 
-    monkeypatch.setattr(gateway, "_dispatch", boom)
+    monkeypatch.setattr(telegram, "reply", boom)
     assert dispatch("words") is None
 
 
@@ -522,7 +526,7 @@ def test_dispatch_errors_pass_through(monkeypatch):
 def tap(user, chat, data="cl:mu0q0:0", fn=None):
     update = fh.update(user, chat, data=data)
     try:
-        run((fn or gateway.guard)(update, None))
+        run((fn or telegram.guard)(update, None))
     except fh.ApplicationHandlerStop:
         return "stopped", update.callback_query.answers
     return "passed", update.callback_query.answers
@@ -548,30 +552,30 @@ def test_a_group_without_a_user_id_authorizes_nobody(monkeypatch):
     monkeypatch.setitem(config.settings, "notify_user_id", "")
     assert tap(55, -100123)[0] == "stopped"
     assert tap(-100123, -100123)[0] == "stopped"
-    assert gateway.authorized(55, -100123) is False
+    assert telegram.authorized(55, -100123) is False
 
 
 def test_a_guard_error_fails_closed(monkeypatch):
-    monkeypatch.setattr(gateway, "authorized", lambda u, c: 1 / 0)
+    monkeypatch.setattr(telegram, "authorized", lambda u, c: 1 / 0)
     assert tap(4242, 4242) == ("stopped", ["Not authorized"])
     assert "guard error" in core.log_path("gateway").read_text()
 
 
 def test_a_refused_tap_on_other_sends_no_reply_prompt():
     app = fh.Application()
-    gateway.S.bot = app.bot
+    telegram.T.bot = app.bot
     assert tap(999, 4242, data="cl:mu0aq0:other")[0] == "stopped"
     assert app.bot.sent == []
 
 
 def test_the_approval_guard_covers_muster_cards_and_leaves_hermess_own():
-    gateway.S.adapter._approval_state[1] = f"muster:abc"
-    gateway.S.adapter._approval_state[2] = "agent:main:telegram"
-    assert tap(999, 4242, "ea:once:1", gateway.approval_guard) == ("stopped", ["Not authorized"])
-    assert tap(4242, 4242, "ea:once:1", gateway.approval_guard) == ("passed", [])
-    assert tap(999, 4242, "ea:once:2", gateway.approval_guard) == ("passed", [])  # Hermes's own card
-    assert tap(999, 4242, "ea:once:77", gateway.approval_guard) == ("passed", [])  # unknown id
-    assert tap(999, 4242, "ea:junk", gateway.approval_guard) == ("passed", [])
+    telegram.T.adapter._approval_state[1] = f"muster:abc"
+    telegram.T.adapter._approval_state[2] = "agent:main:telegram"
+    assert tap(999, 4242, "ea:once:1", telegram.approval_guard) == ("stopped", ["Not authorized"])
+    assert tap(4242, 4242, "ea:once:1", telegram.approval_guard) == ("passed", [])
+    assert tap(999, 4242, "ea:once:2", telegram.approval_guard) == ("passed", [])  # Hermes's own card
+    assert tap(999, 4242, "ea:once:77", telegram.approval_guard) == ("passed", [])  # unknown id
+    assert tap(999, 4242, "ea:junk", telegram.approval_guard) == ("passed", [])
 
 
 # -- settling the messages --------------------------------------------------------------------------
@@ -581,11 +585,11 @@ def test_a_finished_request_edits_its_newest_message_to_the_outcome():
     run(gateway.scan())
     decisions.transition(req["id"], ("open",), "done", outcome="Sent to Claude")
     run(gateway.scan())
-    assert (DM, sent()[0]["mid"], "Sent to Claude") in gateway.S.adapter.edits
+    assert (DM, sent()[0]["mid"], "Sent to Claude") in telegram.T.adapter.edits
     assert decisions.load(req["id"])["edited"] is True
-    n = len(gateway.S.adapter.edits)
+    n = len(telegram.T.adapter.edits)
     run(gateway.scan())
-    assert len(gateway.S.adapter.edits) == n
+    assert len(telegram.T.adapter.edits) == n
 
 
 def test_reply_prompts_are_edited_to_the_outcome_too(hermes):
@@ -593,32 +597,33 @@ def test_reply_prompts_are_edited_to_the_outcome_too(hermes):
     decisions.update(req["id"], presented={**decisions.load(req["id"])["presented"], "replies": {"0": ["901"]}})
     decisions.transition(req["id"], ("open",), "done", outcome="Sent to Claude")
     run(gateway.scan())
-    assert sorted(m for _, m, _ in gateway.S.adapter.edits) == sorted([mid, "901"])
-    assert {t for _, _, t in gateway.S.adapter.edits} == {"Sent to Claude"}
+    assert sorted(m for _, m, _ in telegram.T.adapter.edits) == sorted([mid, "901"])
+    assert {t for _, _, t in telegram.T.adapter.edits} == {"Sent to Claude"}
 
 
 def test_a_failed_edit_is_retried_once_then_dropped():
     req = ask()
     run(gateway.scan())
     decisions.transition(req["id"], ("open",), "done", outcome="Sent to Claude")
-    gateway.S.adapter.fail_edits = 2
+    telegram.T.adapter.fail_edits = 2
     run(gateway.scan())
     assert not decisions.load(req["id"]).get("edited") and req["id"] in gateway.S.watch
     run(gateway.scan())  # the retry also fails: dropped
     assert decisions.load(req["id"])["edited"] is True and req["id"] not in gateway.S.watch
-    assert gateway.S.adapter.edits == []
+    assert telegram.T.adapter.edits == []
 
 
 def test_a_request_that_ended_while_the_gateway_was_down_is_edited_on_the_first_scan(hermes):
     req = ask()
     run(gateway.scan())
-    gateway.release(req["id"])
+    telegram.release(req["id"])
     decisions.transition(req["id"], ("open",), "stale", outcome="The agent session ended")
-    old = gateway.S
-    gateway.S = gateway.State()  # a restarted gateway
-    gateway.S.adapter, gateway.S.configured = fh.Adapter(), True
+    old = telegram.T
+    gateway.S, telegram.T = gateway.State(), telegram.State()  # a restarted gateway
+    shared.checked.clear()
+    telegram.T.adapter = fh.Adapter()
     run(gateway.scan())
-    assert gateway.S.adapter.edits == [(DM, old.adapter.sent[0]["mid"], "The agent session ended")]
+    assert telegram.T.adapter.edits == [(DM, old.adapter.sent[0]["mid"], "The agent session ended")]
     assert decisions.load(req["id"])["edited"] is True
 
 
@@ -626,7 +631,7 @@ def test_representing_edits_the_earlier_messages_to_superseded(hermes):
     req = ask(presented={"boot": "old", "messages": {"0": ["7", "8"]}})
     run(gateway.scan())
     (msg,) = sent()
-    assert gateway.S.adapter.edits == [(DM, "7", "Superseded: see the newer message"),
+    assert telegram.T.adapter.edits == [(DM, "7", "Superseded: see the newer message"),
                                        (DM, "8", "Superseded: see the newer message")]
     assert decisions.load(req["id"])["presented"]["messages"] == {"0": ["7", "8", msg["mid"]]}
 
@@ -634,7 +639,7 @@ def test_representing_edits_the_earlier_messages_to_superseded(hermes):
 def test_a_failed_partial_send_supersedes_what_this_boot_sent():
     two = [question(f"Q{i}") for i in range(2)]
     ask(questions=two, choices=[["Alpha", "Beta"]] * 2)
-    adapter, real = gateway.S.adapter, gateway.S.adapter._send_prompt
+    adapter, real = telegram.T.adapter, telegram.T.adapter._send_prompt
 
     async def second_fails(*args, **kw):
         if adapter.sent:
@@ -653,7 +658,7 @@ def test_a_request_from_an_earlier_boot_is_represented(hermes):
     req = ask(presented={"boot": "old", "messages": {"0": ["7"]}})
     run(gateway.scan())
     (msg,) = sent()
-    assert gateway.S.adapter.edits == [(DM, "7", "Superseded: see the newer message")]
+    assert telegram.T.adapter.edits == [(DM, "7", "Superseded: see the newer message")]
     assert decisions.load(req["id"])["presented"] == {"boot": gateway.BOOT, "messages": {"0": ["7", msg["mid"]]}}
 
 
@@ -701,8 +706,8 @@ def approve(rid, choice, reason=None):
 
 async def card_for(req):
     await gateway.scan()
-    await until(lambda: any(m.get("command") for m in gateway.S.adapter.sent))
-    return gateway.S.adapter.sent[-1]
+    await until(lambda: any(m.get("command") for m in telegram.T.adapter.sent))
+    return telegram.T.adapter.sent[-1]
 
 
 def test_a_permission_prompt_is_hermess_approval_card():
@@ -756,7 +761,7 @@ def test_a_reply_to_the_card_denies_with_its_text():
         assert got == {"action": "skip"}
         await until(lambda: status(req) == "answered")
         assert decisions.load(req["id"])["answer"] == {"decision": "deny", "message": "please use make"}
-        assert gateway.S.adapter.edits[-1] == (DM, card["mid"], "Received ✓: please use make")
+        assert telegram.T.adapter.edits[-1] == (DM, card["mid"], "Received ✓: please use make")
     run(go())
 
 
@@ -765,20 +770,20 @@ def test_a_reply_to_the_card_from_an_unauthorized_user_does_nothing():
         req = permission()
         card = await card_for(req)
         got = await gateway.on_dispatch(event=fh.event("no", 999, DM, reply=card["mid"]), gateway=fh.Gateway())
-        assert got is None and status(req) == "open" and gateway.S.approvals == {req["id"]}
+        assert got is None and status(req) == "open" and telegram.T.approvals == {req["id"]}
     run(go())
 
 
 def test_a_failed_card_send_is_retried_with_backoff():
     async def go():
         req = permission()
-        gateway.S.adapter.fail_sends = 1
+        telegram.T.adapter.fail_sends = 1
         await gateway.scan()
         await until(lambda: req["id"] in gateway.S.retry)
-        assert status(req) == "open" and req["id"] not in gateway.S.approvals
+        assert status(req) == "open" and req["id"] not in telegram.T.approvals
         gateway.S.retry[req["id"]] = (0, 2)
         await gateway.scan()
-        await until(lambda: req["id"] not in gateway.S.retry and gateway.S.approvals)
+        await until(lambda: req["id"] not in gateway.S.retry and telegram.T.approvals)
         assert len(sent()) == 1
     run(go())
 
@@ -789,7 +794,7 @@ def test_an_ended_request_withdraws_its_card():
         await card_for(req)
         decisions.transition(req["id"], ("open",), "stale", outcome="Answered in the pane")
         await gateway.scan()
-        assert gateway.S.approvals == set()
+        assert telegram.T.approvals == set()
         await asyncio.sleep(0.2)
         assert status(req) == "stale" and "answer" not in decisions.load(req["id"])  # a withdrawn wait answers nothing
     run(go())
@@ -801,7 +806,7 @@ def test_a_silent_hook_stales_a_permission_request_and_withdraws_it():
         await card_for(req)
         decisions.update(req["id"], alive=time.time() - 40)
         await gateway.scan()
-        assert status(req) == "stale" and gateway.S.approvals == set()
+        assert status(req) == "stale" and telegram.T.approvals == set()
     run(go())
 
 
@@ -822,6 +827,9 @@ def test_register_adds_the_gateway_pieces_only_when_hermes_has_them(monkeypatch)
     calls = []
 
     class Old:
+        def get_config(self, key, default):
+            return default
+
         def register_cli_command(self, **kw):
             pass
 
@@ -842,7 +850,8 @@ def test_register_adds_the_gateway_pieces_only_when_hermes_has_them(monkeypatch)
         module.register(ctx)
         assert calls == [("telegram", "telegram_factory"), ("pre_gateway_dispatch", "on_dispatch")]
         gw = sys.modules["hermes_plugins.muster_gw.muster.gateway"]
-        assert gw.CTX is ctx and gw.S.task is None  # nothing ran at register time
+        hub = sys.modules["hermes_plugins.muster_gw.muster.channels.shared"]
+        assert hub.CTX is ctx and gw.S.task is None  # nothing ran at register time
     finally:
         for key in [k for k in sys.modules if k.startswith("hermes_plugins.muster_gw.")]:
             sys.modules.pop(key, None)
@@ -970,13 +979,13 @@ def forum(monkeypatch):
     for key, value in (("notify_topics", True), ("notify_chat_id", GROUP_CHAT), ("notify_user_id", "42")):
         monkeypatch.setitem(config.settings, key, value)
     bot = fh.Bot()
-    gateway.S.bot = gateway.S.adapter.bot = bot
+    telegram.T.bot = telegram.T.adapter.bot = bot
     subs = fh.Subs()
     monkeypatch.setattr(core, "kanban", subs)
     clock = [1000.0]
-    monkeypatch.setattr(gateway, "now", lambda: clock[0])
-    monkeypatch.setattr(gateway, "clock", lambda: clock[0])
-    return types.SimpleNamespace(bot=bot, subs=subs, clock=clock, adapter=gateway.S.adapter)
+    monkeypatch.setattr(shared, "now", lambda: clock[0])
+    monkeypatch.setattr(shared, "clock", lambda: clock[0])
+    return types.SimpleNamespace(bot=bot, subs=subs, clock=clock, adapter=telegram.T.adapter)
 
 
 def requested(ledger="led1", name="r#7 Fix it", **fields):
@@ -998,7 +1007,7 @@ def opened(forum, ledger="led1", name="r#7 Fix it", cards=()):
 
 def found_gone(forum, ledger="led1"):
     """The run's topic is found deleted (a prompt that fell back to General was tapped; see the tests below)."""
-    run(gateway.gone(ledger, conversation.load(ledger)["thread_id"]))
+    run(telegram.gone(ledger, conversation.load(ledger)["thread_id"]))
 
 
 def tick(forum, seconds, n=1):
@@ -1037,13 +1046,13 @@ def test_a_lost_create_is_adopted_from_telegrams_notice_and_never_made_twice(for
     requested()
     tick(forum, 0)
     assert conversation.load("led1")["state"] == "creating" and list(forum.bot.topics) == [41]
-    run(gateway.topic_created(fh.topic_notice(GROUP_CHAT, 41, "r#7 Fix it"), None))
+    run(telegram.topic_created(fh.topic_notice(GROUP_CHAT, 41, "r#7 Fix it"), None))
     assert conversation.load("led1")["state"] == "open" and conversation.load("led1")["thread_id"] == "41"
     tick(forum, 11, n=3)
     assert list(forum.bot.topics) == [41]  # no second create
     # a late notice of another topic of that name: a duplicate, said so and closed
     forum.bot.make_topic(GROUP_CHAT, "r#7 Fix it")
-    run(gateway.topic_created(fh.topic_notice(GROUP_CHAT, 42, "r#7 Fix it"), None))
+    run(telegram.topic_created(fh.topic_notice(GROUP_CHAT, 42, "r#7 Fix it"), None))
     assert (GROUP_CHAT, 'Duplicate topic, not used; this run is in the topic "r#7 Fix it".', "42") in forum.adapter.notes
     assert 42 in forum.bot.closed and 41 not in forum.bot.closed
     assert conversation.load("led1")["thread_id"] == "41"
@@ -1053,8 +1062,8 @@ def test_a_notice_from_someone_else_or_another_chat_adopts_nothing(forum):
     forum.adapter.creates = ["lost"]
     requested()
     tick(forum, 0)
-    run(gateway.topic_created(fh.topic_notice(GROUP_CHAT, 41, "r#7 Fix it", sender=42), None))  # the human made it
-    run(gateway.topic_created(fh.topic_notice("-100999", 41, "r#7 Fix it"), None))
+    run(telegram.topic_created(fh.topic_notice(GROUP_CHAT, 41, "r#7 Fix it", sender=42), None))  # the human made it
+    run(telegram.topic_created(fh.topic_notice("-100999", 41, "r#7 Fix it"), None))
     assert conversation.load("led1")["state"] == "creating"
 
 
@@ -1073,7 +1082,7 @@ def test_a_lost_create_with_no_notice_is_never_retried_and_the_run_uses_the_main
     assert [n[1] for n in forum.adapter.notes if "stays in the main chat" in n[1]] and all(
         n[2] is None for n in forum.adapter.notes)
     # the notice turns up after all: that topic is closed as unused, the run stays in the main chat
-    run(gateway.topic_created(fh.topic_notice(GROUP_CHAT, 41, "r#7 Fix it"), None))
+    run(telegram.topic_created(fh.topic_notice(GROUP_CHAT, 41, "r#7 Fix it"), None))
     assert 41 in forum.bot.closed and conversation.load("led1")["state"] == "fallback"
 
 
@@ -1100,7 +1109,7 @@ def test_the_launchs_fallback_beats_a_late_create(forum):
     requested()
     tick(forum, 0)
     conversation.swap("led1", ("pending", "creating"), state="fallback", why="no topic within 45 s")  # the tick
-    run(gateway.topic_created(fh.topic_notice(GROUP_CHAT, 41, "r#7 Fix it"), None))
+    run(telegram.topic_created(fh.topic_notice(GROUP_CHAT, 41, "r#7 Fix it"), None))
     assert conversation.load("led1")["state"] == "fallback" and 41 in forum.bot.closed
     assert (GROUP_CHAT, "Duplicate topic, not used; this run is in the main chat.", "41") in forum.adapter.notes
 
@@ -1134,7 +1143,7 @@ def test_a_deleted_topic_then_an_agent_prompt_lands_in_a_new_topic(forum):
     assert [s["thread"] for s in forum.adapter.sent] == [None] and conversation.load("led1")["state"] == "open"
     update = fh.update(42, GROUP_CHAT, data=f"cl:mu{req['id']}q0:0", thread=None, mid=forum.adapter.sent[0]["mid"])
     with pytest.raises(fh.ApplicationHandlerStop):
-        run(gateway.guard(update, None))  # its newest prompt landed outside the topic: the topic is gone
+        run(telegram.guard(update, None))  # its newest prompt landed outside the topic: the topic is gone
     assert conversation.load("led1")["state"] == "creating" and status(req) == "open"
     tick(forum, 0, n=3)  # made, then the cards and the request move
     ref = conversation.load("led1")
@@ -1173,8 +1182,9 @@ def test_a_recreate_that_fails_moves_the_run_to_the_main_chat(forum):
 def test_after_a_restart_the_topic_is_reused(forum):
     thread = opened(forum)
     ask()
-    gateway.S = gateway.State()
-    gateway.S.configured, gateway.S.adapter, gateway.S.bot = True, forum.adapter, forum.bot
+    gateway.S, telegram.T = gateway.State(), telegram.State()
+    shared.checked.clear()
+    telegram.T.adapter, telegram.T.bot = forum.adapter, forum.bot
     tick(forum, 0)
     assert [s["thread"] for s in forum.adapter.sent] == [thread] and list(forum.bot.topics) == [int(thread)]
 
@@ -1188,7 +1198,7 @@ def test_two_runs_never_cross_route(forum, hermes):
     # a tap on A's message seen outside A's topic is refused, and A is presented again in its topic
     update = fh.update(42, GROUP_CHAT, data=f"cl:mu{a['id']}q0:0", thread=int(b_thread))
     with pytest.raises(fh.ApplicationHandlerStop):
-        run(gateway.guard(update, None))
+        run(telegram.guard(update, None))
     assert update.callback_query.answers == ["Moved: answer in the run's topic"]
     # both wait for typed text after Other: text typed in B's topic answers B only
     tick(forum, 0)
@@ -1239,15 +1249,16 @@ def test_every_kind_of_request_follows_the_runs_topic(forum):
 def test_with_topics_off_nothing_carries_a_thread(hermes):
     ask()
     run(gateway.scan())
-    assert gateway.S.adapter.sent[0]["thread"] is None and not (config.data_dir() / "runs").exists()
+    assert telegram.T.adapter.sent[0]["thread"] is None and not (config.data_dir() / "runs").exists()
 
 
 def test_an_open_topic_is_never_probed_or_reopened(forum):
     opened(forum)
     ask()
     tick(forum, 31, n=4)
-    gateway.S = gateway.State()  # a restart
-    gateway.S.configured, gateway.S.adapter, gateway.S.bot = True, forum.adapter, forum.bot
+    gateway.S, telegram.T = gateway.State(), telegram.State()  # a restart
+    shared.checked.clear()
+    telegram.T.adapter, telegram.T.bot = forum.adapter, forum.bot
     tick(forum, 31, n=2)
     assert not [c for c in forum.bot.calls if c[0] == "reopen"] and conversation.load("led1")["state"] == "open"
 
@@ -1258,7 +1269,7 @@ def test_a_tap_on_an_older_prompt_outside_the_topic_does_not_mark_it_gone(forum)
     tick(forum, 0)
     update = fh.update(42, GROUP_CHAT, data=f"cl:mu{req['id']}q0:0", thread=None, mid="1")  # not its newest message
     with pytest.raises(fh.ApplicationHandlerStop):
-        run(gateway.guard(update, None))
+        run(telegram.guard(update, None))
     assert update.callback_query.answers == ["Moved: answer in the run's topic"]
     ref = conversation.load("led1")
     assert ref["state"] == "open" and ref["thread_id"] == thread
@@ -1278,7 +1289,7 @@ def test_an_approval_card_that_fell_back_to_general_marks_the_topic_gone(forum):
     assert sent["thread"] is None
     update = fh.update(42, GROUP_CHAT, data=f"ea:once:{sent['mid']}", thread=None, mid=sent["mid"])
     with pytest.raises(fh.ApplicationHandlerStop):
-        run(gateway.approval_guard(update, None))
+        run(telegram.approval_guard(update, None))
     assert status(req) == "open" and conversation.load("led1")["state"] == "creating"
 
 
@@ -1292,7 +1303,7 @@ def test_while_a_deleted_topic_is_remade_no_tap_is_taken_anywhere(forum):
     for thread in (None, int(old)):
         update = fh.update(42, GROUP_CHAT, data=f"cl:mu{req['id']}q0:0", thread=thread)
         with pytest.raises(fh.ApplicationHandlerStop):
-            run(gateway.guard(update, None))
+            run(telegram.guard(update, None))
     assert status(req) == "open"
 
 
@@ -1319,7 +1330,7 @@ def test_an_approval_card_tapped_outside_its_topic_is_refused(forum):
     approval_id = int(forum.adapter.sent[0]["mid"])
     update = fh.update(42, GROUP_CHAT, data=f"ea:once:{approval_id}", thread=None)
     with pytest.raises(fh.ApplicationHandlerStop):
-        run(gateway.approval_guard(update, None))
+        run(telegram.approval_guard(update, None))
     assert update.callback_query.answers == ["Moved: answer in the run's topic"] and status(req) == "open"
 
 
@@ -1329,9 +1340,9 @@ def test_someone_elses_tap_cannot_make_a_prompt_present_again(forum):
     tick(forum, 0)
     update = fh.update(99, GROUP_CHAT, data=f"cl:mu{req['id']}q0:0", thread=None)
     with pytest.raises(fh.ApplicationHandlerStop):
-        run(gateway.guard(update, None))
+        run(telegram.guard(update, None))
     assert update.callback_query.answers == ["Not authorized"]
-    assert req["id"] in gateway.S.shown and decisions.load(req["id"])["presented"].get("boot") == gateway.BOOT
+    assert req["id"] in telegram.T.shown and decisions.load(req["id"])["presented"].get("boot") == gateway.BOOT
 
 
 def test_a_card_whose_subscription_does_not_move_is_retried_before_the_repair_is_done(forum):
@@ -1382,14 +1393,14 @@ def test_topic_notices_bind_to_the_run_not_its_readable_title(forum):
     a_thread, b_thread = (t for t, n in forum.bot.topics.items() if n == a_name), \
         (t for t, n in forum.bot.topics.items() if n == b_name)
     a_thread, b_thread = next(a_thread), next(b_thread)
-    run(gateway.topic_created(fh.topic_notice(GROUP_CHAT, b_thread, b_name), None))  # B's notice first
-    run(gateway.topic_created(fh.topic_notice(GROUP_CHAT, a_thread, a_name), None))
+    run(telegram.topic_created(fh.topic_notice(GROUP_CHAT, b_thread, b_name), None))  # B's notice first
+    run(telegram.topic_created(fh.topic_notice(GROUP_CHAT, a_thread, a_name), None))
     assert conversation.load("ledA")["thread_id"] == str(a_thread)
     assert conversation.load("ledB")["thread_id"] == str(b_thread)
     # delayed duplicates: a repeat of A's own notice changes nothing; another topic named for A is closed
-    run(gateway.topic_created(fh.topic_notice(GROUP_CHAT, a_thread, a_name), None))
+    run(telegram.topic_created(fh.topic_notice(GROUP_CHAT, a_thread, a_name), None))
     extra = forum.bot.make_topic(GROUP_CHAT, a_name)
-    run(gateway.topic_created(fh.topic_notice(GROUP_CHAT, extra, a_name), None))
+    run(telegram.topic_created(fh.topic_notice(GROUP_CHAT, extra, a_name), None))
     assert forum.bot.closed == {extra}
     assert conversation.load("ledA")["thread_id"] == str(a_thread)
     assert conversation.load("ledB")["thread_id"] == str(b_thread)
@@ -1400,7 +1411,7 @@ def test_a_notice_whose_name_matches_two_runs_is_ignored(forum):
     requested("ledA", "same")
     requested("ledB", "same")  # cannot happen with ledger-tagged names; refused if it ever does
     tick(forum, 0)
-    run(gateway.topic_created(fh.topic_notice(GROUP_CHAT, 41, "same"), None))
+    run(telegram.topic_created(fh.topic_notice(GROUP_CHAT, 41, "same"), None))
     assert conversation.load("ledA")["state"] == conversation.load("ledB")["state"] == "creating"
     assert not forum.bot.closed and "ambiguous, ignored" in core.log_path("gateway").read_text()
 
@@ -1413,12 +1424,12 @@ def test_a_late_notice_of_the_deleted_previous_topic_is_never_adopted(forum):
     found_gone(forum)
     tick(forum, 0)  # the recreate's reply is lost
     new = max(forum.bot.topics)
-    run(gateway.topic_created(fh.topic_notice(GROUP_CHAT, int(old), name), None))  # the old topic's notice, late
+    run(telegram.topic_created(fh.topic_notice(GROUP_CHAT, int(old), name), None))  # the old topic's notice, late
     ref = conversation.load("led1")
     assert ref["state"] == "creating" and ref["thread_id"] is None and not forum.bot.closed
-    run(gateway.topic_created(fh.topic_notice(GROUP_CHAT, new, name), None))
+    run(telegram.topic_created(fh.topic_notice(GROUP_CHAT, new, name), None))
     assert conversation.load("led1")["thread_id"] == str(new) and not forum.bot.closed
-    assert run(gateway.settle("led1", old)) is None and conversation.load("led1")["thread_id"] == str(new)
+    assert run(telegram.settle("led1", old)) is None and conversation.load("led1")["thread_id"] == str(new)
 
 
 def test_a_card_that_never_moves_does_not_stop_a_second_deletion(forum):
@@ -1586,7 +1597,7 @@ def test_a_topic_made_for_a_run_archived_meanwhile_is_deleted_on_its_notice(foru
     forum.subs.status["led1"] = "archived"
     tick(forum, 31)
     assert conversation.load("led1")["state"] == "deleted"
-    run(gateway.topic_created(fh.topic_notice(GROUP_CHAT, 41, "r#7 Fix it"), None))
+    run(telegram.topic_created(fh.topic_notice(GROUP_CHAT, 41, "r#7 Fix it"), None))
     assert 41 not in forum.bot.topics and conversation.load("led1")["state"] == "deleted"
 
 
@@ -1614,14 +1625,15 @@ def closed_later(forum, by="muster"):
         conversation.finish("led1")
         tick(forum, 0)
     else:
-        run(gateway.topic_toggled(fh.topic_toggled(GROUP_CHAT, int(thread)), None))
+        run(telegram.topic_toggled(fh.topic_toggled(GROUP_CHAT, int(thread)), None))
         forum.bot.closed.add(int(thread))
     return thread
 
 
 def restart(forum):
-    gateway.S = gateway.State()
-    gateway.S.configured, gateway.S.adapter, gateway.S.bot = True, forum.adapter, forum.bot
+    gateway.S, telegram.T = gateway.State(), telegram.State()
+    shared.checked.clear()
+    telegram.T.adapter, telegram.T.bot = forum.adapter, forum.bot
 
 
 def test_a_fresh_gateway_with_an_open_topic_and_a_done_ledger_changes_nothing(forum):
@@ -1727,7 +1739,7 @@ def test_a_human_reopen_resumes_and_shows_the_prompts_again(forum):
     req = ask()
     thread = closed_later(forum, by="human")
     forum.bot.closed.discard(int(thread))
-    run(gateway.topic_toggled(fh.topic_toggled(GROUP_CHAT, int(thread), closed=False), None))
+    run(telegram.topic_toggled(fh.topic_toggled(GROUP_CHAT, int(thread), closed=False), None))
     assert conversation.load("led1")["state"] == "open"
     tick(forum, 0)
     assert [s["thread"] for s in forum.adapter.sent] == [thread] and status(req) == "open"
@@ -1742,27 +1754,27 @@ def test_a_human_close_while_muster_closes_settles_closed(forum, monkeypatch):
     conversation.finish("led1")
     tick(forum, 0)
     assert conversation.load("led1")["state"] == "closing"
-    run(gateway.topic_toggled(fh.topic_toggled(GROUP_CHAT, int(thread)), None))
+    run(telegram.topic_toggled(fh.topic_toggled(GROUP_CHAT, int(thread)), None))
     ref = conversation.load("led1")
     assert ref["state"] == "closed" and ref["closed_by"] == "human" and ref["retry_at"] == 0
 
 
 def test_the_bots_own_or_another_chats_close_notice_changes_nothing(forum):
     thread = opened(forum)
-    run(gateway.topic_toggled(fh.topic_toggled(GROUP_CHAT, int(thread), sender=forum.bot.id), None))
-    run(gateway.topic_toggled(fh.topic_toggled("-100999", int(thread)), None))
-    run(gateway.topic_toggled(fh.topic_toggled(GROUP_CHAT, 999), None))  # not a run's topic
+    run(telegram.topic_toggled(fh.topic_toggled(GROUP_CHAT, int(thread), sender=forum.bot.id), None))
+    run(telegram.topic_toggled(fh.topic_toggled("-100999", int(thread)), None))
+    run(telegram.topic_toggled(fh.topic_toggled(GROUP_CHAT, 999), None))  # not a run's topic
     assert conversation.load("led1")["state"] == "open"
 
 
 def test_two_runs_close_and_reopen_independently(forum):
     a = opened(forum, "ledA", "r#1 A")
     opened(forum, "ledB", "r#2 B")
-    run(gateway.topic_toggled(fh.topic_toggled(GROUP_CHAT, int(a)), None))
+    run(telegram.topic_toggled(fh.topic_toggled(GROUP_CHAT, int(a)), None))
     conversation.finish("ledB")
     tick(forum, 0)
     assert conversation.load("ledA")["closed_by"] == "human" and conversation.load("ledB")["closed_by"] == "muster"
-    run(gateway.topic_toggled(fh.topic_toggled(GROUP_CHAT, int(a), closed=False), None))
+    run(telegram.topic_toggled(fh.topic_toggled(GROUP_CHAT, int(a), closed=False), None))
     assert conversation.load("ledA")["state"] == "open" and conversation.load("ledB")["state"] == "closed"
 
 
@@ -1776,7 +1788,7 @@ def test_a_close_that_fails_never_claims_closed_and_backs_off(forum, monkeypatch
     for _ in range(12):
         tick(forum, 3600)
     ref = conversation.load("led1")
-    assert ref["state"] == "closing" and ref["retry_delay"] == gateway.RETRY_MAX and int(thread) not in forum.bot.closed
+    assert ref["state"] == "closing" and ref["retry_delay"] == shared.RETRY_MAX and int(thread) not in forum.bot.closed
     assert "Timed out" in ref["why"]
 
 
@@ -1800,7 +1812,7 @@ def test_a_waiting_build_request_reads_its_pull_request_at_most_every_30_s(forum
 
 def test_a_human_reopen_marks_the_run_resumed(forum):
     thread = closed_later(forum, by="human")
-    run(gateway.topic_toggled(fh.topic_toggled(GROUP_CHAT, int(thread), closed=False), None))
+    run(telegram.topic_toggled(fh.topic_toggled(GROUP_CHAT, int(thread), closed=False), None))
     assert conversation.load("led1")["resumed"] is True
 
 
@@ -1821,7 +1833,7 @@ def test_a_human_reopen_while_a_close_retries_wins_and_stays_open(forum, monkeyp
     ref = conversation.load("led1")
     assert ref["state"] == "closing" and ref["retry_at"] > 0 and int(thread) in forum.bot.closed
     forum.bot.closed.discard(int(thread))
-    run(gateway.topic_toggled(fh.topic_toggled(GROUP_CHAT, int(thread), closed=False), None))
+    run(telegram.topic_toggled(fh.topic_toggled(GROUP_CHAT, int(thread), closed=False), None))
     ref = conversation.load("led1")
     assert ref["state"] == "open" and ref["resumed"] is True and ref["retry_at"] == ref["retry_delay"] == 0
     assert "boot" not in decisions.load(req["id"])["presented"]  # eligible to present again
@@ -1837,5 +1849,5 @@ def test_a_human_reopen_while_a_close_retries_wins_and_stays_open(forum, monkeyp
 def test_a_human_reopen_never_revives_a_retired_topic(forum, state):
     thread = opened(forum)
     conversation.update("led1", state=state)
-    run(gateway.topic_toggled(fh.topic_toggled(GROUP_CHAT, int(thread), closed=False), None))
+    run(telegram.topic_toggled(fh.topic_toggled(GROUP_CHAT, int(thread), closed=False), None))
     assert conversation.load("led1")["state"] == state
