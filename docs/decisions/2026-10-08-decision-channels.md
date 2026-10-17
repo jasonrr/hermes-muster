@@ -1,6 +1,6 @@
 # Decision channels: the transport-neutral core and the adapter contract (issue #17, 2026-10-08)
 
-Telegram is the first decision surface. Slack is a requirement for the architecture, not built.
+Telegram is the first decision surface. Slack is the second (design `docs/plans/2026-10-17-channels-design.md`).
 
 ## The core (any channel)
 
@@ -55,23 +55,11 @@ Telegram is the first decision surface. Slack is a requirement for the architect
 - Telegram's `thread_id` is the forum topic's `message_thread_id`. The gateway owns its lifecycle: create,
   reconcile, probe, recreate, close and reopen.
 
-## Slack (contract only)
+## Slack
 
-- **Present.** The Hermes Slack adapter already implements `send_clarify(chat_id, question, choices,
-  clarify_id, session_key)` with Block Kit buttons. The scan's `present` works unchanged once it calls the
-  Slack adapter. Capture that adapter with `ctx.register_platform_handler("slack", factory)`, the
-  equivalent of `register_telegram_handler`.
-- **Authorize.** Register `ctx.register_slack_action_handler(<regex matching muster ids>, callback)` ahead
-  of the core one, comparing `body["user"]["id"]` and the channel with new `notify_slack_user_id` and
-  `notify_slack_channel` settings. Check first whether Hermes runs plugin action handlers before its own.
-- **Map replies.** `pre_gateway_dispatch` already sees Slack messages. A thread reply carries the parent
-  `ts` as its reply id, so key `presented.messages` by `ts`. `on_dispatch` currently returns early for
-  any platform but telegram. Generalize that check to "the configured decision platform".
-- **Threads.** A run's conversation reference stores the parent message's `ts` as `thread_id`. Pass it as
-  `metadata["thread_id"]` (the Slack adapter's `_resolve_thread_ts` reads it), as `--thread-id` on subscriptions,
-  and compare it with an inbound reply's `source.thread_id`. Creating the thread is posting the parent message.
-  Closing it has no Slack equivalent, so it can be a final reply.
-- **Config.** `notify_platform: slack` selects the adapter. Wait cards then skip their subscription only when Hermes's runtime
-  status shows the Slack platform connected (`decisions.gateway_up`), as with Telegram.
-- **Not needed.** No change to `decisions.py`, `bridge.py`, `recommend`, execution, recovery or
-  re-review.
+Superseded by `docs/plans/2026-10-17-channels-design.md` (approved 2026-10-17), built under issue #43. The contract
+above assumed plugin action handlers run before Hermes's own on Slack, as the Hermes docs say. The Slack adapter's
+source registers its `hermes_clarify_*` and `hermes_approve_*` listeners first, and Bolt runs only the first match,
+so a plugin cannot guard Hermes's own Slack prompts. muster's Slack channel (`muster/channels/slack.py`) therefore
+posts its own Block Kit messages with `muster_*` action ids and authorizes every tap itself. It needs no
+`notify_slack_*` settings: the generic `notify_*` keys cover Slack, and `notify_user_id` holds the approvers.

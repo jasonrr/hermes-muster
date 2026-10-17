@@ -905,11 +905,20 @@ def test_each_missing_condition_keeps_notify_wake(board, monkeypatch, spoil):
     bridge_ready(board, gateway_up=spoil != "gateway down",
                  hook_key="Notification" if spoil == "no hook" else "PermissionRequest")
     if spoil == "platform":
-        monkeypatch.setitem(config.settings, "notify_platform", "slack")
+        monkeypatch.setitem(config.settings, "notify_platform", "discord")  # require() refuses it; nothing delivers
+        monkeypatch.setitem(config.settings, "notify_chat_id", "4242")  # no channel home: name the DM the fake reads
+        monkeypatch.setitem(config.settings, "notify_chat_type", "dm")
     if spoil == "no settings":
         (core.intake_dir() / LINKS["card"] / core.SETTINGS_FILE).unlink()
     events.open_wait(board["git_dir"], LINKS, "why", "k1", bridged=spoil != "not bridged")
     assert wait_mode(board) == "notify+wake"
+
+
+def test_slack_pages_the_human_itself_too(board, monkeypatch):
+    bridge_ready(board)
+    monkeypatch.setitem(config.settings, "notify_platform", "slack")
+    events.open_wait(board["git_dir"], LINKS, "why", "k1", bridged=True)
+    assert wait_mode(board) == "none"
 
 
 def test_a_wait_without_a_bridged_question_stays_notify_wake_with_everything_in_place(board):

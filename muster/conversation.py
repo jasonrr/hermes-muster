@@ -1,8 +1,8 @@
 """conversation: where a run's messages go, one channel-neutral reference per ledger card (issue #24).
 
 <data dir>/runs/<ledger>/conversation.json holds {ledger, platform, chat_id, user_id, thread_id, name, state, why,
-attempts, since, previous, cards, noticed, repaired, resolved_at, closed_at, closed_by}. `thread_id` is Telegram's
-message_thread_id (a Slack thread_ts later); `user_id` is the human authorized to answer. `resolved_at`: when cleanup
+attempts, since, previous, cards, noticed, repaired, resolved_at, closed_at, closed_by, unsubscribed, parent_text}. `thread_id` is Telegram's
+message_thread_id, or Slack's thread parent ts; `user_id` is the human authorized to answer. `resolved_at`: when cleanup
 found the run's work resolved (its pull request merged); the topic closes then, whatever is left to clean up. `state`:
   pending  - the launch asked for a topic; the gateway (which holds the bot) creates it
   creating - an attempt is under way, or its result was lost (muster.gateway reconciles it)
@@ -77,7 +77,8 @@ def target(ledger):
     inbound topic sessions are "group" too (telegram adapter _build_message_event), so a wake and the human's
     replies in the topic share one session."""
     ref = load(ledger) if ledger else None
-    thread = ref.get("thread_id") if ref and ref.get("state") in THREADED else None
+    mine = ref and ref.get("platform", "telegram") == config.settings["notify_platform"]  # never another platform's
+    thread = ref.get("thread_id") if mine and ref.get("state") in THREADED else None
     return {**core.notify_target(), "thread_id": thread}
 
 
@@ -153,7 +154,7 @@ def every():
 
 
 def active():
-    """References the gateway still has work on: not deleted, and not a fallback already told and settled. A closed
-    one stays: its ledger may be archived later."""
-    return [ref for ref in every() if ref.get("state") != "deleted" and not (
+    """References the gateway still has work on: not deleted (unless its cards' subscriptions are still to be
+    removed), and not a fallback already told and settled. A closed one stays: its ledger may be archived later."""
+    return [ref for ref in every() if (ref.get("state") != "deleted" or ref.get("unsubscribed") is False) and not (
         ref.get("state") == "fallback" and ref.get("noticed") and (not ref.get("previous") or ref.get("repaired")))]

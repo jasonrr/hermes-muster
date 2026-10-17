@@ -789,6 +789,35 @@ def test_notify_target_stringifies_ids_yaml_parsed_as_ints(monkeypatch):
     assert core.notify_target()["user_id"] == "-1004455490829"
 
 
+@pytest.mark.parametrize("users, expected", [("42", ["42"]), (42, ["42"]), (["42", 43], ["42", "43"]),
+                                             ("42, 43,", ["42", "43"])])
+def test_approvers_reads_one_id_a_comma_list_or_a_yaml_list(monkeypatch, users, expected):
+    monkeypatch.setitem(config.settings, "notify_chat_id", "-100123")
+    monkeypatch.setitem(config.settings, "notify_user_id", users)
+    assert core.approvers() == expected
+    assert core.notify_target()["user_id"] == expected[0]
+
+
+def test_slack_never_reads_the_telegram_home(monkeypatch):
+    monkeypatch.setattr(core, "telegram_home", lambda: 1 / 0)
+    for key, value in {"notify_platform": "slack", "notify_chat_id": "C1", "notify_user_id": "U1,U2"}.items():
+        monkeypatch.setitem(config.settings, key, value)
+    assert core.notify_target() == {"chat_id": "C1", "user_id": "U1", "chat_type": "group"}
+    monkeypatch.setitem(config.settings, "notify_chat_id", "")
+    with pytest.raises(config.ConfigError, match="notify_chat_id"):
+        core.notify_target()
+
+
+def test_approvers_fall_back_to_the_dm_but_never_in_a_group(monkeypatch):
+    monkeypatch.setitem(config.settings, "notify_user_id", "")
+    assert core.approvers() == ["4242"]  # TELEGRAM_HOME_CHANNEL: the DM chat is the human
+    monkeypatch.setitem(config.settings, "notify_user_id", "55")
+    assert core.approvers() == ["4242"]  # a DM has only its human in it, as before
+    monkeypatch.setitem(config.settings, "notify_user_id", "")
+    monkeypatch.setitem(config.settings, "notify_chat_id", "-100123")
+    assert core.approvers() == []
+
+
 def test_board_db_follows_the_kanban_home_and_the_default_board_layout(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_KANBAN_HOME", str(tmp_path / "kb"))
     assert core.board_db() == tmp_path / "kb" / "kanban" / "boards" / "muster" / "kanban.db"

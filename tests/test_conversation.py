@@ -164,3 +164,16 @@ def test_a_request_that_fails_after_pending_falls_back(monkeypatch):
     assert conversation.request("led1", "n") is None
     ref = conversation.load("led1")
     assert ref["state"] == "fallback" and "interrupted" in ref["why"]
+
+
+def test_a_thread_of_another_platform_is_not_lent(monkeypatch):
+    conversation.update("led1", platform="telegram", chat_id="-100123", thread_id="77", state="open")
+    assert conversation.target("led1")["thread_id"] == "77"
+    for key, value in {"notify_platform": "slack", "notify_chat_id": "C1", "notify_user_id": "U1"}.items():
+        monkeypatch.setitem(config.settings, key, value)
+    assert conversation.target("led1")["thread_id"] is None
+    calls = []
+    monkeypatch.setattr(core, "kanban", lambda *a: calls.append(a) or ("[]" if a[0] == "notify-list" else ""))
+    with pytest.raises(core.LaunchError):  # the fake keeps no subscription to read back
+        core.subscribe("t_card", "led1")
+    assert "--thread-id" not in calls[0] and calls[0][calls[0].index("--chat-id") + 1] == "C1"

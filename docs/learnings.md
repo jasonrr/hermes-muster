@@ -113,3 +113,8 @@
 
 - The Hermes docs say plugin platform factories run before core handlers, and the 2026-10-08 decision planned a Slack guard on that → in the Slack adapter source, core `hermes_clarify_*`/`hermes_approve_*` listeners are registered first and Bolt runs only the first match, so a plugin cannot narrow who answers Hermes's own Slack prompts; muster's Slack prompts use muster-owned action ids, and claims about precedence are checked in the adapter source, not the docs.
 - A "durable prompts" skip rule written as "every question has a saved message" → a permission request has no questions, so it read as fully shown and would never be presented; define the slots per request kind.
+
+## channels implementation (issue #43, 2026-10-17)
+
+- A test that patches the conversation clock (`shared.now`) for `closed_at` while requests stamp `created_at` with the real `time.time()` → every request looks newer than any close, so an "older than the close never reopens" test passed through the reopen path; set the patched clock from `time.time()` where both timestamps meet.
+- A follow-up step after a terminal state (unsubscribing a `deleted` run's cards), gated on a new field → every older record lacks the field; gate on `unsubscribed is False`, not falsiness, or each old deleted reference would be stepped again.

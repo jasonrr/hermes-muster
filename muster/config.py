@@ -60,10 +60,9 @@ def require():
     topics = settings["notify_topics"]
     if not isinstance(topics, bool):
         missing.append("notify_topics")
-    elif topics:  # a topic lives in a Telegram forum group, never in the DM fallback
-        if settings["notify_platform"] != "telegram":
-            missing.append("notify_platform")
-        missing += [k for k in ("notify_chat_id", "notify_user_id") if not str(settings[k]).strip()]
+    from . import channels
+
+    missing += channels.get(settings["notify_platform"]).validate(settings)  # an unknown platform raises
     if missing:
         raise ConfigError(f"muster: set plugins.entries.muster.settings.{{{', '.join(missing)}}} in config.yaml")
     from . import claude

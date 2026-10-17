@@ -194,14 +194,48 @@ def test_require_passes_with_no_project_or_a_whole_one(owner, number):
 @pytest.mark.parametrize("change, missing", [
     ({"notify_chat_id": ""}, "notify_chat_id"),
     ({"notify_user_id": ""}, "notify_user_id"),
-    ({"notify_platform": "slack"}, "notify_platform"),
+    ({"notify_user_id": []}, "notify_user_id"),
+    ({"notify_user_id": "42, "}, "notify_user_id"),
     ({"notify_topics": "yes"}, "notify_topics"),
 ])
-def test_require_rejects_topics_without_a_telegram_group(change, missing):
+def test_require_rejects_topics_without_a_group(change, missing):
     config.settings.update({"approver_login": "me", "repos": ["o/a"], "approver_id": 7, "notify_topics": True,
                             "notify_chat_id": "-100123", "notify_user_id": "42", **change})
     with pytest.raises(config.ConfigError, match=missing):
         config.require()
+
+
+BASE = {"approver_login": "me", "repos": ["o/a"], "approver_id": 7}
+
+
+def test_require_rejects_an_unknown_platform():
+    config.settings.update(BASE, notify_platform="discord")
+    with pytest.raises(config.ConfigError, match="telegram, slack"):
+        config.require()
+
+
+@pytest.mark.parametrize("change, missing", [
+    ({"notify_chat_id": ""}, "notify_chat_id"),
+    ({"notify_user_id": ""}, "notify_user_id"),
+    ({"notify_chat_type": "dm"}, "notify_chat_type"),
+])
+def test_require_rejects_slack_without_a_channel_and_approvers(change, missing):
+    config.settings.update({**BASE, "notify_platform": "slack", "notify_chat_id": "C1", "notify_user_id": "U1", **change})
+    with pytest.raises(config.ConfigError, match=missing):
+        config.require()
+
+
+@pytest.mark.parametrize("users", ["U1", "U1,U2", ["U1", "U2"]])
+def test_require_passes_slack_with_a_channel_and_approvers(users):
+    config.settings.update(BASE, notify_platform="slack", notify_chat_id="C1", notify_user_id=users,
+                           notify_chat_type="group", notify_topics=True)
+    config.require()
+
+
+@pytest.mark.parametrize("users", ["42,43", ["42", "43"]])
+def test_require_passes_telegram_topics_with_several_approvers(users):
+    config.settings.update(BASE, notify_topics=True, notify_chat_id="-100123", notify_user_id=users)
+    config.require()
 
 
 def test_topics_are_off_by_default():

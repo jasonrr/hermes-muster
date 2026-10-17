@@ -108,13 +108,15 @@ def muster_pages(directory, link, bridged):
     (seen live: the human replied to the agent's message instead of the question's).
 
     Without a subscription nothing else pings, so every condition guards against a page nobody sends:
-    - bridged: only a question or permission prompt gets a decision request (and its Telegram message);
+    - bridged: only a question or permission prompt gets a decision request (and its message);
       idle, reconcile and other waits have none, so Hermes must ping them.
-    - telegram: the gateway's buttons and replies exist only there.
+    - a known channel (muster.channels): the gateway's buttons and replies exist only there.
     - the pane carries the PermissionRequest hook: an older pane never creates the request.
     - Hermes reports its gateway up with the platform connected: else nothing would deliver the request.
     """
-    if not bridged or config.settings["notify_platform"] != "telegram":
+    from . import channels
+
+    if not bridged or config.settings["notify_platform"] not in channels.NAMES:
         return False
     settings = (core.intake_dir() / link["card"] / core.SETTINGS_FILE if "issue" in link
                 else directory / "settings.json")
