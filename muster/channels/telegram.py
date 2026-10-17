@@ -45,7 +45,6 @@ class State:
         self.adapter = self.bot = None
         self.shown = {}  # id -> number of clarify prompts presented in this process
         self.approvals = set()  # permission request ids whose Hermes approval wait runs in this process
-        self.partial = {}  # id -> {question index: answer}: lost on restart, the request is re-presented
         self.messages = {}  # message id -> (request id, question index), including superseded ones
         self.ledgers = {}  # request id -> ledger card: whose conversation (topic) the request belongs to
         self.repairing = set()  # ledgers whose cards and prompts are moving to a new topic
@@ -231,7 +230,6 @@ def release(rid):
 
     for n in range(T.shown.pop(rid, 0)):
         clarify_gateway.clear_session(session(rid, n))
-    T.partial.pop(rid, None)
     if rid in T.approvals:
         T.approvals.discard(rid)
         approval.withdraw_gateway_approval(f"muster:{rid}", rid, "muster: the request ended")
@@ -277,7 +275,7 @@ async def present(req, meta, questions):
     from tools import clarify_gateway
 
     chat = core.notify_target()["chat_id"]
-    T.partial.pop(rid, None)
+    await asyncio.to_thread(decisions.update, rid, partial={})  # this boot's prompts start over; the old ones are dead
     for n in questions:
         q = req["questions"][n]
         cid, choices = f"mu{rid}q{n}", req["choices"][n]

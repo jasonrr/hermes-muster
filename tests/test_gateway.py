@@ -141,7 +141,8 @@ def test_an_open_request_is_presented_once(hermes):
                  "reply to this message"):
         assert part in msg["text"]
     assert "1. Alpha" not in msg["text"] and "pane" not in msg["text"]  # the buttons carry the labels
-    assert decisions.load(req["id"])["presented"] == {"boot": gateway.BOOT, "messages": {"0": [msg["mid"]]}}
+    assert decisions.load(req["id"])["presented"] == {"boot": gateway.BOOT, "messages": {"0": [msg["mid"]]},
+                                                      "platform": "telegram"}
     assert hermes.get_pending_for_session(f"muster:{req['id']}:0", include_choice_prompts=True)
 
 
@@ -392,6 +393,43 @@ def test_every_question_must_be_answered_and_a_double_answer_counts_once(monkeyp
 
     run(go())
     assert len(called) == 1
+
+
+def test_a_telegram_restart_presents_again_and_forgets_the_earlier_answers(hermes, monkeypatch):
+    called = []
+    monkeypatch.setattr(gateway, "on_answered", called.append)
+    two = [question(f"Q{i}", ("Yes", "No")) for i in range(2)]
+    req = ask(questions=two, choices=[["Yes", "No"], ["Yes", "No"]])
+    rid = req["id"]
+
+    async def go():
+        await gateway.scan()
+        assert hermes.resolve_gateway_clarify(f"mu{rid}q0", "Yes")
+        await until(lambda: decisions.load(rid).get("partial") == {"0": ["Yes", [0]]})
+        telegram.release(rid)
+        gateway.S, telegram.T = gateway.State(), telegram.State()  # a restart: its prompts are dead
+        telegram.T.adapter = fh.Adapter()
+        registered = []
+        real = hermes.register
+        monkeypatch.setattr(hermes, "register", lambda *a: (registered.append(decisions.load(rid)["partial"]),
+                                                          real(*a))[1])
+        monkeypatch.setattr(gateway, "BOOT", "boot2")
+        await gateway.scan()
+        assert len(sent()) == 2 and registered[0] == {}  # cleared before any waiter registers
+        assert hermes.resolve_gateway_clarify(f"mu{rid}q0", "No")
+        assert hermes.resolve_gateway_clarify(f"mu{rid}q1", "Yes")
+        await until(lambda: status(req) == "answered")
+
+    run(go())
+    assert decisions.load(rid)["answer"] == {"Q0": "No", "Q1": "Yes"} and len(called) == 1
+
+
+def test_record_answers_a_permission_once_and_touches_no_channel_state():
+    req = permission()
+    got, ok = run(gateway.record(req["id"], {"decision": "allow"}))
+    assert ok and got["status"] == "answered" and got["answer"] == {"decision": "allow"}
+    assert run(gateway.record(req["id"], {"decision": "deny"}))[1] is False
+    assert telegram.T.approvals == set() and telegram.T.shown == {}
 
 
 def test_build_answers_carry_the_action(monkeypatch):
@@ -659,7 +697,8 @@ def test_a_request_from_an_earlier_boot_is_represented(hermes):
     run(gateway.scan())
     (msg,) = sent()
     assert telegram.T.adapter.edits == [(DM, "7", "Superseded: see the newer message")]
-    assert decisions.load(req["id"])["presented"] == {"boot": gateway.BOOT, "messages": {"0": ["7", msg["mid"]]}}
+    assert decisions.load(req["id"])["presented"] == {"boot": gateway.BOOT, "messages": {"0": ["7", msg["mid"]]},
+                                                      "platform": "telegram"}
 
 
 def test_a_reply_to_an_old_boots_message_still_binds(hermes):

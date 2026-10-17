@@ -147,18 +147,23 @@ async def handle(req):
         if ended:
             CHANNEL.release(rid)
             return
-    if (req.get("presented") or {}).get("boot") == BOOT:
+    if CHANNEL.durable_prompts and await obsolete(req):  # first: a durable Merge button stays live otherwise
         return
+    shown = req.get("presented") or {}
+    if shown.get("platform", CHANNEL.name) != CHANNEL.name:  # another platform's ids: not ours to trust or edit
+        shown = {}
+    if shown.get("boot") == BOOT:
+        return
+    slots = ["0"] if kind == "permission" else [str(n) for n in range(len(req["questions"]))]
+    if CHANNEL.durable_prompts:  # a prompt already sent still works: send only the ones never sent
+        slots = [n for n in slots if not (shown.get("messages") or {}).get(n)]
+        if not slots:
+            return
     wait = S.retry.get(rid)
     if wait and time.monotonic() < wait[0]:
         return
-    if kind in ("build", "feedback") and shared.clock() - S.vetted.get(rid, float("-inf")) >= shared.CHECK_EVERY:
-        S.vetted[rid] = shared.clock()  # a saved approval whose pull request moved on is never shown again
-        why = await asyncio.to_thread(decisions.obsolete, req)
-        if why:
-            await asyncio.to_thread(decisions.transition, rid, ("open",), "stale", outcome=f"Not shown: {why}")
-            CHANNEL.release(rid)
-            return
+    if not CHANNEL.durable_prompts and await obsolete(req):
+        return
     S.presenting.add(rid)
     try:
         ready, meta = await CHANNEL.destination(req)  # first: nothing is registered for a request that waits
@@ -167,8 +172,8 @@ async def handle(req):
         if kind == "permission":
             sent = await CHANNEL.present_approval(req, meta)
         else:
-            sent = await CHANNEL.present(req, meta, list(range(len(req["questions"]))))
-        messages = {k: list(v) for k, v in ((req.get("presented") or {}).get("messages") or {}).items()}
+            sent = await CHANNEL.present(req, meta, [int(n) for n in slots])
+        messages = {k: list(v) for k, v in (shown.get("messages") or {}).items()}
         for n, ids in sent["messages"].items():
             messages.setdefault(n, []).extend(ids)
         await presented(rid, messages, sent["failure"])
@@ -176,9 +181,25 @@ async def handle(req):
         S.presenting.discard(rid)
 
 
+async def obsolete(req):
+    """A build or feedback request whose pull request moved on is staled, never shown again (read at most every
+    CHECK_EVERY). True when it was."""
+    rid = req["id"]
+    if req["kind"] not in ("build", "feedback") or shared.clock() - S.vetted.get(rid, float("-inf")) < shared.CHECK_EVERY:
+        return False
+    S.vetted[rid] = shared.clock()
+    why = await asyncio.to_thread(decisions.obsolete, req)
+    if not why:
+        return False
+    await asyncio.to_thread(decisions.transition, rid, ("open",), "stale", outcome=f"Not shown: {why}")
+    CHANNEL.release(rid)
+    return True
+
+
 async def presented(rid, messages, failure):
-    """Record a presentation: on failure, cancel what was sent and back off; else mark it this boot's. Every
-    earlier message of the request is dead (a tap gets Hermes's "expired" notice) and is edited to say so."""
+    """Record a presentation: on failure, cancel what was sent and back off; else mark it this boot's. On a channel
+    whose prompts die with the process, every earlier message of the request is dead (a tap gets Hermes's "expired"
+    notice) and is edited to say so; a durable channel's earlier messages still work and stay."""
     S.watch.add(rid)
     earlier = [mid for ids in messages.values() for mid in ids[:-1]]
     if failure:
@@ -186,20 +207,25 @@ async def presented(rid, messages, failure):
         delay = min((S.retry.get(rid, (0, 1))[1]) * 2, BACKOFF_MAX)
         S.retry[rid] = (time.monotonic() + delay, delay)
         log(f"request {rid}: not presented, retry in {delay}s: {failure}")
-        await asyncio.to_thread(decisions.update, rid, presented={"messages": messages})
+        await asyncio.to_thread(decisions.update, rid, presented={"messages": messages, "platform": CHANNEL.name})
         earlier = [mid for ids in messages.values() for mid in ids]  # this boot's partial send is dead too
     else:
         S.retry.pop(rid, None)
-        await asyncio.to_thread(decisions.update, rid, presented={"boot": BOOT, "messages": messages})
+        await asyncio.to_thread(decisions.update, rid,
+                                presented={"boot": BOOT, "messages": messages, "platform": CHANNEL.name})
+    if CHANNEL.durable_prompts:
+        return
     chat = core.notify_target()["chat_id"]
     for mid in earlier:
         await CHANNEL.edit(chat, mid, "Superseded: see the newer message")
 
 
 async def record(rid, answer):
+    """A permission request's answer: (request, True) when it moved it to answered."""
     req, ok = await asyncio.to_thread(decisions.transition, rid, ("open",), "answered", answer=answer)
     if ok:
         on_answered(req)
+    return req, ok
 
 
 # -- answers --------------------------------------------------------------------------------------
@@ -229,21 +255,16 @@ def compose(req, parts):
 
 
 async def answered(rid, n, value):
-    """Question n of a request was answered; the request moves to `answered` once every question has been."""
-    from .channels import telegram
-
+    """Question n of a request was answered: its part is kept in the request file (the first answer to a question
+    wins), and the request moves to `answered` once every question has one. Returns (request, result, the stored
+    part), result as decisions.answer_part's."""
     req = await asyncio.to_thread(decisions.load, rid)
-    if req["status"] != "open":
-        return
-    got = telegram.T.partial.setdefault(rid, {})
-    got[n] = shape(req, n, value)
-    if len(got) < len(req["questions"]):
-        return
-    got = telegram.T.partial.pop(rid)
-    parts = [got[i] for i in range(len(req["questions"]))]
-    req, ok = await asyncio.to_thread(decisions.transition, rid, ("open",), "answered", answer=compose(req, parts))
-    if ok:
+    part = shape(req, n, value)
+    req, result = await asyncio.to_thread(decisions.answer_part, rid, n, part, len(req["questions"]),
+                                          lambda parts, asked=req: compose(asked, parts))
+    if result == "completed":
         on_answered(req)
+    return req, result, (req.get("partial") or {}).get(str(n))
 
 
 shared.answer, shared.permission, shared.start_scan = answered, record, start_scan  # the hub channels call
