@@ -798,6 +798,16 @@ def test_approvers_reads_one_id_a_comma_list_or_a_yaml_list(monkeypatch, users, 
     assert core.notify_target()["user_id"] == expected[0]
 
 
+def test_slack_never_reads_the_telegram_home(monkeypatch):
+    monkeypatch.setattr(core, "telegram_home", lambda: 1 / 0)
+    for key, value in {"notify_platform": "slack", "notify_chat_id": "C1", "notify_user_id": "U1,U2"}.items():
+        monkeypatch.setitem(config.settings, key, value)
+    assert core.notify_target() == {"chat_id": "C1", "user_id": "U1", "chat_type": "group"}
+    monkeypatch.setitem(config.settings, "notify_chat_id", "")
+    with pytest.raises(config.ConfigError, match="notify_chat_id"):
+        core.notify_target()
+
+
 def test_approvers_fall_back_to_the_dm_but_never_in_a_group(monkeypatch):
     monkeypatch.setitem(config.settings, "notify_user_id", "")
     assert core.approvers() == ["4242"]  # TELEGRAM_HOME_CHANNEL: the DM chat is the human

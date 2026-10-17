@@ -322,13 +322,16 @@ def approvers():
 
 
 def notify_target():
-    """The notify target: the configured chat, or the human's DM when notify_chat_id is empty."""
+    """The notify target: the configured chat, or the channel's home (Telegram: the human's DM) when notify_chat_id
+    is empty."""
     s = config.settings
     if s["notify_chat_id"]:
         # YAML parses an unquoted Telegram id as an int; argv needs strings.
         return {"chat_id": str(s["notify_chat_id"]), "user_id": (approvers() or [str(s["notify_chat_id"])])[0],
                 "chat_type": s["notify_chat_type"]}
-    chat = telegram_home()
+    from . import channels  # channels imports config only; its modules import core
+
+    chat = channels.get(s["notify_platform"]).home()  # Telegram: the human's DM; Slack has none and raises
     return {"chat_id": chat, "user_id": chat, "chat_type": "dm"}
 
 
