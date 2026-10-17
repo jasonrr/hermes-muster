@@ -104,6 +104,12 @@ def buttons(req, n, *, label_max, number_multi):
     return plain
 
 
+def slack_text(s):
+    """Slack mrkdwn shows `<…>` as a mention or a link and `&…;` as an entity: escaped, every agent- or
+    human-written string reads as written (Slack's "Escaping text")."""
+    return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
 # -- conversation lifecycle guards ----------------------------------------------------------------
 
 async def archived(ledger):
