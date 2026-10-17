@@ -970,3 +970,44 @@ def test_obsolete_reads_the_pull_request(world, kind, change, why):
 def test_an_unreadable_pull_request_is_not_proof_it_is_obsolete(world):
     world.gh_missing = True
     assert decisions.obsolete(decisions.create("build", "t_1", run=world.run_dict, pr=URL, head=HEAD)) is None
+
+
+def two_questions():
+    q = {"text": "Q", "options": [{"label": "A"}, {"label": "B"}]}
+    return decisions.create("question", "led1", questions=[q, q], choices=[["A", "B"], ["A", "B"]])["id"]
+
+
+def test_answer_part_keeps_each_answer_until_the_last_composes():
+    rid, compose = two_questions(), lambda parts: {"p": parts}
+    req, result = decisions.answer_part(rid, 0, ["A", [0]], 2, compose)
+    assert result == "accepted" and req["status"] == "open"
+    saved = decisions.load(rid)
+    assert saved["partial"] == {"0": ["A", [0]]} and saved["status"] == "open"
+    assert {"step": "part", "result": "0"}.items() <= saved["audit"][-1].items()
+    req, result = decisions.answer_part(rid, 0, ["B", [1]], 2, compose)
+    assert result == "duplicate" and req["partial"]["0"] == ["A", [0]]  # the first answer wins
+    req, result = decisions.answer_part(rid, 1, ["free", None], 2, compose)
+    assert result == "completed" and req["status"] == "answered"
+    assert decisions.load(rid)["answer"] == {"p": [["A", [0]], ["free", None]]}
+    assert req["audit"][-1]["step"] == "answered"
+
+
+def test_answer_part_refuses_a_request_that_is_not_open():
+    rid = two_questions()
+    decisions.transition(rid, ("open",), "stale", outcome="gone")
+    req, result = decisions.answer_part(rid, 0, ["A", [0]], 2, lambda parts: parts)
+    assert result == "closed" and "partial" not in decisions.load(rid)
+
+
+def test_answer_part_two_threads_lose_neither_part():
+    rid, results, start = two_questions(), [], threading.Barrier(2)
+
+    def go(n):
+        start.wait()
+        results.append(decisions.answer_part(rid, n, [f"a{n}", None], 2, lambda parts: {"p": parts})[1])
+
+    threads = [threading.Thread(target=go, args=(n,)) for n in (0, 1)]
+    [t.start() for t in threads]
+    [t.join() for t in threads]
+    assert sorted(results) == ["accepted", "completed"]
+    assert decisions.load(rid)["answer"] == {"p": [["a0", None], ["a1", None]]}

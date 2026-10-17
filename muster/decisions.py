@@ -89,6 +89,27 @@ def transition(rid, from_statuses, to, **fields):
         return req, True
 
 
+def answer_part(rid, n, part, total, compose):
+    """Keep question n's answer [answer, chosen] in `partial`, durably: the first answer to a question wins. When
+    all `total` are in, `answer = compose(parts)` and the request moves to answered. Returns (request, result),
+    result one of "accepted", "completed", "duplicate" (n already has a part) or "closed" (not open)."""
+    with locked(rid):
+        req = load(rid)
+        if req["status"] != "open":
+            return req, "closed"
+        partial = req.setdefault("partial", {})
+        if str(n) in partial:
+            return req, "duplicate"
+        partial[str(n)] = list(part)
+        req["audit"].append({"at": time.time(), "step": "part", "result": str(n)})
+        done = len(partial) == total
+        if done:
+            req.update(answer=compose([partial[str(i)] for i in range(total)]), status="answered")
+            req["audit"].append({"at": time.time(), "step": "answered", "result": ""})
+        save(req)
+        return req, "completed" if done else "accepted"
+
+
 def update(rid, **fields):
     """Merge fields with no change of status (an archived request stays archived)."""
     with locked(rid):
