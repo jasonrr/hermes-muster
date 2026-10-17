@@ -7,6 +7,17 @@ own action id (§7). Architecture unchanged. Nothing here is implemented; the pl
 `~/.hermes/hermes-agent` at 2034867d (`v0.22.2+canary.20261017`, slack_bolt 1.30.0), plus the Hermes docs
 (llms.txt). Line numbers are evidence for this commit only; the plan cites symbols.
 
+**After the plan attacks and the scenario review** (details in the plan's "seams" and review records):
+- the Protocol in §4 is superseded by the plan's list;
+- `channels/shared.py` was added;
+- `ready()` was dropped;
+- the Slack workspace id (`notify_workspace_id`) and the Slack thread check in §5/§6 were cut by the cut test:
+  the `block_id` binds a tap to its request, and user ids are unique across workspaces;
+- approvers are a comma-separated `notify_user_id`;
+- an archived run's kanban subscriptions are removed on both channels.
+
+The rest stands.
+
 ## 1. Problem
 
 muster's decision core (`decisions.py`, `bridge.py`) is already platform-neutral (decision 2026-10-08). The
