@@ -878,6 +878,8 @@ def test_do_nothing_leaves_the_approval_question_open(world):
 @pytest.mark.parametrize("setup, answer, why", [
     (lambda: approval({"version": 1, "sha": "0" * 12}), {"action": "approve"}, "has not asked"),
     (lambda: decisions.transition(approval(), ("open",), "stale"), {"action": "approve"}, "no longer waiting"),
+    (lambda: decisions.transition(approval(), ("open",), "done", outcome="Answered in the pane"),  # bridge.settle
+     {"action": "send-back"}, "no longer waiting"),
     (lambda: approval(questions=2), {"action": "approve"}, "more than one question"),
 ])
 def test_a_tap_never_answers_another_version_or_an_ended_question(world, setup, answer, why):

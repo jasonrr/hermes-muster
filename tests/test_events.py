@@ -9,6 +9,7 @@ import time
 
 import pytest
 
+import muster.bridge as bridge
 import muster.config as config
 import muster.core as core
 import muster.decisions as decisions
@@ -1044,3 +1045,13 @@ def test_a_wait_card_and_a_review_card_subscribe_in_the_ledgers_conversation(boa
     assert done(PR) == 0
     runs.drain("t_abc123")
     assert seen == [("t_wait1", "t_abc123"), ("t_wait2", "t_abc123")]
+
+
+def test_a_question_answered_in_the_pane_is_settled_by_the_prompt_hook(board, monkeypatch):
+    # #42: no SIGTERM reaches the bridge's hook, so the PostToolUse is what ends the request
+    q = {"question": "Which db?", "header": "DB", "multiSelect": False, "options": [{"label": "pg", "description": ""}]}
+    rid = decisions.create("question", "t_abc123", questions=[bridge.normalize(q)], choices=[["pg"]])["id"]
+    hook(monkeypatch, "prompt", hook_event_name="PostToolUse", tool_name="AskUserQuestion",
+         tool_input={"questions": [q], "answers": {"Which db?": "pg"}})
+    assert decisions.load(rid)["outcome"] == "Answered in the pane"
+    assert verbs(board) == []  # no wait card open: the hook's early return still settled it
