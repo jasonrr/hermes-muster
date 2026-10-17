@@ -362,10 +362,21 @@ def test_every_open_copy_of_the_question_settles_and_a_later_one_is_open(tmp_pat
     assert asked()["status"] == "open"  # a new question on resumed work is presented as usual
 
 
-def test_a_subagents_answer_settles_only_a_subagents_request(tmp_path):
-    main, sub = asked()["id"], asked(subagent="worker")["id"]
+@pytest.mark.parametrize("event", ["PostToolUse", "PostToolUseFailure"])
+def test_one_workers_answer_never_settles_a_parallel_workers_same_question(tmp_path, event):
+    # two workers of one type ask the same questions; a request records the type, not which worker asked
+    a, b, main = asked(subagent="worker")["id"], asked(subagent="worker")["id"], asked()["id"]
+    bridge.settle("t_led", used(event, agent_id="a1", agent_type="worker"))
+    assert [decisions.load(r)["status"] for r in (a, b, main)] == ["open", "open", "open"]
+    assert decisions.answer_part(b, 0, ["Approve", [0]], 2, lambda parts: parts)[1] == "accepted"  # B answerable
+
+
+def test_a_delivered_workers_post_tool_use_leaves_the_other_worker_open(tmp_path):
+    a, b = asked(subagent="worker")["id"], asked(subagent="worker")["id"]
+    decisions.transition(a, ("open",), "answered", answer={"Approve v1?": "Approve", "Track it?": "Yes"})
+    decisions.transition(a, ("answered",), "done", outcome="Sent to Claude")  # bridge.deliver
     bridge.settle("t_led", used("PostToolUse", agent_id="a1", agent_type="worker"))
-    assert (decisions.load(main)["status"], decisions.load(sub)["status"]) == ("open", "done")
+    assert (decisions.load(a)["outcome"], decisions.load(b)["status"]) == ("Sent to Claude", "open")
 
 
 def test_a_new_prompt_ends_every_main_agent_dialog_of_the_run(tmp_path):

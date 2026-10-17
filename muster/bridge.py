@@ -211,7 +211,9 @@ def settle(ledger, payload):
 
     - PostToolUse of AskUserQuestion: the run's open requests with these questions are done, "Answered in the
       pane" (a channel's partial answers stay; none are invented). PostToolUseFailure: stale, "Cancelled in the
-      pane". Only one dialog per agent is up at a time, so an older copy of the same questions is dead too.
+      pane". Only one main-agent dialog is up at a time, so an older copy of the same questions is dead too. A
+      subagent's event is ignored: a request records the subagent's type, not which one asked, so two parallel
+      workers asking the same questions are indistinguishable; their requests end by delivery or liveness.
     - UserPromptSubmit: no prompt is typed while a main-agent dialog is up, so the run's open main-agent questions
       and permission prompts are stale (an Esc fires neither event above). A subagent's dialog shows only after its
       hook returns, so the pane cannot have moved past it.
@@ -220,9 +222,9 @@ def settle(ledger, payload):
     if event == "UserPromptSubmit":
         ended, to, outcome = (lambda r: r.get("kind") in ("question", "permission") and not r.get("subagent"),
                               "stale", "No longer waiting: the pane moved on")
-    elif event in ("PostToolUse", "PostToolUseFailure") and claude.ask(payload):
-        questions, sub = [normalize(q) for q in claude.ask(payload)], bool(payload.get("agent_id"))
-        ended = lambda r: r.get("kind") == "question" and r.get("questions") == questions and bool(r.get("subagent")) == sub  # noqa: E731
+    elif event in ("PostToolUse", "PostToolUseFailure") and not payload.get("agent_id") and claude.ask(payload):
+        questions = [normalize(q) for q in claude.ask(payload)]
+        ended = lambda r: r.get("kind") == "question" and r.get("questions") == questions and not r.get("subagent")  # noqa: E731
         to, outcome = ("done", "Answered in the pane") if event == "PostToolUse" else ("stale", "Cancelled in the pane")
     else:
         return
