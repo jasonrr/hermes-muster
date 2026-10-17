@@ -108,3 +108,8 @@
 
 - A conversation closed only as a side effect of deleting a resource (`cleanup.remove` -> `conversation.finish`) → every resource blocker (dirty tree, child process, ownership mismatch, stale request) kept a finished run's topic open; close on the work's own end (the merge) and let resource checks gate only the removal.
 - A "liveness probe" built from a mutating call (`reopen_forum_topic` on an in-memory timer) → it undid every human close and fired again on each restart; with no read API, detect a gone topic from evidence a send already leaves (a prompt that fell back to General), never by changing the thing checked.
+
+## channels design (issue #40, 2026-10-17)
+
+- The Hermes docs say plugin platform factories run before core handlers, and the 2026-10-08 decision planned a Slack guard on that → in the Slack adapter source, core `hermes_clarify_*`/`hermes_approve_*` listeners are registered first and Bolt runs only the first match, so a plugin cannot narrow who answers Hermes's own Slack prompts; muster's Slack prompts use muster-owned action ids, and claims about precedence are checked in the adapter source, not the docs.
+- A "durable prompts" skip rule written as "every question has a saved message" → a permission request has no questions, so it read as fully shown and would never be presented; define the slots per request kind.
