@@ -218,14 +218,14 @@ def settle(ledger, payload):
     """
     event = payload.get("hook_event_name")
     if event == "UserPromptSubmit":
-        ended, to, outcome = (lambda r: r["kind"] in ("question", "permission") and not r.get("subagent"),
+        ended, to, outcome = (lambda r: r.get("kind") in ("question", "permission") and not r.get("subagent"),
                               "stale", "No longer waiting: the pane moved on")
     elif event in ("PostToolUse", "PostToolUseFailure") and claude.ask(payload):
         questions, sub = [normalize(q) for q in claude.ask(payload)], bool(payload.get("agent_id"))
-        ended = lambda r: r["kind"] == "question" and r.get("questions") == questions and bool(r.get("subagent")) == sub  # noqa: E731
+        ended = lambda r: r.get("kind") == "question" and r.get("questions") == questions and bool(r.get("subagent")) == sub  # noqa: E731
         to, outcome = ("done", "Answered in the pane") if event == "PostToolUse" else ("stale", "Cancelled in the pane")
     else:
         return
     for req in decisions.open_requests():
-        if req.get("ledger") == ledger and req["status"] == "open" and ended(req):
+        if req.get("ledger") == ledger and req.get("status") == "open" and ended(req):
             decisions.transition(req["id"], ("open",), to, outcome=outcome)

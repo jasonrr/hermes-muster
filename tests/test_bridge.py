@@ -381,3 +381,10 @@ def test_a_new_prompt_ends_every_main_agent_dialog_of_the_run(tmp_path):
 def test_any_other_tool_use_reads_no_request(tmp_path, monkeypatch):
     monkeypatch.setattr(decisions, "open_requests", lambda: 1 / 0)
     bridge.settle("t_led", {"hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_input": {"command": "ls"}})
+
+
+def test_a_request_file_without_a_kind_does_not_stop_the_others_settling(tmp_path):
+    core.save_json(decisions.root() / "0bad.json", {"id": "0bad", "ledger": "t_led", "status": "open", "created_at": 0})
+    rid = asked()["id"]
+    bridge.settle("t_led", {"hook_event_name": "UserPromptSubmit", "prompt": "carry on"})
+    assert decisions.load(rid)["status"] == "stale"
