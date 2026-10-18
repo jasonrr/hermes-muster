@@ -2108,6 +2108,24 @@ def test_a_finished_run_is_edited_once_and_never_revived(forum, monkeypatch):
     assert len(forum.adapter.edits) == edits and len(statuses(forum.adapter)) == 1
 
 
+def test_a_refused_final_edit_is_retried_on_the_same_message_even_after_a_restart(forum, clock, monkeypatch):
+    opened(forum, ledger=P)
+    launched()
+    run(gateway.scan())
+    [status_id] = forum.adapter.note_ids
+    conversation.update(P, resolved_at=NOW, state="closing")
+    forum.adapter.fail_edits = 1
+    run(gateway.scan())
+    assert not progress.load(P).get("final") and progress.load(P)["retry_at"] == NOW + progress.RETRY
+    assert P in progress.tracked()
+    monkeypatch.setattr(gateway, "S", gateway.State())  # a restart before the retry
+    clock[0] = NOW + progress.RETRY
+    run(gateway.scan())
+    [*_, (_, mid, text)] = forum.adapter.edits
+    assert mid == status_id and text.endswith("✅ Finished: pull request merged.")
+    assert progress.load(P)["final"] is True and len(statuses(forum.adapter)) == 1
+
+
 def test_a_remade_topic_gets_one_new_status_message(forum, monkeypatch):
     monkeypatch.setattr(shared, "now", lambda: NOW)
     opened(forum, ledger=P)

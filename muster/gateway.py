@@ -167,12 +167,12 @@ async def show_progress(ledger, waits):
         return
     if shown:
         fields = {**shown, "key": key, "text": text, "edited_at": now, "final": final, "retry_at": 0}
-    elif final:  # nothing left to show it on (no message, or the run's conversation is gone): done all the same
+    elif shown is None and final:  # nothing left to show it on (no message, or the run's conversation is gone)
         fields = {"final": True}
-    else:  # None: not ready yet, tried again next scan; False: refused, tried again after RETRY
+    else:  # None: not ready yet, tried again next scan; False: refused (a final edit too), tried after RETRY
         fields = {} if shown is None else {"retry_at": now + progress.RETRY}
     await asyncio.to_thread(progress.save, ledger, posting=None, **fields)
-    if final:
+    if fields.get("final"):
         S.final.add(ledger)
 
 

@@ -144,8 +144,6 @@ def state(ledger, now, waits, ref, archived):
     latest = max(tool or 0, prompt)
     if m.get("end", 0) > max(latest, stop):
         return "ended", f"⛔ Session ended at {hm(m['end'])}.", False
-    if seen is None and not waits:
-        return "launched", f"🚀 Launched {hm(m.get('launched', now))} · brief receipt not confirmed yet.", False
     line = tool_line(seen or now, tool, now)
     if waits:
         return (f"waiting:{len(waits)}:{min(waits)}",
@@ -156,6 +154,8 @@ def state(ledger, now, waits, ref, archived):
                 f"🔍 Ready for review{': ' + url if url else ''} (since {hm(m['review'])})", False)
     if stop > latest:
         return "turn", f"💬 Turn ended at {hm(stop)}: the agent waits at its prompt (no question open).", False
+    if seen is None:  # prompt evidence is best effort: a verified review or a turn end above outranks its absence
+        return "launched", f"🚀 Launched {hm(m.get('launched', now))} · brief receipt not confirmed yet.", False
     quiet = now - (tool if tool is not None else seen) >= QUIET
     return ("quiet" if quiet else "working" if tool is not None else "received"), f"Brief received {hm(seen)} · {line}", False
 

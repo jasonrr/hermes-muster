@@ -42,6 +42,21 @@ def test_launch_without_confirmed_receipt_says_so():
     assert text == f"🚀 Launched {hm(NOW - 120)} · brief receipt not confirmed yet."
 
 
+def test_a_verified_review_outranks_a_missing_receipt():
+    directory = launched()
+    received(directory, NOW - 60, sha="other")  # no matching receipt record
+    at("review", NOW - 600, "https://github.com/o/r/pull/9")
+    assert state() == (f"review:{NOW - 600}", f"🔍 Ready for review: https://github.com/o/r/pull/9 (since "
+                                              f"{hm(NOW - 600)})", False)
+
+
+def test_a_turn_end_outranks_a_missing_receipt():
+    launched()
+    at("stop", NOW - 300)
+    key, text, _ = state()
+    assert key == "turn" and "Brief received" not in text  # no receipt time is made up
+
+
 def test_a_prompt_that_is_not_the_brief_confirms_nothing():
     directory = launched()
     received(directory, NOW - 60, sha="other")
