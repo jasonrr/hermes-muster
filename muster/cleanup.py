@@ -33,7 +33,7 @@ a fingerprint. herdr keeps no idle timestamp, so the state file records when thi
 current fingerprint. Once runs no more than MAX_GAP apart, on a clock that never went backwards,
 have seen the same fingerprint for IDLE seconds, everything is read again, and only if it still
 matches does `herdr worktree remove --workspace` (coding) or `herdr workspace close` (analysis)
-run, never with --force. The branch stays, locally and on GitHub. Any failed check or command
+run, never with --force unless preserve() kept the checkout first (below). The branch stays, locally and on GitHub. Any failed check or command
 drops the record, so the 30-minute window starts over. Before that remove, the scaffolding copies
 are read again, backed up under backups/cleanup with a manifest, and deleted, since git refuses to
 remove a checkout with untracked files; any change to them since the check keeps the workspace.
@@ -58,11 +58,19 @@ herdr no longer lists that path and it is not on disk, no pull request from its 
 owns the run. The gateway then deletes its topic, as for any archived ledger. This includes a run cleanup just
 removed: its topic closes, then is deleted on the next pass.
 
-A coding worktree that is quiet for 30 minutes but not clean or not pushed is never removed.
-Unless a pull request from its branch is open (work under way), once per state, a card on the muster
-board, subscribed notify+wake and blocked, pings the human and wakes the agent with the workspace,
-branch and reason, and asks what to do. The card is archived when that state changes; a new problem
-opens a new card. This job never pushes, commits, discards, deletes a branch, merges or deploys.
+A finished worktree (its pull requests merged as the merged gate says, whatever its HEAD; or its ledger archived) that is
+not clean, not pushed or not at the merged head is preserved, then removed with --force. preserve() writes a
+self-contained git bundle of HEAD and of a commit shaped like `git stash push -u` makes (the index, the tracked files
+on disk, the untracked files git does not ignore) to backups/cleanup/<time>-<name>/, fetches it back into an empty
+repository to check every id, writes a manifest with the one restore command, and reads the checkout again: any
+change keeps it. Files git ignores (.env, build output, dependencies) are never read or kept. Nothing still owns
+the run (owner_free). A conflict in progress, an intent-to-add entry, a repository inside the checkout or
+submodules cannot be preserved faithfully: those, and work that is not finished, keep the worktree.
+
+A coding worktree kept that way is never removed. Unless a pull request from its branch is open (work under way),
+once per state, a card on the muster board, subscribed notify+wake and blocked, pings the human and wakes the agent
+with the workspace, branch and reason, and asks what to do. The card is archived when that state changes; a new
+problem opens a new card. This job never pushes, commits, discards, deletes a branch, merges or deploys.
 """
 
 import contextlib
@@ -71,6 +79,8 @@ import hashlib
 import json
 import os
 import re
+import shlex
+import shutil
 import stat
 import sys
 import time
@@ -114,6 +124,10 @@ HELPER = re.compile(r"mcp|.+-mcp|mcp-.+|.*langserver.*|.+-language-server|.+-lsp
 # Agent scaffolding files a tool copies into each new worktree.
 # Only these paths may be deleted as copies, and only when `copied` proves them one.
 SCAFFOLD = re.compile(r"AGENTS\.md|\.agents/.+|\.codex/.+")
+# `git status --porcelain` codes of a merge conflict in progress.
+UNMERGED = {"DD", "AU", "UD", "UA", "DU", "AA", "UU"}
+# Where preserve() names HEAD and the stash-shaped commit, in the clone for the bundle only and in the bundle.
+REFS = "refs/muster-preserve"
 FAILURES = (core.CommandError, OSError, ValueError, KeyError, TypeError, AttributeError)
 ASK_LINE = ("This card is a cleanup warning. Tell the human the workspace, branch and reason, and ask what "
             "to do; never push, commit, discard or remove anything yourself (skill muster:escalation).")
@@ -320,8 +334,103 @@ def clear(link, clone, copies):
     return backup
 
 
-def merged_gate(link, prs, head, now):
-    """Why this worktree's pull requests do not allow removal yet, or None."""
+def unpreservable(path, rest):
+    """Why preserve() could not keep these `git status --porcelain` lines faithfully, or None."""
+    for line in rest:
+        if line[:2] in UNMERGED:
+            return f"cannot preserve: {line[3:]} has a merge conflict"
+        if line[:2] == " A":
+            return f"cannot preserve: {line[3:]} is only marked to add (git add -N)"
+        if line.startswith("?? ") and line.endswith("/"):
+            return f"cannot preserve: {line[3:]} is a repository inside the checkout"
+    if rest and os.path.lexists(Path(path, ".gitmodules")):
+        return "cannot preserve: the checkout has submodules"
+    return None
+
+
+def snapshot(path, scratch):
+    """The checkout as git ids: HEAD and the trees of the index, the tracked files on disk and the untracked files git
+    does not ignore. Writes git objects and files in scratch only: never the checkout, its index or a ref."""
+    index = git(path, "rev-parse", "--path-format=absolute", "--git-path", "index").strip()
+    found = {"head": git(path, "rev-parse", "HEAD").strip()}
+    listing = git(path, "ls-files", "--others", "--exclude-standard", "-z")
+    (scratch / "untracked").write_text(listing)
+    for name, add in (("index", None), ("work", ["add", "-u"]),
+                      ("untracked", listing and ["add", f"--pathspec-from-file={scratch / 'untracked'}",
+                                                 "--pathspec-file-nul"])):
+        env = {**os.environ, "GIT_INDEX_FILE": str(scratch / f"{name}.index")}
+        if name != "untracked":
+            shutil.copyfile(index, env["GIT_INDEX_FILE"])
+        if add:
+            core.run(["git", "-C", path, *add], env=env)
+        found[name] = core.run(["git", "-C", path, "write-tree"], env=env).strip()
+    return found, [rel for rel in listing.split("\0") if rel]
+
+
+def preserve(link):
+    """Keep everything removing the checkout would lose, but what git ignores, outside the repository: a bundle of
+    HEAD's history and of a commit shaped as `git stash push -u` makes, fetched back into an empty repository to check
+    every id, and a manifest with the one restore command. Read again after: any change keeps the checkout.
+    The backup's path; on a failure no backup."""
+    path, branch = link["worktree"], link["branch"]
+    final = backups_dir() / f"{int(clock())}-{Path(path).name}"
+    tmp = final.with_name(f".tmp-{final.name}")
+    tmp.mkdir(parents=True, mode=0o700)
+    try:
+        ids, untracked = snapshot(path, tmp)
+        who = ["-c", "user.name=muster", "-c", "user.email=muster@localhost", "commit-tree"]
+        head = ids["head"]
+        index = git(path, *who, ids["index"], "-p", head, "-m", f"index on {branch}").strip()
+        loose = git(path, *who, ids["untracked"], "-m", f"untracked files on {branch}").strip()
+        wip = git(path, *who, ids["work"], "-p", head, "-p", index, "-p", loose, "-m", f"WIP on {branch}").strip()
+        bundle = tmp / "repo.bundle"
+        try:  # git bundle names refs only, never a bare id; cleanup's lock keeps these to one pass
+            git(path, "update-ref", f"{REFS}/head", head)
+            git(path, "update-ref", f"{REFS}/wip", wip)
+            git(path, "bundle", "create", "-q", str(bundle), f"{REFS}/head", f"{REFS}/wip")
+        finally:
+            for name in ("head", "wip"):
+                with contextlib.suppress(*FAILURES):
+                    git(path, "update-ref", "-d", f"{REFS}/{name}")
+        check = tmp / "check"
+        core.run(["git", "init", "-q", str(check)])
+        core.run(["git", "-C", str(check), "fetch", "-q", str(bundle), f"{REFS}/*:{REFS}/*"])
+        back = core.run(["git", "-C", str(check), "rev-parse", f"{REFS}/head", f"{REFS}/wip^1", f"{REFS}/wip^{{tree}}",
+                         f"{REFS}/wip^2^{{tree}}", f"{REFS}/wip^3^{{tree}}"]).split()
+        if back != [head, head, ids["work"], ids["index"], ids["untracked"]]:
+            raise NotReady("preservation failed: the bundle does not read back")
+        shutil.rmtree(check)
+        for leftover in tmp.glob("untracked*"):
+            leftover.unlink()
+        for leftover in tmp.glob("*.index"):
+            leftover.unlink()
+        q = shlex.quote
+        (tmp / "manifest.json").write_text(json.dumps({
+            "repo": link["repo"], "worktree": path, "branch": branch, "workspace": link["workspace"],
+            "head": head, "wip": wip, "ids": ids, "untracked": untracked,
+            "bundle_sha256": hashlib.sha256(bundle.read_bytes()).hexdigest(), "bundle_bytes": bundle.stat().st_size,
+            "excluded": "files git ignores (.env, local config, build output, dependencies) were not kept",
+            "restore": (f"mkdir {q(path)} && git -C {q(path)} init -q && git -C {q(path)} fetch -q "
+                        f"{q(str(final / 'repo.bundle'))} '{REFS}/*:{REFS}/*' && git -C {q(path)} switch -q -c "
+                        f"{q(branch)} {REFS}/head && git -C {q(path)} stash apply --index {REFS}/wip"),
+            "note": "Restores a standalone repository at the path (or any new path), needing neither the clone nor "
+                    "GitHub. Add a remote or a worktree by hand."}, indent=2))
+        os.replace(tmp, final)
+    except BaseException:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise
+    again = final / ".check"
+    again.mkdir()
+    try:
+        if snapshot(path, again) != (ids, untracked):
+            raise NotReady(f"changed right after preservation (backup {final} kept)")
+    finally:
+        shutil.rmtree(again, ignore_errors=True)
+    return final
+
+
+def merged_gate(link, prs, head, now, exact=True):
+    """Why this worktree's pull requests do not allow removal yet, or None. exact=False: whatever HEAD is."""
     repo, branch, base = link["repo"], link["branch"], link["base"]
     if not prs:
         return f"no pull request from {branch}"
@@ -334,7 +443,7 @@ def merged_gate(link, prs, head, now):
     newest = max(prs, key=lambda pr: pr["merged_at"])
     if "issue" in link and not re.search(rf"(?m)^Closes #{link['issue']}\s*$", newest["body"] or ""):
         return f"PR #{newest['number']} has no line 'Closes #{link['issue']}'"
-    if head != newest["head"]["sha"]:
+    if exact and head != newest["head"]["sha"]:
         return f"HEAD {head[:12]} is not the merged head {newest['head']['sha'][:12]}"
     return None
 
@@ -378,10 +487,10 @@ def owner_free(ledger):
 
 
 def coding(link, wt, now, clone, ledger=None):
-    """(fingerprint, warning, gate, copies, retire) of a quiet tracked worktree. warning is (reason, signature),
+    """(fingerprint, warning, gate, copies, retire, keep) of a quiet tracked worktree. warning is (reason, signature),
     or (reason, signature, "stranded"), when the human must decide; gate says why the pull requests do not allow
     removal yet; copies are the scaffolding files to delete before removal; retire is the closed issue's
-    (reason, comment) when the run should be retired first."""
+    (reason, comment) when the run should be retired first; keep: preserve() it, then remove it with --force."""
     path, workspace = wt["path"], wt.get("open_workspace_id")
     if not workspace or (link["worktree"], link["workspace"], link["branch"]) != (path, workspace, wt.get("branch")):
         raise NotReady(f"record names {link['branch']} {link['worktree']} {link['workspace']}; "
@@ -399,6 +508,9 @@ def coding(link, wt, now, clone, ledger=None):
     if (head not in {pr["head"]["sha"] for pr in prs}
             and git(path, "rev-list", "--count", "HEAD", "--not", "--remotes").strip() != "0"):
         problems.append(f"local commits not pushed (HEAD {head[:12]})")
+    hard = unpreservable(path, rest)
+    if hard:
+        problems.append(hard)
     seen = quiet(workspace)
     # An open pull request is work still under way: its own run pages for it.
     under_way = any(pr.get("state") == "open" for pr in prs)
@@ -418,7 +530,14 @@ def coding(link, wt, now, clone, ledger=None):
                 owner_free(ledger)
         elif standing is None:
             gate = f"{gate}; ledger {ledger} status unknown"
-    return (digest([link, head, status, copies, prs_seen, seen, standing]), warning, gate, copies, retire)
+    # Finished work kept only by what preserve() keeps: preserved, then removed.
+    finished = not under_way and (standing == "archived" or merged_gate(link, prs, head, now, exact=False) is None)
+    keep = bool(finished and not hard and not retire and (problems or gate))
+    if keep:
+        if ledger:
+            owner_free(ledger)
+        warning = gate = None
+    return (digest([link, head, status, copies, prs_seen, seen, standing]), warning, gate, copies, retire, keep)
 
 
 def closure(link, prs, ledger):
@@ -634,7 +753,7 @@ def remove(target, fingerprint, times, new, dry):
         if target.get("clear"):
             backup = target["clear"]()
             if backup:
-                say(f"{name}: agent scaffolding backed up to {backup} and deleted")
+                say(f"{name}: backed up to {backup}")
         core.run(argv)
         if target.get("record"):
             target["record"].unlink(missing_ok=True)
@@ -806,24 +925,27 @@ def resolve(dry):
 
 def coding_target(name, repo, clone, path, link=None, record=None, ledger=None):
     """A worktree whose link is known up front (run, coding) or read from its card each check (intake)."""
-    held, copies, retire = dict(link or {}), [], []
+    held, copies, retire, keep = dict(link or {}), [], [], [False]
 
     def check(now):
         wt = find(clone, path)
         if link is None:
             held.clear()
             held.update(intake_link(repo, wt))
-        fingerprint, warning, gate, copies[:], why = coding(held, wt, now, clone, ledger or card_of(held))
+        fingerprint, warning, gate, copies[:], why, keep[0] = coding(held, wt, now, clone, ledger or card_of(held))
         retire[:] = [why] if why else []
         return fingerprint, warning, gate
 
     def remove():
+        if keep[0]:  # preserve() checked the checkout against its backup last
+            return (["herdr", "worktree", "remove", "--workspace", held["workspace"], "--force"],
+                    f"remove worktree {path} and workspace {held['workspace']}, after preserving it")
         also = f", after deleting {len(copies)} agent scaffolding copies" if copies else ""
         return (["herdr", "worktree", "remove", "--workspace", held["workspace"]],
                 f"remove worktree {path} and workspace {held['workspace']}{also}")
     return {"name": name, "key": path, "link": held, "check": check, "remove": remove, "record": record,
             "ledger": ledger, "retire": retire,
-            "clear": lambda: copies and clear(held, clone, list(copies))}
+            "clear": lambda: preserve(held) if keep[0] else copies and clear(held, clone, list(copies))}
 
 
 def targets(dry=False):

@@ -1,7 +1,7 @@
 # Design and plan: undoable worktree cleanup (card t_b8907f9d)
 
-Status: proposal. This covers design and plan only. Nothing is implemented, no worktree has been touched,
-and no live configuration has changed.
+Status: Proposal v1 01f6de62ee5f approved 2026-10-18 (D1a, D2a, D3a), and implementation on this branch approved. Built as
+planned; the manifest names the git ids `ids` (head, index, work, untracked) and drops the `clone` field.
 
 ## 1. The problem, as it stands today
 

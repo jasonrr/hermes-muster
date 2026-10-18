@@ -124,3 +124,9 @@
 
 - Ordering "review-ready" against the newest tool event → the agent's own `hook done` runs in a Bash tool whose PostToolUse lands after it, so the run would never read ready; order it against the next human prompt (a send-back), not tool events.
 - A "never repost" guard written as `saved.get("lost_thread") == thread` → with no topics the thread is `None`, so every main-chat run matched and was never posted (caught by the plan attack); compare a stored `{"thread": …}` record, never a bare value that may be None.
+
+## undoable cleanup (t_b8907f9d, 2026-10-18)
+
+- Backing up a checkout with `git stash push -u` → it rewrites the working tree and the stash stack every worktree shares; build the same three-parent commit with `commit-tree` from trees written through temporary `GIT_INDEX_FILE`s, so `git stash apply --index` restores it and nothing live is touched.
+- `git bundle create` given a bare commit id → it silently leaves that commit out; name it with a ref (deleted right after), and verify by fetching the bundle into an empty repository, never by `bundle verify` alone.
+- `git init` on an existing directory → succeeds and reuses it; a restore command that must not overwrite starts with `mkdir`.
