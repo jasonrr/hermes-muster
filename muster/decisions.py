@@ -338,8 +338,9 @@ def recommend(args):
     labels = [LABELS[a] + (" (recommended)" if a == args.choice else "") for a in order]
     sent = sum(1 for r in for_ledger(args.ledger, "feedback") if r["status"] == "done" and r.get("outcome") in SENT)
     pr = progress.pr_name(args.pr)
-    text = "\n\n".join([f"**{pr} · {short(run)}**\n**{who()} recommends: {VERBS[args.choice]}**", summary or review,
-                         f"Merge squashes {pr} into {run['base']}. Muster does not deploy."])
+    # what a tap does comes before the review, the one part a long card may cut (it is whole above the card)
+    text = "\n\n".join([f"**{pr} · {short(run)}**\n**{who()} recommends: {VERBS[args.choice]}**",
+                         f"Merge squashes {pr} into {run['base']}. Muster does not deploy.", summary or review])
     req = create("build", args.ledger, run=run, head=args.head, base=run["base"], pr=args.pr, review=review,
                  summary=summary, feedback=feedback, cycle=1 + sent, proposal=None, wait=None, actions=order,
                  choices=[labels], recommended=args.choice,
@@ -393,8 +394,9 @@ def recommend_design(args):
                       file=sys.stderr)
                 print(req["id"])
                 return 0
-        given = next((approval_part(r) for r in for_ledger(args.ledger, "question")
-                      if r.get("proposal") == pin and approval_part(r)), None)
+        given = next((approval_part(r) or r.get("outcome") or "answered" for r in for_ledger(args.ledger, "question")
+                      if r.get("proposal") == pin and (answered(r) or (r["status"] == "open" and approval_part(r)))),
+                     None)
         if given:  # the human answered first: their answer stands, and nothing asks them again
             progress.touch(args.ledger, "recommended")
             raise ValueError(f"the builder's approval question for Proposal v{pin['version']} was already answered "
@@ -409,8 +411,11 @@ def recommend_design(args):
     verb = DESIGN_VERBS[args.choice]
     lead = f"**{who()} recommends: {verb}**" if verb else f"**{who()}: this one is your call**"
     sends = [f"Send revisions sends the builder:\n{feedback}"] if feedback else []  # whole: FEEDBACK_MAX
-    text = "\n\n".join([f"**Plan v{n} · {short(run)}**\n{lead}", summary or review, *sends,
-                         f"Approve lets the builder implement plan v{n}. Nothing is merged or deployed."])
+    # the revisions a tap sends, and what Approve does, come before the review: a long card cuts only the review,
+    # which is whole above the card
+    text = "\n\n".join([f"**Plan v{n} · {short(run)}**\n{lead}", *sends,
+                         f"Approve lets the builder implement plan v{n}. Nothing is merged or deployed.",
+                         summary or review])
     req = create("design", args.ledger, run=run, proposal=pin, review=review, summary=summary, feedback=feedback,
                  wait=None, actions=order, choices=[labels], recommended=chosen,
                  questions=[{"text": text, "header": "Design", "multi": False,
@@ -553,6 +558,12 @@ def approval_part(ask):
     return answer.get(ask["questions"][slot]["text"]) if slot is not None and isinstance(answer, dict) else None
 
 
+def answered(ask):
+    """True when an approval question was answered and not abandoned: answered, or done by delivery or the pane.
+    A stale one (the builder stopped waiting) delivered nothing, whatever part it held."""
+    return ask["status"] in ("answered", "done")
+
+
 def _answer_approval(req):
     """Give the reviewed version's approval question this request's exact reply (intent.reply) as its Approval
     part, through the question's own first-answer-wins answer_part: the pane's bridge then delivers it as if the
@@ -572,7 +583,10 @@ def _answer_approval(req):
     asks = [r for r in for_ledger(req["ledger"], "question") if r.get("proposal") == pin]
     ask = next((r for r in asks if r["status"] == "open"), None)
     if ask is None:
-        done = next((r for r in asks if approval_part(r) or r["status"] in ("answered", "done")), None)
+        done = next((r for r in asks if answered(r)), None)
+        if done and approval_part(done) == intent["reply"]:  # this request's own reply, given by a concurrent step
+            update(rid, intent={**intent, "question": done["id"]})
+            return
         if done:  # the human answered the builder's question first (here or in the pane): that answer stands
             fail(rid, f"You already answered the builder's question about plan v{pin['version']}: "
                       f"{approval_part(done) or done.get('outcome') or 'answered'}. Nothing else was sent.")

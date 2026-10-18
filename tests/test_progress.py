@@ -301,3 +301,10 @@ def test_delivered_feedback_reads_revision_pending_until_the_revision_is_reviewe
                                                 f"activity 2 min ago ({hm(NOW - 120)})", False)
     at("review", NOW - 60, "https://github.com/o/r/pull/9")  # the revision, verified
     assert state()[1] == "PR #9 opened · Coordinator is reviewing · no action needed"
+
+
+def test_a_decision_outlives_the_builders_session():
+    directory = launched()
+    received(directory, NOW - 3000)
+    at("end", NOW - 300)
+    assert state(waits=[(NOW - 100, "PR #9")])[1] == f"Needs your decision: PR #9 · since {hm(NOW - 100)}"

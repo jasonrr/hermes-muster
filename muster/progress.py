@@ -214,12 +214,12 @@ def state(ledger, now, waits, ref, archived):
         seen = None
     tool, prompt, stop = m.get("tool"), m.get("prompt", 0), m.get("stop", 0)
     latest = max(tool or 0, prompt)
-    if m.get("end", 0) > max(latest, stop):
-        return "ended", f"Session ended {hm(m['end'])} · the builder is not running", False
-    if waits:
+    if waits:  # before the session's end: a merge or plan decision outlives the builder's session
         first, counts = min(t for t, _ in waits), collections.Counter(w for _, w in waits)
         what = ", ".join(w if n == 1 else f"{n} {w}s" for w, n in counts.items())
         return f"waiting:{len(waits)}:{first}", f"Needs your decision: {what} · since {hm(first)}", False
+    if m.get("end", 0) > max(latest, stop):
+        return "ended", f"Session ended {hm(m['end'])} · the builder is not running", False
     recommended, review = m.get("recommended", 0), m.get("review", 0)
     if m.get("proposal", 0) > recommended:
         plan = f"plan {read('proposal')}" if read("proposal") else "the plan"

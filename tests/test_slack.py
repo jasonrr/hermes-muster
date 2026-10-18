@@ -1046,3 +1046,18 @@ def test_five_parents_scan_without_opening_a_thread(monkeypatch):
         assert title.startswith("*") and len(title) <= 52 and "**" not in line
         assert "t_" not in line and "muster ·" not in line and "hermes-muster#" not in line
     assert sum("Needs your decision" in line for line in lines) == 1  # the one run that needs you stands out
+
+
+def test_agent_markdown_links_cannot_ping_mention_or_disguise_a_link(channel):
+    slack.T.adapter = types.SimpleNamespace(format_message=lambda text: __import__("re").sub(
+        r"\[([^\]]+)\]\(([^)]+)\)", r"<\2|\1>", text))  # what Hermes's converter does with a Markdown link
+    out = slack.mrkdwn("[hi](!here) and [boss](@U012AB) [x](https://evil.example)")
+    assert "<!here" not in out and "<@U012AB" not in out and "<https://evil.example|" not in out
+
+
+def test_a_failed_detail_post_still_posts_the_decision_card(channel):
+    req = build_request("Detail. " * 10, summary="Right.\nDeploy on merge: none.")
+    channel.client.fail["chat_postMessage"] = ["msg_too_long"]  # the detail is refused
+    asyncio.run(gateway.scan())
+    (card,) = channel.client.posts
+    assert any(b["type"] == "actions" for b in card["blocks"]) and decisions.load(req["id"])["presented"]["messages"]

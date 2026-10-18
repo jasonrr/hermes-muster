@@ -103,7 +103,9 @@ def mrkdwn(text):
     """Agent or human text as Slack mrkdwn: escaped first, so it pings, links and formats nothing it did not mean
     (shared.slack_text), then Hermes's own Markdown conversion (adapter.format_message: headings, bold, links, code),
     the one Hermes's own replies get."""
-    escaped = shared.slack_text(text)
+    # A Markdown link would become <target|label>: "[x](!here)" pings, "[x](@U1)" mentions. Muster's own links are
+    # built apart (headline, the detail link), so agent text gets none: the "](" is broken with a zero-width space.
+    escaped = shared.slack_text(text).replace("](", "]\u200b(")
     convert = getattr(T.adapter, "format_message", None)
     return convert(escaped) if callable(convert) else re.sub(r"\*\*(.+?)\*\*", r"*\1*", escaped)  # muster's own bold
 
@@ -183,10 +185,15 @@ async def post_detail(req, meta):
     text = shared.detail(req)
     if not text or (req.get("detail") or {}).get("platform") == name:
         return None
+    blocks_, ts = sections(text), None
     try:
-        ts = await post(sections(text)[:BLOCKS_MAX], shared.plain(text.split("\n", 1)[0])[:300], meta)
-    except Exception as caught:  # noqa: BLE001 - retried with backoff, as the card is
-        return error_of(caught)
+        for i in range(0, len(blocks_), BLOCKS_MAX):  # a review and a plan can pass one message's 50 blocks
+            sent = await post(blocks_[i:i + BLOCKS_MAX], shared.plain(text.split("\n", 1)[0])[:300], meta)
+            ts = ts or sent
+    except Exception as caught:  # noqa: BLE001 - the card still goes out: a missing detail never hides the decision
+        log(f"request {req['id']}: detail message: {error_of(caught)}")
+        if ts is None:
+            return None
     req["detail"] = {"platform": name, "id": ts}
     await asyncio.to_thread(decisions.update, req["id"], detail=req["detail"])
     try:
@@ -204,9 +211,7 @@ async def present(req, meta, questions):
     """Each question given as its own message, after the request's detail message. A failed post keeps what was sent
     before it."""
     messages = {}
-    failure = await post_detail(req, meta)
-    if failure:
-        return {"messages": messages, "failure": failure}
+    await post_detail(req, meta)
     for n in questions:
         q = req["questions"][n]
         if len(req["choices"][n]) > (MULTI_MAX if q.get("multi") else CHOICES_MAX):
@@ -267,7 +272,7 @@ async def outcome(req):
         return True  # another platform's messages: not ours to edit
     line = req.get("outcome") or req["status"]
     ok = True
-    for n, ids in (presented.get("messages") or {}).items():
+    for n, ids in [*(presented.get("messages") or {}).items(), *(presented.get("redirected") or {}).items()]:
         kept = approval_body(req) if req["kind"] == "permission" else body(req, int(n))
         for ts in ids:
             ok = await update(ts, [*kept, context(line)], line) and ok

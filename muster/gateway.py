@@ -95,7 +95,7 @@ async def scan():
                 background(decisions.recover, req)
             elif req["status"] == "answered":  # tapped, but the gateway went down before it started
                 background(decisions.execute, req["id"], BOOT)
-    S.covered = {(r["ledger"], pinned(r)) for r in reqs if r["kind"] == "design" and r["status"] == "open"}
+    S.covered = {(r["ledger"], pinned(r)) for r in reqs if r["kind"] == "design" and r["status"] in decisions.OPEN}
     for req in reqs:
         CHANNEL.track(req)
         if (req.get("presented") or {}).get("messages"):
@@ -217,6 +217,8 @@ async def handle(req):
     if shown and shown.get("platform", "telegram") != CHANNEL.name:  # shown on another platform (none: Telegram)
         await asyncio.to_thread(decisions.update, rid, presented={}, partial={})  # its ids and answers are not ours
         shown, req = {}, {**req, "partial": {}}
+    if req.get("proposal"):  # a design step earlier in this scan may have answered a part: read it again
+        req = {**req, "partial": (await asyncio.to_thread(decisions.load, rid)).get("partial") or {}}
     covered = decisions.approval_slot(req)
     if covered is not None and (req["ledger"], pinned(req)) in S.covered:
         shown = await redirect(req, covered, shown)

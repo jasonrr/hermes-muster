@@ -256,6 +256,7 @@ async def outcome(req):
     chat = core.notify_target()["chat_id"]
     newest = [ids[-1] for ids in (presented.get("messages") or {}).values() if ids]
     newest += [mid for ids in (presented.get("replies") or {}).values() for mid in ids]
+    newest += [ids[-1] for ids in (presented.get("redirected") or {}).values() if ids]
     return all([await edit(chat, mid, req.get("outcome") or req["status"]) for mid in newest])
 
 
@@ -284,10 +285,11 @@ async def present(req, meta, questions):
     text = shared.detail(req)
     if text and (req.get("detail") or {}).get("platform") != name:  # once, above the card; Hermes formats and splits it
         res = await T.adapter.send(chat, text, metadata=meta)
-        if not res.success:
-            return {"messages": messages, "failure": res.error or "detail send failed"}
-        req["detail"] = {"platform": name, "id": str(res.message_id)}
-        await asyncio.to_thread(decisions.update, rid, detail=req["detail"])
+        if res.success:
+            req["detail"] = {"platform": name, "id": str(res.message_id)}
+            await asyncio.to_thread(decisions.update, rid, detail=req["detail"])
+        else:  # the card still goes out: a missing detail never hides the decision
+            log(f"request {rid}: detail message: {res.error}")
     for n in questions:
         q = req["questions"][n]
         cid, choices = f"mu{rid}q{n}", req["choices"][n]

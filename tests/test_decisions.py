@@ -243,9 +243,9 @@ def test_a_summary_is_the_card_and_the_review_stays_whole(world, tmp_path, capsy
     assert decisions.recommend(rec_args(tmp_path, review=long, summary="Right and tested.\nDeploy on merge: none.")) == 0
     req = decisions.load(capsys.readouterr().out.strip())
     assert req["review"] == long.strip() and req["summary"] == "Right and tested.\nDeploy on merge: none."
-    assert req["questions"][0]["text"] == ("**PR #9 · T**\n**Coordinator recommends: merge**\n\nRight and tested.\n"
-                                           "Deploy on merge: none.\n\nMerge squashes PR #9 into main. Muster does not "
-                                           "deploy.")
+    assert req["questions"][0]["text"] == ("**PR #9 · T**\n**Coordinator recommends: merge**\n\nMerge squashes PR #9 "
+                                           "into main. Muster does not deploy.\n\nRight and tested.\n"
+                                           "Deploy on merge: none.")
 
 
 @pytest.mark.parametrize("summary, why", [("x deploy " * 200, "over 900"), ("Right and tested.", "deploy consequence")])
@@ -262,8 +262,8 @@ def test_recommend_creates_the_build_request(world, tmp_path, capsys):
     assert req["kind"] == "build" and req["status"] == "open" and req["ledger"] == "t_1"
     assert req["choices"] == [["Review feedback… (recommended)", "Merge PR", "Leave PR open"]]
     assert req["actions"] == ["send-back", "merge", "nothing"]
-    assert req["questions"] == [{"text": "**PR #9 · T**\n**Coordinator recommends: send back**\n\nLooks good.\n\n"
-                                         "Merge squashes PR #9 into main. Muster does not deploy.",
+    assert req["questions"] == [{"text": "**PR #9 · T**\n**Coordinator recommends: send back**\n\nMerge squashes "
+                                         "PR #9 into main. Muster does not deploy.\n\nLooks good.",
                                  "header": "Build", "multi": False, "options": [
         {"label": label, "description": ""} for label in req["choices"][0]]}]
     assert (req["head"], req["base"], req["pr"], req["cycle"]) == (HEAD, "main", URL, 1)
@@ -842,8 +842,9 @@ def test_recommend_design_creates_a_request_bound_to_the_version(world, tmp_path
     assert req["choices"] == [["Send revisions to builder (recommended)", "Approve plan v2", "Leave pending"]]
     # what Send revisions sends is on the message, whole, so the human sees it before tapping
     assert req["questions"][0]["text"] == ("**Plan v2 · T**\n**Coordinator recommends: send revisions**\n\n"
-                                           "Small and right.\n\nSend revisions sends the builder:\nDrop the cache.\n\n"
-                                           "Approve lets the builder implement plan v2. Nothing is merged or deployed.")
+                                           "Send revisions sends the builder:\nDrop the cache.\n\n"
+                                           "Approve lets the builder implement plan v2. Nothing is merged or deployed.\n\n"
+                                           "Small and right.")
     assert req["feedback"] == "Drop the cache." and req["run"]["repo"] == "acme/app"
     assert decisions.recommend_design(design_args(tmp_path, f"v2:{s2}")) == 0  # the same version again
     assert capsys.readouterr().out.strip() == req["id"] and len(decisions.for_ledger("t_1", "design")) == 1
@@ -1127,3 +1128,38 @@ def test_answer_part_two_threads_lose_neither_part():
     [t.join() for t in threads]
     assert sorted(results) == ["accepted", "completed"]
     assert decisions.load(rid)["answer"] == {"p": [["a0", None], ["a1", None]]}
+
+
+def test_revisions_and_what_approve_does_lead_the_card_so_a_long_review_never_cuts_them(world, tmp_path, capsys):
+    from muster.channels import shared
+    s1, s2 = save_versions("plan one", "plan two")
+    args = design_args(tmp_path, f"v2:{s2}", "revise", "DROP THE CACHE")
+    (tmp_path / "review.md").write_text("Long review. " * 500)  # no --summary: the card is the review
+    assert decisions.recommend_design(args) == 0
+    req = decisions.load(capsys.readouterr().out.strip())
+    text = shared.render(req, 0, cap=3500, label_max=64, tail=["x"])  # Telegram's cap
+    assert "DROP THE CACHE" in text and "Approve lets the builder implement plan v2" in text
+    assert shared.detail(req).count("Long review.") == 500  # the cut review is whole above the card
+
+
+def test_a_concurrent_step_that_gave_this_reply_is_not_mistaken_for_a_human_answer(world):
+    ask, rid = approval(), design({"action": "approve"})
+    decisions.transition(rid, ("answered",), "executing", intent={"reply": APPROVE, "action": "approve"})
+    stale_copy = decisions.load(rid)
+    decisions.recover(decisions.load(rid))  # a boot's recover gives the reply first
+    decisions.settle_design(stale_copy, decisions.open_requests())  # the scan, with its copy from before
+    assert state(rid)[0] == "executing" and decisions.load(rid)["intent"]["question"] == ask
+    delivered(ask)
+    settle(rid)
+    assert state(rid) == ("done", "Approval of plan v2 delivered to the builder")
+
+
+def test_an_abandoned_ask_with_an_undelivered_part_does_not_block_a_later_tap(world):
+    ask = decisions.create("question", "t_1", proposal=PIN, questions=[
+        {"text": "Approve this design?", "header": "Approval", "options": [], "multi": False},
+        {"text": "Which store?", "header": "Store", "options": [], "multi": False}])["id"]
+    decisions.answer_part(ask, 0, ["Approve", [0]], 2, lambda parts: {})
+    decisions.transition(ask, ("open",), "stale", outcome="Ended: the builder moved on in the pane. Nothing was sent.")
+    rid = design({"action": "approve"})
+    decisions.execute(rid)
+    assert state(rid)[0] == "executing"  # waits for the builder to ask again

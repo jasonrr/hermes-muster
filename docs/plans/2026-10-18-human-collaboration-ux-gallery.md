@@ -459,3 +459,10 @@ state machine or dependency.
   the close can follow cleanup of an archived run.
 - **Not built (deferred, as agreed).** Hermes tool traces, memory and skill notices, onboarding notices.
   The optional host setting for those is Hermes's existing `display.tool_progress`.
+- **Card order (from the branch review).** On build and plan cards, the action's consequence and the whole
+  revisions now come before the summary or review. The gallery showed them after it. A card longer than
+  its platform's limit can then cut only the review, and the review is always whole in the detail message.
+- **Slack links in agent text.** A Markdown link in agent text is never turned into a Slack link. Hermes's
+  converter would make `[x](!here)` a ping. Muster's own links (issue, detail) are built separately.
+- **A missing detail never hides a decision.** If the detail post fails, the card still goes out, and the
+  failure is logged. A detail longer than one Slack message's 50 blocks spans several messages.
