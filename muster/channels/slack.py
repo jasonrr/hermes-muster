@@ -442,7 +442,8 @@ async def show(ledger, line, saved):
         return None
     if state in ("open", "closing", "closed"):
         thread = ref["thread_id"]
-        if state == "open":  # closing or closed: the lifecycle marks the parent done; nothing to add
+        # Closing or closed, or reopened after the work resolved: the lifecycle owns the parent; nothing to add.
+        if state == "open" and not ref.get("resolved_at"):
             try:
                 await T.client.chat_update(channel=ref["chat_id"], ts=thread,
                                            text=shared.slack_text(parent_line(ref, "running", line)))

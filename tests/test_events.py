@@ -464,6 +464,12 @@ def test_each_hook_event_leaves_its_observation_for_the_status_message(board, mo
     assert board["cards"]["t_abc123"] == "blocked"  # the session end's own move, unchanged
 
 
+def test_a_stop_with_a_links_file_without_a_card_still_exits_0(board, monkeypatch, capsys):
+    (board["git_dir"] / core.CARD_FILE).write_text(json.dumps({"repo": "acme/app"}))
+    assert hook(monkeypatch, "stop", hook_event_name="Stop") == 0
+    assert capsys.readouterr().out == ""
+
+
 def test_done_marks_review_ready_only_once_the_ledger_reads_done(board, monkeypatch):
     progress.launched("t_abc123", "/launch", "sha")
     board["head"] = "other"

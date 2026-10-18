@@ -833,7 +833,7 @@ def ensure(rec, save, directory, prepare, known=None):
 
     state = (rec.get("prompt") or {}).get("state")
     if state in DELIVERED:
-        progress.launched(rec["owner"], directory, rec.get("sha256"))  # again: a crash may have come before the first
+        progress.launched(rec["owner"], directory, rec.get("sha256"), again=True)  # a crash may have come before the first
         return state
     git_dir = take_worktree(rec, save, known)
     take_pane(rec, save)

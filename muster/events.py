@@ -507,7 +507,7 @@ def hook(args):
             return 1
         return 0
     git_dir, link = found
-    progress.hooked(link["card"], event, payload)  # the status message's evidence; never raises
+    progress.hooked(link.get("card"), event, payload)  # the status message's evidence; never raises
     if event == "stop":
         return 0  # fires at every turn end; an issue run has nothing else to do with it
     if event == "duplicate":

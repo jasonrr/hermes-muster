@@ -205,3 +205,11 @@ def test_seen_at_returns_the_matching_records_time():
     received(directory, 1234)
     assert core.seen_at(directory, "abc") == 1234 and core.seen(directory, "abc") is True
     assert core.seen_at(directory, "zzz") is None and core.seen(directory, "zzz") is False
+
+
+def test_a_recover_of_a_run_from_before_the_feature_starts_no_tracking():
+    progress.launched("t_old", "/d", "sha", again=True)
+    assert not progress.activity("t_old").exists()
+    launched()
+    progress.launched(L, "/d", "sha", again=True)
+    assert json.loads((progress.activity(L) / "launched").read_text())["dir"] == "/d"

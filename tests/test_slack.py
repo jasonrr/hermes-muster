@@ -817,3 +817,12 @@ def test_a_refused_channel_post_is_retried_and_an_unanswered_one_never(channel, 
     asyncio.run(gateway.scan())
     asyncio.run(gateway.scan())
     assert progress.load(P)["lost"] == {"thread": None}
+
+
+def test_a_resolved_thread_reopened_for_new_work_gets_no_finished_line_under_running(threads):
+    thread = opened(threads, ledger=P)
+    launched(940)
+    conversation.update(P, resolved_at=1000)  # resolved, but its thread is open again for a late request
+    shown = asyncio.run(slack.show(P, "✅ Finished: pull request merged.", {}))
+    assert shown == {"mid": thread, "thread": thread}
+    assert not any("Finished" in u["text"] for u in threads.client.updates)

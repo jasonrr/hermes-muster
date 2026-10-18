@@ -15,6 +15,7 @@ permission requests (muster.decisions), which only their own paths end. herdr's 
 final, posting, lost, retry_at}. Only hooks and completions write activity, so a message edit never moves a time.
 """
 
+import contextlib
 import json
 import time
 
@@ -58,11 +59,14 @@ def touch(ledger, kind, text=None):
         else:
             file.write_text(text)
     except OSError as caught:
-        core.log("progress", f"{ledger}: {kind}: {caught}")
+        with contextlib.suppress(OSError):  # an unwritable log must not fail a launch or a completion either
+            core.log("progress", f"{ledger}: {kind}: {caught}")
 
 
-def launched(ledger, directory, sha):
-    touch(ledger, "launched", json.dumps({"dir": str(directory), "sha256": sha}))
+def launched(ledger, directory, sha, again=False):
+    """`again`: a launch already delivered before (a recover); only a run tracked from its first send is kept up."""
+    if not (again and not activity(ledger).is_dir()):
+        touch(ledger, "launched", json.dumps({"dir": str(directory), "sha256": sha}))
 
 
 HOOKED = {("prompt", "UserPromptSubmit"): "prompt", ("prompt", "PostToolUse"): "tool",
@@ -74,10 +78,11 @@ def hooked(ledger, event, payload):
     try:
         name = payload.get("hook_event_name") if isinstance(payload, dict) else None
         kind = {"stop": "stop", "session-end": "end"}.get(event) or HOOKED.get((event, name))
-        if kind:
+        if kind and isinstance(ledger, str) and ledger:
             touch(ledger, kind)
     except Exception as caught:  # noqa: BLE001 - a hook never fails the agent
-        core.log("progress", f"{ledger}: {event}: {caught}")
+        with contextlib.suppress(Exception):
+            core.log("progress", f"{ledger}: {event}: {caught}")
 
 
 def tracked(skip=()):
