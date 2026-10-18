@@ -109,8 +109,8 @@ On automated wakes, reply `[SILENT]` when a delivered ping or Muster message alr
        [--feedback <revisions file>]
      ```
 
-     It prints a request id; the human gets your summary, headed with that version, with Approve plan v<n>,
-     Send revisions to builder and Leave pending buttons, under your full review and the plan's full text. Their tap answers the agent's approval question for that version; you answer nothing.
+     It prints a request id; the human gets your summary, headed with that version, with Approve design v<n>,
+     Send revisions to builder and Leave pending buttons, under your full review and the design's full text. Their tap answers the agent's approval question for that version; you answer nothing.
      A refusal "Proposal v<m> is newer" means a newer version was published and its own card follows: reply
      `[SILENT]`. A refusal "already answered" means the human answered the builder's question first: their
      answer stands and nothing asks them again. If your review found something they should know, reply with

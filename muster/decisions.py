@@ -354,7 +354,7 @@ def recommend(args):
 
 # -- recommend-design: the coordinator's review of one proposal version becomes a `design` request ----------
 
-DESIGN_LABELS = {"approve": "Approve plan v{n}", "send-back": "Send revisions to builder", "nothing": "Leave pending"}
+DESIGN_LABELS = {"approve": "Approve design v{n}", "send-back": "Send revisions to builder", "nothing": "Leave pending"}
 DESIGN_VERBS = {"approve": "approve", "revise": "send revisions", "judgment": None}
 DESIGN_CHOICE = {"approve": "approve", "revise": "send-back", "judgment": None}
 PIN = re.compile(r"v(\d+):([0-9a-f]{12})")
@@ -414,7 +414,7 @@ def recommend_design(args):
     # the revisions a tap sends, and what Approve does, come before the review: a long card cuts only the review,
     # which is whole above the card
     text = "\n\n".join([f"**Plan v{n} · {short(run)}**\n{lead}", *sends,
-                         f"Approve lets the builder implement plan v{n}. Nothing is merged or deployed.",
+                         f"Approve lets the builder implement design v{n}. Nothing is merged or deployed.",
                          summary or review])
     req = create("design", args.ledger, run=run, proposal=pin, review=review, summary=summary, feedback=feedback,
                  wait=None, actions=order, choices=[labels], recommended=chosen,
@@ -520,7 +520,7 @@ def _design(req, boot):
     """The human's tap on a design review: the reply their approval question gets, or nothing."""
     rid, head, answer = req["id"], events.heading(req["proposal"]), req.get("answer") or {}
     if "text" not in answer and answer.get("action") == "nothing":
-        transition(rid, ("answered",), "done", outcome=f"Left pending. The builder's question about plan "
+        transition(rid, ("answered",), "done", outcome=f"Left pending. The builder's question about design "
                                                        f"v{req['proposal']['version']} stays open.")
         return
     if "text" in answer or answer.get("action") == "send-back":
@@ -544,8 +544,8 @@ def words(req):
     words."""
     n, intent = req["proposal"]["version"], req["intent"]
     if (intent.get("action") or ("approve" if intent["reply"].startswith("Approve") else "revise")) == "approve":
-        return f"Approval of plan v{n}", "Nothing was approved."
-    return f"Revisions for plan v{n}", "The revisions were not sent."
+        return f"Approval of design v{n}", "Nothing was approved."
+    return f"Revisions for design v{n}", "The revisions were not sent."
 
 
 def approval_part(ask):
@@ -593,7 +593,7 @@ def _answer_approval(req):
     for ended in (r for r in asks if r["status"] != "open"):
         given = approval_part(ended)
         if answered(ended) and given != intent["reply"]:  # the human answered first: that answer stands
-            fail(rid, f"You already answered the builder's question about plan v{pin['version']}: "
+            fail(rid, f"You already answered the builder's question about design v{pin['version']}: "
                       f"{given or ended.get('outcome') or 'answered'}. Nothing else was sent.")
             return
         if ended.get("created_at", 0) >= tapped and given != intent["reply"]:  # asked after the tap, ended without it

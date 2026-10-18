@@ -2158,11 +2158,11 @@ def test_telegram_posts_a_reviews_whole_text_once_above_a_plain_text_card(hermes
 
 def test_telegram_points_the_approval_at_the_review_and_a_restart_never_brings_it_back(hermes, monkeypatch):
     pin = {"version": 2, "sha": "abcdef012345"}
-    q = ask(questions=[{"text": "Implement plan v2?", "header": "Approval", "multi": False,
+    q = ask(questions=[{"text": "Implement design v2?", "header": "Approval", "multi": False,
                         "options": [{"label": "Approve", "description": ""}]}], choices=[["Approve"]], proposal=pin)
     run(gateway.scan())
     (asked,) = sent()
-    labels = ["Approve plan v2 (recommended)", "Leave pending"]
+    labels = ["Approve design v2 (recommended)", "Leave pending"]
     d = decisions.create("design", "led1", run={"repo": "o/r", "issue": 7}, proposal=pin, review="Fine.",
                          actions=["approve", "nothing"], choices=[labels],
                          questions=[{"text": "**Plan v2 · Issue #7**\n\nFine.", "header": "Design", "multi": False,

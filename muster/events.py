@@ -13,7 +13,7 @@ Telegram ping for the human and a queued agent turn.
   session-end    block the ledger card, if it is still ready (not on /clear)
   done <PR url>  complete the ledger card (from ready or blocked), archive any open wait card;
                  refused unless gh names the run's branch as the pull request's head
-  propose <file> save the agent's plan or design as the next version, Proposal v<n> <sha256[:12]>,
+  propose <file> save the agent's design as the next version, Proposal v<n> <sha256[:12]>,
                  in <data dir>/runs/<card>/proposals/ and as one ledger comment; once it reads back
                  there it is armed for the next approval request (an AskUserQuestion headed
                  `Approval`), whose wait card carries that version, its full text and every option.
@@ -299,7 +299,7 @@ def gate(card, directory, event, payload, command):
         pin = json.loads((proposals(card) / "armed").read_text())
     except (OSError, ValueError):
         return None, (f"No proposal is saved on the ledger card for this approval request. Write the whole "
-                      f"plan or design to a file, run `{command}`, and ask again once it says the proposal is "
+                      f"design to a file, run `{command}`, and ask again once it says the proposal is "
                       f"on the ledger.")
     marker = directory / core.WAIT_KIND
     try:
@@ -341,7 +341,7 @@ def disarm(ledger, wait, proposal):
 
 
 def propose(card, file, **issue):
-    """`hook propose <file>`: the agent's plan or design as the next version, posted on the ledger.
+    """`hook propose <file>`: the agent's design as the next version, posted on the ledger.
 
     Run by the agent: prints its outcome, 0 once the comment is on the ledger, else 1. Only a text
     unlike the latest version makes a new one (a revert is a new revision). Every call queues a post,

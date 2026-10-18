@@ -835,9 +835,9 @@ def test_a_parent_headline_is_the_short_title_the_state_and_a_native_issue_link(
     core.save_json(core.intake_dir() / "t_h" / "launch.json",
                    {"card": "t_h", "repo": "o/r", "issue": 46, "title": "r: <!channel> show confirmed build start & "
                     "lightweight agent activity status"})
-    text = slack.headline("t_h", "Needs your decision: plan v2 · since 14:05")
+    text = slack.headline("t_h", "Needs your decision: design v2 · since 14:05")
     assert text == ("*&lt;!channel&gt; show confirmed build start &amp;…*\n"
-                    "Needs your decision: plan v2 · since 14:05 · <https://github.com/o/r/issues/46|Issue #46>")
+                    "Needs your decision: design v2 · since 14:05 · <https://github.com/o/r/issues/46|Issue #46>")
     assert "t_h" not in text and "muster" not in text
     core.save_json(config.data_dir() / "runs" / "t_a" / "run.json", {"repo": "o/r", "branch": "muster/bump", "title": ""})
     assert slack.headline("t_a", "Working") == "*muster/bump*\nWorking"  # the branch is the name: not repeated
@@ -921,7 +921,7 @@ def test_agent_text_is_escaped_before_hermes_formats_it(channel):
     assert slack.mrkdwn("**Plan v2** <b>") == "*Plan v2* &lt;b&gt;"  # without Hermes's converter, muster's own bold
 
 
-# -- one decision surface per plan version ---------------------------------------------------------------------------
+# -- one decision surface per design version ---------------------------------------------------------------------------
 
 PLAN = {"version": 2, "sha": "abcdef012345"}
 
@@ -933,13 +933,13 @@ def reviewing_plan(ledger="led1"):
 
 
 def approval_ask(**fields):
-    return ask([{"text": "Implement plan v2?", "header": "Approval", "multi": False,
+    return ask([{"text": "Implement design v2?", "header": "Approval", "multi": False,
                  "options": [{"label": "Approve", "description": ""}, {"label": "Revise", "description": ""}]}],
                proposal=PLAN, **fields)
 
 
 def design_card():
-    labels = ["Approve plan v2 (recommended)", "Send revisions to builder", "Leave pending"]
+    labels = ["Approve design v2 (recommended)", "Send revisions to builder", "Leave pending"]
     return decisions.create("design", "led1", run={"repo": "o/r", "issue": 7, "branch": "muster/7"}, proposal=PLAN,
                             review="Fine.", feedback="Drop the cache.", actions=["approve", "send-back", "nothing"],
                             choices=[labels], questions=[{"text": "**Plan v2 · Issue #7**\n**Coordinator recommends: "
@@ -974,15 +974,15 @@ def test_question_then_review_shows_one_live_approval_surface_then_recorded_then
     assert [b["type"] for b in card["blocks"]].count("actions") == 1 and len(channel.client.posts) == 2
     tap(channel, d, 0, "muster_choice_0", value=f"{d['id']}|0|0", message_ts=ts_of(d))
     asked = decisions.load(q["id"])
-    assert asked["status"] == "answered" and asked["answer"] == {"Implement plan v2?": "Approve: the human approved "
+    assert asked["status"] == "answered" and asked["answer"] == {"Implement design v2?": "Approve: the human approved "
                                                                                        "Proposal v2 abcdef012345."}
     asyncio.run(gateway.scan())
-    assert channel.client.updates[-1]["text"] == "Approval of plan v2 recorded · delivering to the builder"
+    assert channel.client.updates[-1]["text"] == "Approval of design v2 recorded · delivering to the builder"
     decisions.transition(q["id"], ("answered",), "done", outcome=decisions.ANSWER_SENT)  # the pane's bridge delivered it
     asyncio.run(gateway.scan())
     asyncio.run(gateway.scan())
-    assert decisions.load(d["id"])["outcome"] == "Approval of plan v2 delivered to the builder"
-    assert channel.client.updates[-1]["text"] == "Approval of plan v2 delivered to the builder"
+    assert decisions.load(d["id"])["outcome"] == "Approval of design v2 delivered to the builder"
+    assert channel.client.updates[-1]["text"] == "Approval of design v2 delivered to the builder"
     assert len(channel.client.posts) == 2  # nothing asked twice
 
 
@@ -993,7 +993,7 @@ def test_review_before_the_question_never_posts_the_question_and_leave_pending_b
     asyncio.run(gateway.scan())
     assert len(channel.client.posts) == 1  # the review is the one surface; the builder's question is not shown
     tap(channel, d, 0, "muster_choice_2", value=f"{d['id']}|0|2", message_ts=ts_of(d))  # Leave pending
-    assert decisions.load(d["id"])["outcome"] == "Left pending. The builder's question about plan v2 stays open."
+    assert decisions.load(d["id"])["outcome"] == "Left pending. The builder's question about design v2 stays open."
     asyncio.run(gateway.scan())
     again = channel.client.posts[-1]
     assert len(channel.client.posts) == 2 and texts(again["blocks"]).startswith("*Plan v2 · Issue #7*\nNeeds your decision.")
@@ -1001,7 +1001,7 @@ def test_review_before_the_question_never_posts_the_question_and_leave_pending_b
 
 
 def test_a_bundled_question_keeps_its_other_question_live_while_the_review_answers_the_approval(channel):
-    q = ask([question("Which store?"), {"text": "Implement plan v2?", "header": "Approval", "multi": False,
+    q = ask([question("Which store?"), {"text": "Implement design v2?", "header": "Approval", "multi": False,
                                         "options": [{"label": "Approve", "description": ""}]}],
             proposal=PLAN)
     d = design_card()
@@ -1010,10 +1010,10 @@ def test_a_bundled_question_keeps_its_other_question_live_while_the_review_answe
     assert len(other) == 1 and len(channel.client.posts) == 2  # the other question, and the review
     tap(channel, d, 0, "muster_choice_0", value=f"{d['id']}|0|0", message_ts=ts_of(d))
     asyncio.run(gateway.scan())
-    assert channel.client.updates[-1]["text"] == "Approval of plan v2 recorded · awaiting your other answer above"
+    assert channel.client.updates[-1]["text"] == "Approval of design v2 recorded · awaiting your other answer above"
     tap(channel, q, 0, "muster_choice_1", value=f"{q['id']}|0|1", message_ts=ts_of(q))
     assert decisions.load(q["id"])["answer"] == {"Which store?": "Beta",
-                                                 "Implement plan v2?": "Approve: the human approved Proposal v2 "
+                                                 "Implement design v2?": "Approve: the human approved Proposal v2 "
                                                                        "abcdef012345."}
 
 
@@ -1022,7 +1022,7 @@ def test_five_parents_scan_without_opening_a_thread(monkeypatch):
     monkeypatch.setitem(config.settings, "repos", ["jasonrr/hermes-muster"])
     monkeypatch.setitem(config.settings, "coordinator_name", "Ella")
     runs_ = [("t_dff6c76e", 46, "Show confirmed build start and lightweight agent activity status",
-              "Needs your decision: plan v2 · since 14:05"),
+              "Needs your decision: design v2 · since 14:05"),
              ("t_903749e7", 42, "Questions resolved in herdr reappear when their Telegram topic is reopened",
               "Working · last activity 3 min ago (14:37)"),
              ("t_aa11bb22", 49, "muster: fix flaky cleanup test", "PR #51 opened · Ella is reviewing · no action needed"),
@@ -1037,7 +1037,7 @@ def test_five_parents_scan_without_opening_a_thread(monkeypatch):
             core.save_json(config.data_dir() / "runs" / ledger / "run.json",
                            {"repo": "jasonrr/hermes-muster", "branch": "muster/bump-herdr", "title": title})
         lines.append(slack.headline(ledger, state))
-    assert lines[0] == ("*Show confirmed build start and lightweight…*\nNeeds your decision: plan v2 · since 14:05 · "
+    assert lines[0] == ("*Show confirmed build start and lightweight…*\nNeeds your decision: design v2 · since 14:05 · "
                         "<https://github.com/jasonrr/hermes-muster/issues/46|Issue #46>")
     assert lines[2].startswith("*fix flaky cleanup test*\nPR #51 opened · Ella is reviewing · no action needed")
     assert lines[3] == "*muster/bump-herdr*\nQuiet 22 min · last tool 14:15 · long tools can be quiet"

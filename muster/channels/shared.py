@@ -97,7 +97,7 @@ def detail_label(req):
 
 
 def reviewing(req, n):
-    """True for a builder's Approval question (decisions.approval_slot) whose plan version still waits for the
+    """True for a builder's Approval question (decisions.approval_slot) whose design version still waits for the
     coordinator's review: answering it skips that review."""
     if decisions.approval_slot(req) != n:
         return False
@@ -106,7 +106,7 @@ def reviewing(req, n):
 
 
 def lead(req, n):
-    """The lines a question message opens with: the task, and for a plan approval the plan's state. A build, design
+    """The lines a question message opens with: the task, and for a design approval the design's state. A build, design
     or feedback request's text opens with its own (decisions)."""
     if req["kind"] != "question":
         return ""
