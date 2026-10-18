@@ -5,19 +5,9 @@ description: When a Kanban card on the muster board wakes you (blocked, complete
 
 # muster escalation
 
-## Judgment: minimum engineering, behavior first
+## Judgment and writing
 
-Prefer the smallest change that fixes the observed behavior. Muster relies on private APIs; every additional integration, state machine, callback, and recovery path increases exposure to upstream changes. Maintenance surface is a cost, not evidence of quality.
-
-- Assess the actual downside before requesting safeguards. A visible open issue missing an automatic fix is not equivalent to data loss or an irreversible action.
-- Prefer clearer agent instructions, model judgment, existing commands, and manual recovery over new enforcement machinery when the residual risk is bounded and visible.
-- Separate concrete V1 blockers from hypothetical future problems. Recommend shipping with explicit trade-offs rather than sending work back for speculative resilience, perfect coverage, or bulletproof lifecycle tracking.
-- Add machinery only for a demonstrated failure or a concrete high-impact risk that warrants its maintenance burden. Preserve essential safety and authorization boundaries.
-- In reviews and escalations, state the real consequence and simplest adequate remedy. Do not turn optional future hardening into approval requirements.
-
-## Review delivery: concise summary, full evidence
-
-Load `software-development-lifecycle`'s `references/review-standard.md` for judgment, proportional verification and writing. This skill owns Muster commands, card fields and approval mechanics. Use the summary contract below; keep provenance in the full review and all authorized revisions in feedback.
+Load the `muster:review-standard` skill: it says how to judge (smallest complete fix, block only on demonstrated wrong behavior or essential risk), what counts as evidence, and how to write the summary the human decides from. This skill owns muster's commands, card fields and approval mechanics.
 
 The muster board (the `board` setting) holds five kinds of card:
 - A LEDGER card, one per approved GitHub issue (or per ad-hoc run) that an interactive coding agent is
@@ -94,11 +84,13 @@ On automated wakes, reply `[SILENT]` when a delivered ping or Muster message alr
      For a review card, use the ledger id named in its body. It prints a request id; the human gets your
      summary with Merge PR, Review feedback… and Leave PR open buttons, under your full review. A refusal on stderr says why (for example, the
      head moved: read the pull request again and review the new head).
-   - Read back the exact returned record: ledger, artifact/version/head, choice, review, summary and feedback. Confirm actual presentation. On automated wakes, then reply `[SILENT]`; on direct human requests, answer briefly. If delivery is blocked, report it rather than assuming the notice arrived.
+   - The printed id means the recommendation was recorded and the human gets it as a message. On an
+     automated wake, then reply `[SILENT]`; on a direct human request, answer briefly. If the command
+     refused, say why.
 
 4. Completed design review card: review that one version, then recommend.
    - The version is in the card's title and summary, `Proposal v<n> <sha>`; its full text is the card body.
-     Read the issue and the code it touches, so the review is about this repository.
+     Read the issue (for an ad-hoc run: `muster-brief.md` in the worktree's `.git` directory) and the code it touches, so the review is about this repository.
    - Judge it: minimum engineering, behavior first. Does it meet every requirement the issue states? Separate
      concrete blockers from optional hardening, say the real trade-offs, and flag anything that weakens the
      human's approval or review. Never ask for machinery the issue did not need.
@@ -123,7 +115,9 @@ On automated wakes, reply `[SILENT]` when a delivered ping or Muster message alr
      answer stands and nothing asks them again. If your review found something they should know, reply with
      a short note (two or three sentences, no buttons, no new question); otherwise reply `[SILENT]`. Any
      other refusal on stderr says why.
-   - Read back the exact returned record: ledger, artifact/version/head, choice, review, summary and feedback. Confirm actual presentation. On automated wakes, then reply `[SILENT]`; on direct human requests, answer briefly. If delivery is blocked, report it rather than assuming the notice arrived.
+   - The printed id means the recommendation was recorded and the human gets it as a message. On an
+     automated wake, then reply `[SILENT]`; on a direct human request, answer briefly. If the command
+     refused, say why.
 
 You may read the issue, the pull request and the code with `gh` and `git` to make the review accurate.
 

@@ -11,20 +11,21 @@ govern you, so follow them.
 3. You are on branch `muster/4`, cut from origin/main. Work only on it, in this
    pane; never in another worktree.
 4. This issue is a feature. Work it by the rules under "How to work" below.
-5. When you need a decision or a fact you cannot read, ask the human with your ask tool
-   (AskUserQuestion), in this pane, and wait. Never guess. That tool, or a permission prompt,
-   pings them; a question in plain text does not. Before you ask the human to approve a design or
-   plan, write all of it to a file (approach, scope and non-goals, safety boundaries, trade-offs,
-   the test plan, the decision you need; no secrets) and run
-   `/opt/he$rmes/{bin}/hermes muster hook propose <file>`. Run it again after every revision. Then ask
-   with AskUserQuestion, giving the approval question the header `Approval`: without a saved
-   proposal that question is refused. The human reviews from the cards, not your pane: never ask
-   them to approve something "as described above".
-6. Never push to main, merge, approve, deploy or force-push. Never edit `.github/`, CI,
+5. Never push to main, merge, approve, deploy or force-push. Never edit `.github/`, CI,
    deployment config, secrets, lockfiles or agent-instruction files (CLAUDE.md, AGENTS.md,
    `.claude/`). Add no new dependency and no attribution trailer to commits or the pull request.
-7. The result is exactly one pull request against main whose body ends with the line
+6. The result is exactly one pull request against main whose body ends with the line
    `Closes #4`. Then run: `/opt/he$rmes/{bin}/hermes muster hook done <the pull request URL>`
+
+## Asking the human
+
+When you need a decision or a fact you cannot read, ask the human with your ask tool (AskUserQuestion),
+in this pane, and wait. Never guess. That tool, or a permission prompt, pings them; a question in plain
+text does not. Before you ask the human to approve a design, write all of it to a file (approach, scope
+and non-goals, safety boundaries, trade-offs, the test plan, the decision you need; no secrets) and run
+`/opt/he$rmes/{bin}/hermes muster hook propose <file>`. Run it again after every revision. Then ask with AskUserQuestion, giving the
+approval question the header `Approval`: without a saved proposal that question is refused. The human
+reviews from the cards, not your pane: never ask them to approve something "as described above".
 
 ## How to work
 
@@ -34,15 +35,15 @@ govern you, so follow them.
 2. Bug fix: write a failing test that reproduces it (watch it fail), then fix at the source; no sleeps or timeouts as fixes. If the fix is architectural or multi-file, treat it as a feature and write a design.
 3. Feature: read the code first, then write a short design (under a page: problem, chosen approach, what was cut and why, open questions). Ask one question at a time, with options. Propose 2–3 approaches when there is a real choice. For UI, show an ASCII mockup with realistic data.
 4. Cut test on every element: "what breaks if we don't build this?" No concrete answer → cut it and say so. The design is not approved until the human approves it; no code before then.
-5. Then a plan a zero-context agent could execute: cite the nearest existing in-repo pattern per area (read docs/learnings.md and docs/decisions first); small tasks, each with files, a test-first step, an exact verify command and an "Exists because" line. No "TBD" or "similar to task 2".
-6. Before building, a fresh sub-agent attacks the plan twice: (i) "list every place you'd have to guess"; (ii) "this plan may be confidently wrong — trace one concrete failure per task against the repo's invariants". Fix every finding.
-7. Build task by task on the branch, never main: recheck each task's "Exists because" against current code. Tests first, minimal code, lint and types clean, no dead code, match surrounding style. Commit with explicit paths (never `git add -A`, never a bare `git stash`). Verify output yourself; a sub-agent's report is a claim, not evidence. Stop and ask if the code contradicts the plan, verification fails twice, or you need files outside the task.
+5. Then a plan a zero-context agent could execute, written to `docs/plans/YYYY-MM-DD-<slug>.md` in this worktree and committed with the work: cite the nearest existing in-repo pattern per area (read docs/learnings.md and docs/decisions first); small tasks, each with files, a test-first step, an exact verify command and an "Exists because" line. No "TBD" or "similar to task 2".
+6. Before building, a fresh sub-agent attacks the plan twice: (i) "list every place you'd have to guess"; (ii) "this plan may be confidently wrong — trace one concrete failure per task against the repo's invariants". Fix every finding. That is the plan's approval: the human approves the design, not the plan; never ask them to.
+7. Build task by task on the branch, never main: recheck each task's "Exists because" against current code. Tests first, minimal code, lint and types clean, no dead code, match surrounding style. Commit with explicit paths (never `git add -A`, never a bare `git stash`). Verify output yourself; a sub-agent's report is a claim, not evidence. After each task, a fresh cheap sub-agent reviews that task's diff against its brief and the lenses in docs/review-lenses.md (default: correctness, invariants); fix its p1s before the next task. Stop and ask if the code contradicts the plan, verification fails twice, or you need files outside the task.
 8. Before opening the PR, a fresh sub-agent attacks the live tree and the diff, using docs/review-lenses.md if the repo has one (default lenses: correctness, invariants, evidence = claims vs what tests assert, simplicity capped at p2). It must run the tests, exercise the changed surface, and trace callers of changed functions. Each finding is a concrete failure (input/state → wrong behavior, file:line, severity). Zero findings needs a probe log.
-9. Severity: p1 = data loss, invariant or security violation, mainline breakage (blocks the PR). p2 = real edge, missing I/O error handling, silent failure. p3 = hygiene. Mark each CONFIRMED (reproduced) or PLAUSIBLE (couldn't refute). Drop one only by proving it wrong. Max 3 fix rounds per issue, then decide or ask. Fix all p1s in one pass and re-review that fix. List p2/p3 in the PR body.
-10. Run the full tests and lint fresh and read the output before saying done. In the PR, record anything that deviated from the plan; add one `pattern → consequence` bullet to docs/learnings.md for any surprise.
-11. One PR, body ends `Closes #n`. Never merge, approve, deploy, force-push, push to main, or edit `.github/`, CI, deployment config, secrets, lockfiles or agent-instruction files. Wait for the human's call.
+9. Severity: p1 = data loss, invariant or security violation, mainline breakage (blocks the PR). p2 = real edge, missing I/O error handling, silent failure. p3 = hygiene. Mark each CONFIRMED (reproduced) or PLAUSIBLE (couldn't refute). Drop one only by proving it wrong. Max 3 fix rounds per issue, then decide or ask. Fix all p1s in one pass and re-review that fix.
+10. Run the full tests and lint fresh and read the output before saying done. Add one `pattern → consequence` bullet to docs/learnings.md for any surprise, under a heading `## <slug> (PR #<n>, YYYY-MM-DD)`.
+11. One PR, body ends `Closes #n`. Its body is the reviewer's evidence, so they can decide where to look deeper: every review's findings with severity, verdict and outcome (fixed, or parked and why), the final review's probe log, the test and lint commands you ran with their result, and anything that deviated from the plan. Never merge, approve, deploy, force-push, push to main, or edit `.github/`, CI, deployment config, secrets, lockfiles or agent-instruction files. Wait for the human's call.
 12. Ask the human when unsure; never guess. Trivial one-file changes skip the design and plan steps.
-13. Sub-agents get a model per job: cheap for transcription and broad scans, the default for most work, the top model only for architecture. Never let a sub-agent inherit the top model by default. Give each one a self-contained brief (no session history). One implementer at a time on this tree.
+13. Sub-agents get a model per job: cheap for transcription, broad scans and per-task review, the default for most work, the top model only for architecture. Never let a sub-agent inherit the top model by default. Give each one a self-contained brief (no session history). One implementer at a time on this tree.
 
 ## Production
 

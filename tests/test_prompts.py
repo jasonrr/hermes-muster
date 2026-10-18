@@ -3,6 +3,7 @@
 The golden files in tests/golden/ were rendered by the code before the move, with data full of characters a
 template could misread: braces, `$`, backticks, quotes and newlines.
 """
+import os
 import re
 import subprocess
 import types
@@ -69,7 +70,11 @@ def render(monkeypatch):
 
 
 def test_prompts_match_pre_refactor_output(nasty, monkeypatch):
+    """Edited a prompt on purpose? Regenerate with MUSTER_REGOLD=1, then read the golden diff."""
     out = render(monkeypatch)
+    if os.environ.get("MUSTER_REGOLD"):
+        for name, text in out.items():
+            (GOLDEN / f"{name}.txt").write_text(text)
     assert sorted(out) == sorted(p.stem for p in GOLDEN.glob("*.txt"))
     for name, text in out.items():
         assert text == (GOLDEN / f"{name}.txt").read_text(), name
@@ -80,7 +85,7 @@ def test_every_prompt_the_code_names_ships_in_git_and_none_is_orphaned():
     tracked = subprocess.run(["git", "ls-files", "prompts"], cwd=ROOT, capture_output=True, text=True,
                              check=True).stdout.split()
     source = "".join(p.read_text() for p in [ROOT / "__init__.py", *(ROOT / "muster").glob("*.py")])
-    named = set(re.findall(r'config\.prompt\("([\w-]+)"', source)) | {"dispatch", "escalation", "builder-workflow"}
+    named = set(re.findall(r'config\.prompt\("([\w-]+)"', source)) | {"dispatch", "escalation", "review-standard", "builder-workflow"}
     assert {f"prompts/{n}.md" for n in named} | {"prompts/README.md"} == set(tracked)
 
 
