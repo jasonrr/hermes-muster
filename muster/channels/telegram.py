@@ -414,7 +414,7 @@ async def show(ledger, line, saved):
         return None
     thread = (await asyncio.to_thread(conversation.target, ledger))["thread_id"]
     chat = core.notify_target()["chat_id"]
-    text = f"muster · {await asyncio.to_thread(progress.name, ledger, ref)}\n{line}"
+    text = f"{await asyncio.to_thread(progress.name, ledger, ref)}\n{line}"
     if saved.get("mid") and saved.get("thread") == thread:
         return {"mid": saved["mid"], "thread": thread} if await edit(chat, saved["mid"], text) else False
     if state in ("closing", "closed"):
@@ -692,8 +692,8 @@ async def close_duplicate(ref, thread):
 
 
 async def topic_created(update, context):
-    """Telegram's forum_topic_created notice of a topic the bot itself made in the notify chat. Its name carries the
-    run's ledger id (conversation.name), so it names exactly one run: the thread of that run's create whose reply was
+    """Telegram's forum_topic_created notice of a topic the bot itself made in the notify chat. Its name is unique
+    among live runs (conversation.unique), so it names exactly one run: the thread of that run's create whose reply was
     lost is adopted; any other topic for the run is closed as unused. A name that matches no run, or several, is
     left alone."""
     try:

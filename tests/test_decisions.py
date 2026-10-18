@@ -541,7 +541,7 @@ def test_dont_send_is_a_clean_end(world):
 def test_send_delivers_and_confirms_by_the_prompt_hook(world):
     rid = feedback(world, {"action": "send"})
     decisions.execute(rid, "b1")
-    assert state(rid) == ("done", "Sent ✓")
+    assert state(rid) == ("done", decisions.DELIVERED)
     assert world.prompts == [wire_of(rid)]
     req = decisions.load(rid)
     assert req["intent"] == {"action": "send-back", "head": HEAD, "prompt_sha": sha(wire_of(rid))}
@@ -630,7 +630,7 @@ def test_a_herdr_error_that_did_deliver_is_still_sent(world):
     world.prompt_error = "herdr: exit 1\ntimeout"
     rid = feedback(world, {"action": "send"})
     decisions.execute(rid)
-    assert state(rid) == ("done", "Sent ✓")
+    assert state(rid) == ("done", decisions.DELIVERED)
 
 
 def test_a_retry_never_double_sends_when_the_first_send_was_in_fact_seen(world):
@@ -641,7 +641,7 @@ def test_a_retry_never_double_sends_when_the_first_send_was_in_fact_seen(world):
     core.prompt_seen(world.evidence, {"prompt": pasted(world.prompts[0])})  # the hook fired late
     decisions.transition(retry, ("open",), "answered", answer={"action": "send"})
     decisions.execute(retry)
-    assert state(retry) == ("done", "Sent ✓") and len(world.prompts) == 1
+    assert state(retry) == ("done", decisions.DELIVERED) and len(world.prompts) == 1
 
 
 def test_a_second_confirmation_while_the_agent_works_on_the_first_is_sent_without_a_resend(world):
@@ -653,7 +653,7 @@ def test_a_second_confirmation_while_the_agent_works_on_the_first_is_sent_withou
     world.agent = {"agent_status": "working"}  # on the first send's instructions
     decisions.transition(retry, ("open",), "answered", answer={"action": "send"})
     decisions.execute(retry)
-    assert state(retry) == ("done", "Sent ✓") and len(world.prompts) == 1
+    assert state(retry) == ("done", decisions.DELIVERED) and len(world.prompts) == 1
     assert len(decisions.for_ledger("t_1", "feedback")) == 2  # no further retry was offered
 
 
@@ -664,7 +664,7 @@ def test_a_retry_still_open_when_the_late_evidence_arrives_is_retired_as_sent(wo
     (retry,) = [r for r in decisions.for_ledger("t_1", "feedback") if r["id"] != first]
     assert retry["prompt_sha"] == sha(wire_of(first)) and not decisions.reconcile(retry)
     core.prompt_seen(world.evidence, {"prompt": pasted(world.prompts[0])})  # the hook fired late
-    assert decisions.reconcile(decisions.load(retry["id"])) and state(retry["id"]) == ("done", "Sent ✓")
+    assert decisions.reconcile(decisions.load(retry["id"])) and state(retry["id"]) == ("done", decisions.DELIVERED)
     assert not decisions.reconcile(decisions.load(retry["id"]))
     assert decisions.transition(retry["id"], ("open",), "answered", answer={"action": "send"})[1] is False
     decisions.execute(retry["id"])  # a stale tap: nothing is sent
@@ -741,7 +741,7 @@ def executing_send(world, seen):
 def test_recover_a_send_that_was_seen_is_done(world):
     req = executing_send(world, True)
     decisions.recover(req)
-    assert state(req["id"]) == ("done", "Sent ✓") and world.prompts == []
+    assert state(req["id"]) == ("done", decisions.DELIVERED) and world.prompts == []
 
 
 def test_recover_a_send_not_seen_is_failed_with_a_retry_and_sends_nothing(world):

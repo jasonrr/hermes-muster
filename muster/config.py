@@ -21,6 +21,7 @@ DEFAULTS = {
     "notify_user_id": "",
     "notify_chat_type": "group",
     "notify_topics": False,  # True → one forum topic per run in the notify_chat_id group (muster.conversation)
+    "coordinator_name": "Coordinator",  # who reviews in the human's messages: "Ella is reviewing"
     "gh_config_dir": "",  # "" → your own gh login; else GH_CONFIG_DIR for gh/git in the pane, GH_TOKEN/GITHUB_TOKEN blanked
     "notes_dir": "",  # "" → data_dir()/"repos"
     "workflow_prompt_file": "",  # "" → <plugin>/prompts/workflow.md

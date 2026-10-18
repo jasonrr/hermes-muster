@@ -545,7 +545,7 @@ def test_the_gateway_posts_the_thread_parent_once(threads):
     tick(threads)
     (parent,) = threads.client.posts
     assert seen[0]["asked"] is True and seen[0]["state"] == "creating" and seen[0]["attempts"] == 1
-    assert "thread_ts" not in parent and "· led1" in parent["text"] and "⏳ running" in parent["text"]
+    assert "thread_ts" not in parent and parent["text"] == "*r#7 Fix it · led1*\nDispatched · waiting for the builder to start"
     ref = conversation.load("led1")
     assert ref["state"] == "open" and ref["thread_id"] == "1.000100"
     req = ask()
@@ -584,10 +584,9 @@ def test_closing_says_done_once_and_marks_the_parent(threads):
     conversation.finish("led1")
     tick(threads)
     tick(threads)
-    (note,) = threads.client.posts[1:]
-    assert note["thread_ts"] == thread and "finished" in note["text"]
+    assert threads.client.posts[1:] == []  # no finish note: the parent says it
     (parent,) = threads.client.updates
-    assert parent["ts"] == thread and "✅ done" in parent["text"]
+    assert parent["ts"] == thread and parent["text"].endswith("\nFinished")
     ref = conversation.load("led1")
     assert ref["state"] == "closed" and ref["closed_at"] == threads.clock[0] and ref["closed_by"] == "muster"
 
@@ -602,7 +601,7 @@ def test_a_parent_update_that_fails_is_retried_after_its_backoff(threads):
     tick(threads, 1)
     assert conversation.load("led1")["state"] == "closing"
     tick(threads, 10)
-    assert conversation.load("led1")["state"] == "closed" and len(threads.client.posts) == 2  # one finish note
+    assert conversation.load("led1")["state"] == "closed" and len(threads.client.posts) == 1  # the parent only
 
 
 @pytest.mark.parametrize("error", slack.GONE)
@@ -627,9 +626,10 @@ def test_a_newer_request_reopens_a_closed_thread_without_waiting_for_the_parent(
     tick(threads)
     assert threads.client.posts[-1]["thread_ts"] == thread and decisions.load(req["id"])["presented"]
     ref = conversation.load("led1")
-    assert ref["state"] == "open" and ref["parent_text"] == "running"
+    assert ref["state"] == "open" and ref["parent_text"] == "reopened"
     tick(threads)
-    assert "⏳ running" in threads.client.updates[-1]["text"] and not conversation.load("led1").get("parent_text")
+    assert threads.client.updates[-1]["text"].endswith("\nReopened for a new request")
+    assert not conversation.load("led1").get("parent_text")
 
 
 def test_a_closed_thread_reopens_for_nothing_older_than_its_close(threads):
@@ -665,7 +665,7 @@ def test_retiring_stales_requests_marks_the_parent_and_unsubscribes(threads):
     ref = conversation.load("led1")
     assert ref["state"] == "deleted" and ref["unsubscribed"] is True
     assert decisions.load(req["id"])["status"] == "stale"
-    assert any(u["ts"] == thread and "archived" in u["text"] for u in threads.client.updates)
+    assert any(u["ts"] == thread and u["text"].endswith("\nArchived") for u in threads.client.updates)
     assert threads.subs.rows["t_card"] == [] and threads.subs.rows["t_wait"] == []
     assert ref["ledger"] not in [r["ledger"] for r in conversation.active()]
 
@@ -768,7 +768,7 @@ def test_the_thread_parent_carries_the_status_line_and_nothing_is_posted(threads
     assert len(threads.client.posts) == posts
     update = threads.client.updates[-1]
     assert update["ts"] == thread and update["channel"] == CHAN
-    assert update["text"].endswith(f"⏳ running\nBrief received {progress.hm(940)} · no tool activity observed yet")
+    assert update["text"].endswith(f"*\nStarted {progress.hm(940)} · no tool activity yet")
     asyncio.run(slack.parent({**conversation.load(P), "parent_text": "running"}))  # a reopen's own parent write
     assert threads.client.updates[-1]["text"] == update["text"]
 
@@ -780,10 +780,9 @@ def test_a_resolved_threads_parent_is_left_to_its_lifecycle(threads):
     conversation.update(P, resolved_at=1000, state="closing")
     tick(threads)
     assert progress.load(P)["final"] is True
-    assert threads.client.updates[-1]["text"].endswith("✅ done")
-    assert not any("Finished" in u["text"] for u in threads.client.updates)
-    asyncio.run(slack.parent({**conversation.load(P), "parent_text": "running"}))  # reopened later for new work
-    assert threads.client.updates[-1]["text"].endswith("⏳ running")  # never "running" with a finished line
+    assert threads.client.updates[-1]["text"].endswith("\nFinished · the pull request merged")
+    asyncio.run(slack.parent({**conversation.load(P), "parent_text": "reopened"}))  # reopened later for new work
+    assert threads.client.updates[-1]["text"].endswith("\nReopened for a new request")  # never a finished line
 
 
 def test_without_a_thread_one_channel_message_is_posted_then_edited(channel, monkeypatch):
@@ -793,7 +792,7 @@ def test_without_a_thread_one_channel_message_is_posted_then_edited(channel, mon
     launched(940)
     asyncio.run(gateway.scan())
     [post] = channel.client.posts
-    assert post["channel"] == CHAN and "thread_ts" not in post and post["text"].startswith(f"muster · {P}\n")
+    assert post["channel"] == CHAN and "thread_ts" not in post and post["text"].startswith(f"*{P}*\n")
     at = progress.activity(P) / "stop"
     at.touch()
     os.utime(at, (990, 990))
@@ -823,6 +822,19 @@ def test_a_resolved_thread_reopened_for_new_work_gets_no_finished_line_under_run
     thread = opened(threads, ledger=P)
     launched(940)
     conversation.update(P, resolved_at=1000)  # resolved, but its thread is open again for a late request
-    shown = asyncio.run(slack.show(P, "✅ Finished: pull request merged.", {}))
+    shown = asyncio.run(slack.show(P, "Finished · the pull request merged", {}))
     assert shown == {"mid": thread, "thread": thread}
     assert not any("Finished" in u["text"] for u in threads.client.updates)
+
+
+def test_a_parent_headline_is_the_short_title_the_state_and_a_native_issue_link(monkeypatch):
+    monkeypatch.setitem(config.settings, "repos", ["o/r"])
+    core.save_json(core.intake_dir() / "t_h" / "launch.json",
+                   {"card": "t_h", "repo": "o/r", "issue": 46, "title": "r: <!channel> show confirmed build start & "
+                    "lightweight agent activity status"})
+    text = slack.headline("t_h", "Needs your decision: plan v2 · since 14:05")
+    assert text == ("*&lt;!channel&gt; show confirmed build start &amp;…*\n"
+                    "Needs your decision: plan v2 · since 14:05 · <https://github.com/o/r/issues/46|Issue #46>")
+    assert "t_h" not in text and "muster" not in text
+    core.save_json(config.data_dir() / "runs" / "t_a" / "run.json", {"repo": "o/r", "branch": "muster/bump", "title": ""})
+    assert slack.headline("t_a", "Working") == "*muster/bump*\nWorking"  # the branch is the name: not repeated

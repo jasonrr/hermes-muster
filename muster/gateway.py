@@ -122,10 +122,7 @@ async def scan():
 async def progress_pass():
     """Each launched run's one status message (muster.progress), one step further. It shows evidence only: nothing
     here retries, redispatches, approves, merges or cleans up."""
-    waits = {}
-    for req in await asyncio.to_thread(decisions.open_requests):
-        if req["kind"] in ("question", "permission") and req["status"] == "open":  # the bridge's own state
-            waits.setdefault(req["ledger"], []).append(req.get("created_at", 0))
+    waits = await asyncio.to_thread(lambda: progress.needs(decisions.open_requests()))
     for ledger in await asyncio.to_thread(progress.tracked, S.final):
         try:
             await show_progress(ledger, waits.get(ledger, []))

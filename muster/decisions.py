@@ -21,6 +21,8 @@ from pathlib import Path
 from . import config, core, events, progress
 
 OPEN = ("open", "answered", "executing")
+DELIVERED = "✓ Feedback delivered · revision pending"  # a feedback request the prompt hook saw arrive (core.seen)
+SENT = (DELIVERED, "Sent ✓")  # its outcome now, and before #48
 TERMINAL = ("done", "failed", "stale")
 
 
@@ -149,6 +151,16 @@ def for_ledger(ledger, kind=None):
     return sorted(found, key=lambda r: r.get("created_at", 0), reverse=True)
 
 
+def approval_slot(req):
+    """The index of the question a question request's proposal pin binds (headed `Approval`, claude.APPROVAL), or
+    None for a request that carries no proposal."""
+    from . import claude
+
+    if req.get("kind") != "question" or not req.get("proposal"):
+        return None
+    return next((n for n, q in enumerate(req["questions"]) if q.get("header") == claude.APPROVAL), None)
+
+
 def stale_others(ledger, kinds, keep, why):
     """Stale the ledger's other `open` requests of these kinds; `keep` is the one that stays."""
     for req in for_ledger(ledger):
@@ -186,7 +198,7 @@ def rereview(ledger, run=None):
     """
     from . import runs  # runs imports events, which imports core
 
-    sent = next((r for r in for_ledger(ledger, "feedback") if r["status"] == "done" and r.get("outcome") == "Sent ✓"),
+    sent = next((r for r in for_ledger(ledger, "feedback") if r["status"] == "done" and r.get("outcome") in SENT),
                 None)
     if not sent:
         return None, None
@@ -295,13 +307,14 @@ def recommend(args):
         return 1
     order = [args.choice] + [a for a in LABELS if a != args.choice]
     labels = [LABELS[a] + (" (recommended)" if a == args.choice else "") for a in order]
-    sent = sum(1 for r in for_ledger(args.ledger, "feedback") if r["status"] == "done" and r.get("outcome") == "Sent ✓")
+    sent = sum(1 for r in for_ledger(args.ledger, "feedback") if r["status"] == "done" and r.get("outcome") in SENT)
     req = create("build", args.ledger, run=run, head=args.head, base=run["base"], pr=args.pr, review=review,
                  feedback=feedback, cycle=1 + sent, proposal=None, wait=None, actions=order, choices=[labels],
                  recommended=args.choice,
                  questions=[{"text": review, "header": "Build", "multi": False,
                              "options": [{"label": label, "description": ""} for label in labels]}])
     stale_others(args.ledger, ("build",), req["id"], "superseded by a newer recommendation")
+    progress.touch(args.ledger, "recommended")
     print(req["id"])
     return 0
 
@@ -360,6 +373,7 @@ def recommend_design(args):
                  questions=[{"text": text, "header": "Design", "multi": False,
                              "options": [{"label": label, "description": ""} for label in labels]}])
     stale_others(args.ledger, ("design",), req["id"], "superseded by a newer design review")
+    progress.touch(args.ledger, "recommended")
     print(req["id"])
     return 0
 
@@ -589,7 +603,15 @@ def reconcile(req):
     sha, evidence = req.get("prompt_sha"), (req.get("run") or {}).get("evidence_dir")
     if req.get("kind") != "feedback" or req.get("status") != "open" or not sha or not evidence:
         return False
-    return core.seen(evidence, sha) and transition(req["id"], ("open",), "done", outcome="Sent ✓")[1]
+    return core.seen(evidence, sha) and delivered(transition(req["id"], ("open",), "done", outcome=DELIVERED))
+
+
+def delivered(moved):
+    """A transition's (request, ok): on ok, the run's status message learns the revision is pending. Returns ok."""
+    req, ok = moved
+    if ok:
+        progress.touch(req["ledger"], "revision")
+    return ok
 
 
 def _send(req, boot):
@@ -626,7 +648,7 @@ def _send(req, boot):
             _retry(req, "not confirmed delivered")
             return
         time.sleep(min(SEEN_POLL, max(end - time.monotonic(), 0)))
-    transition(rid, ("executing",), "done", outcome="Sent ✓")
+    delivered(transition(rid, ("executing",), "done", outcome=DELIVERED))
 
 
 def _recover(req):
@@ -656,6 +678,6 @@ def _recover(req):
         if not sha or not evidence:
             fail(rid, "interrupted; cannot confirm delivery")
         elif core.seen(evidence, sha):
-            transition(rid, ("executing",), "done", outcome="Sent ✓")
+            delivered(transition(rid, ("executing",), "done", outcome=DELIVERED))
         else:
             _retry(req, "interrupted; not confirmed delivered")

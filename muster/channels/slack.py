@@ -31,7 +31,8 @@ MULTI_MAX = 10  # options in a checkboxes element (Slack's limit)
 COMMAND_MAX = 2900  # characters of a command shown whole on a card with buttons; a longer one is answered in the pane
 SHOWN_MAX = 500  # characters of a too-long command, and of a card's why, shown
 GONE = ("message_not_found", "channel_not_found", "is_archived", "thread_not_found")  # the parent cannot change
-PARENT = {"running": "⏳ running", "done": "✅ done", "archived": "archived"}
+PARENT = {"running": "Dispatched · waiting for the builder to start", "reopened": "Reopened for a new request",
+          "done": "Finished", "archived": "Archived"}
 ACTIONS = re.compile(r"^muster_(choice_\d+|text|multi|submit|allow|deny|deny_text)$")
 
 
@@ -410,7 +411,7 @@ async def destination(req):
                 await shared.retire(ledger)
             return False, None
         ref, ok = await asyncio.to_thread(conversation.swap, ledger, ("closed",), state="open", closed_at=None,
-                                          closed_by=None, parent_text="running")
+                                          closed_by=None, parent_text="reopened")
         if not ok:
             return False, None
         log(f"{ledger}: thread {ref['thread_id']} in use again for request {req['id']}, made after its close")
@@ -421,14 +422,26 @@ async def destination(req):
     return True, {"thread_id": ref["thread_id"]}
 
 
+def headline(ledger, state, name=None):
+    """A run as people scan the channel: its short title in bold, then `state`, then its issue as a native link
+    (mrkdwn). The title and state are escaped (shared.slack_text); the link comes from progress.identity."""
+    title, url, label = progress.identity(ledger, name)
+    tail = f"<{url}|{label}>" if url else shared.slack_text(label) if label != title else ""
+    return f"*{shared.slack_text(title)}*\n{shared.slack_text(state)}" + (f" · {tail}" if tail else "")
+
+
 def parent_line(ref, status, line=None):
-    """The thread parent: the run and its state; while running, the status message's line too (muster.progress), so
-    every parent write keeps it. A final line never shows under "running": a reopened thread is not finished."""
-    text = f"muster · {ref.get('name') or ref['ledger']}   {PARENT[status]}"
-    if status == "running" and line is None:
+    """The thread parent: the run and its state. While running, the status message's line (muster.progress), so every
+    parent write keeps it; a final line never shows under "running" (a reopened thread is not finished). Done shows
+    the final line when it is a finish ("Finished · PR #9 merged")."""
+    if line is None and status in ("running", "done"):
         saved = progress.load(ref["ledger"])
-        line = None if saved.get("final") else saved.get("text")
-    return text + (f"\n{line}" if status == "running" and line else "")
+        text = str(saved.get("text") or "")
+        if status == "running" and not saved.get("final"):
+            line = text or None
+        elif status == "done" and saved.get("final") and text.startswith("Finished"):
+            line = text
+    return headline(ref["ledger"], line or PARENT[status], ref.get("name"))
 
 
 async def show(ledger, line, saved):
@@ -446,13 +459,13 @@ async def show(ledger, line, saved):
         if state == "open" and not ref.get("resolved_at"):
             try:
                 await T.client.chat_update(channel=ref["chat_id"], ts=thread,
-                                           text=shared.slack_text(parent_line(ref, "running", line)))
+                                           text=parent_line(ref, "running", line))
             except Exception as caught:  # noqa: BLE001 - an update is safe to repeat
                 if error_of(caught) not in GONE:  # a parent gone by hand: nothing left to edit
                     log(f"{ledger}: status line on the thread parent: {error_of(caught)}")
                     return False
         return {"mid": thread, "thread": thread}
-    text = shared.slack_text(f"muster · {await asyncio.to_thread(progress.name, ledger, ref)}\n{line}")
+    text = await asyncio.to_thread(headline, ledger, line, ref and ref.get("name"))
     if saved.get("mid") and saved.get("thread") is None:
         try:
             await T.client.chat_update(channel=chat(), ts=saved["mid"], text=text)
@@ -474,7 +487,7 @@ async def parent(ref):
     """Bring the parent's text to `parent_text`; kept for a later step when Slack does not take it."""
     try:
         await T.client.chat_update(channel=ref["chat_id"], ts=ref["thread_id"],
-                                   text=shared.slack_text(parent_line(ref, ref["parent_text"])))
+                                   text=parent_line(ref, ref["parent_text"]))
     except Exception as caught:  # noqa: BLE001
         if error_of(caught) not in GONE:
             log(f"{ref['ledger']}: thread parent: {error_of(caught)}")
@@ -541,7 +554,7 @@ async def create(ref):
         return
     try:
         res = await T.client.chat_postMessage(channel=ref["chat_id"],
-                                              text=shared.slack_text(parent_line(ref, "running")))
+                                              text=parent_line(ref, "running"))
         ts, why = res.get("ts"), "Slack returned no message ts"
     except Exception as caught:  # noqa: BLE001
         ts, why = None, error_of(caught)
@@ -554,18 +567,11 @@ async def create(ref):
 
 
 async def close(ref):
-    """The run's work is resolved: a finish note in the thread (once), then the parent marked done. closed only
-    once Slack took the update, or the parent is gone."""
+    """The run's work is resolved: the parent says Finished (no note in the thread: the parent is what people scan).
+    closed only once Slack took the update, or the parent is gone."""
     ledger, thread = ref["ledger"], ref["thread_id"]
-    if not ref.get("said"):
-        try:
-            await T.client.chat_postMessage(channel=ref["chat_id"], thread_ts=thread, text=(
-                "Work finished: this thread is done. History kept; the worktree is cleaned up separately."))
-        except Exception as caught:  # noqa: BLE001
-            log(f"{ledger}: finish note: {error_of(caught)}")
-        await asyncio.to_thread(conversation.update, ledger, said=True)
     try:
-        await T.client.chat_update(channel=ref["chat_id"], ts=thread, text=shared.slack_text(parent_line(ref, "done")))
+        await T.client.chat_update(channel=ref["chat_id"], ts=thread, text=parent_line(ref, "done"))
     except Exception as caught:  # noqa: BLE001
         if error_of(caught) not in GONE:
             await shared.backoff(ref, f"marking thread {thread} done: {error_of(caught)}")
@@ -583,7 +589,7 @@ async def retire(ref):
     if thread:
         try:
             await T.client.chat_update(channel=ref["chat_id"], ts=thread,
-                                       text=shared.slack_text(parent_line(ref, "archived")))
+                                       text=parent_line(ref, "archived"))
         except Exception as caught:  # noqa: BLE001
             if error_of(caught) not in GONE:
                 await shared.backoff(ref, f"marking thread {thread} archived: {error_of(caught)}")
