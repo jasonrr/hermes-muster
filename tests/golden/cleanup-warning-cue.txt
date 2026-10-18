@@ -1,0 +1,1 @@
+This card is a cleanup warning. Its ping already gives the human the reason and what each choice does: reply [SILENT] unless you have something new; never push, commit, discard or remove anything yourself (skill muster:escalation).
