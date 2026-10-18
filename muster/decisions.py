@@ -18,7 +18,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import config, core, events
+from . import config, core, events, progress
 
 OPEN = ("open", "answered", "executing")
 TERMINAL = ("done", "failed", "stale")
@@ -210,6 +210,7 @@ def rereview(ledger, run=None):
         core.subscribe(card["id"], ledger)
         core.kanban("complete", card["id"], "--summary", f"Revised, ready for re-review: {pr['url']} at {head[:7]}; {core.REVIEW_CUE}")
         events.expect(card["id"], "done", "rereview")
+        progress.touch(ledger, "review", pr["url"])  # only when the card is made: a replay keeps "since"
     for old in for_ledger(ledger, "build"):  # a recommendation for this head is the current one: keep it
         if old["status"] == "open" and old.get("head") != head:
             transition(old["id"], ("open",), "stale", outcome=f"stale: PR moved to {head[:7]}")

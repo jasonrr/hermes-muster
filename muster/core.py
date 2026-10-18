@@ -829,8 +829,11 @@ def ensure(rec, save, directory, prepare, known=None):
     prepare(rec, git_dir) writes the caller's files and returns the brief; it runs until the prompt is fixed.
     known(git_dir) names an earlier owner this caller accepts for a checkout without our marker, or None.
     """
+    from . import progress  # progress imports core
+
     state = (rec.get("prompt") or {}).get("state")
     if state in DELIVERED:
+        progress.launched(rec["owner"], directory, rec.get("sha256"))  # again: a crash may have come before the first
         return state
     git_dir = take_worktree(rec, save, known)
     take_pane(rec, save)
@@ -853,6 +856,7 @@ def ensure(rec, save, directory, prepare, known=None):
     state = send_prompt(rec, save, directory, agent)
     rec["step"] = "done"
     save(rec)
+    progress.launched(rec["owner"], directory, rec.get("sha256"))
     return state
 
 
