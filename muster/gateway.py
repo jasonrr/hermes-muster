@@ -102,7 +102,7 @@ async def scan():
             S.watch.add(req["id"])
         try:
             if req["kind"] == "design" and req["status"] == "executing":
-                await waiting(req, reqs)
+                await waiting(req)
             await handle(req)
         except Exception as caught:  # noqa: BLE001 - one poisoned request must not stop the others
             log(f"request {req.get('id')}: {caught}")
@@ -277,9 +277,9 @@ async def redirect(req, slot, shown):
     return shown
 
 
-async def waiting(req, reqs):
+async def waiting(req):
     """An `executing` design request one step further (decisions.settle_design); its card says what it waits on."""
-    line = await asyncio.to_thread(decisions.settle_design, req, reqs)
+    line = await asyncio.to_thread(decisions.settle_design, req)
     if line and line != req.get("interim") and await CHANNEL.outcome({**req, "outcome": line}):
         await asyncio.to_thread(decisions.update, req["id"], interim=line)
 

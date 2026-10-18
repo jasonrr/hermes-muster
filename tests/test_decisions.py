@@ -884,7 +884,7 @@ BOTH = [({"action": "approve"}, APPROVE, "Approval of plan v2"), ({"action": "se
 
 
 def settle(rid):
-    return decisions.settle_design(decisions.load(rid), decisions.open_requests())
+    return decisions.settle_design(decisions.load(rid))
 
 
 def delivered(ask):
@@ -999,6 +999,42 @@ def test_a_question_that_ended_before_the_tap_is_not_answered_again(world, endin
         again = approval()
         settle(rid)
         assert decisions.load(again)["answer"] == {"Approve this design 0?": APPROVE}
+
+
+@pytest.mark.parametrize("restart", [False, True])
+@pytest.mark.parametrize("answer, reply, what", BOTH)
+def test_a_question_answered_between_scans_ends_an_early_tap_and_a_later_one_gets_nothing(world, answer, reply, what,
+                                                                                          restart):
+    rid = design(answer)
+    decisions.execute(rid)  # tapped before the builder asked
+    q1 = approval()  # asked and answered in the pane between two gateway scans
+    decisions.transition(q1, ("open",), "done", outcome="Answered in the pane",
+                         answer={"Approve this design 0?": "Request changes"})
+    if restart:
+        decisions.recover(decisions.load(rid))
+    else:
+        assert settle(rid) is None
+    assert state(rid) == ("failed", "You already answered the builder's question about plan v2: Request changes. "
+                                    "Nothing else was sent.")
+    q2 = approval()  # the same version asked again
+    settle(rid)
+    decisions.recover(decisions.load(rid))
+    assert decisions.load(q2)["status"] == "open" and "partial" not in decisions.load(q2)
+    assert decisions.load(q1)["answer"] == {"Approve this design 0?": "Request changes"}
+
+
+@pytest.mark.parametrize("answer, reply, what", BOTH)
+def test_a_question_asked_after_an_early_tap_that_ended_unanswered_ends_it_undelivered(world, answer, reply, what):
+    rid = design(answer)
+    decisions.execute(rid)
+    q1 = approval()
+    decisions.transition(q1, ("open",), "stale", outcome="Ended: the builder stopped waiting. Nothing was sent.")
+    settle(rid)
+    nothing = "Nothing was approved." if reply == APPROVE else "The revisions were not sent."
+    assert state(rid) == ("failed", f"Not delivered: the builder's question ended without it. {nothing}")
+    q2 = approval()
+    settle(rid)
+    assert decisions.load(q2)["status"] == "open" and "partial" not in decisions.load(q2)
 
 
 def test_a_question_that_ends_before_delivery_says_nothing_was_approved(world):
@@ -1147,7 +1183,7 @@ def test_a_concurrent_step_that_gave_this_reply_is_not_mistaken_for_a_human_answ
     decisions.transition(rid, ("answered",), "executing", intent={"reply": APPROVE, "action": "approve"})
     stale_copy = decisions.load(rid)
     decisions.recover(decisions.load(rid))  # a boot's recover gives the reply first
-    decisions.settle_design(stale_copy, decisions.open_requests())  # the scan, with its copy from before
+    decisions.settle_design(stale_copy)  # the scan, with its copy from before
     assert state(rid)[0] == "executing" and decisions.load(rid)["intent"]["question"] == ask
     delivered(ask)
     settle(rid)

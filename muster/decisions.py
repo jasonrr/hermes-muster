@@ -569,8 +569,16 @@ def _answer_approval(req):
     part, through the question's own first-answer-wins answer_part: the pane's bridge then delivers it as if the
     human had answered the builder's message, with any other question of it answered on its own message. Before
     the builder asks, the request waits (`executing`) and settle_design gives it once the question appears. It
-    stays `executing` until the bridge settles the question. Safe to repeat."""
+    stays `executing` until the bridge settles the question. Safe to repeat, and from a stale copy: it reads the
+    request again first.
+
+    Before any open question is chosen, every ended question for the version is reconciled: one the human
+    answered (here or in the pane) ends this request, their answer standing; one the builder asked after the tap
+    that ended without this reply ends it undelivered. Either way no later question of the version gets it."""
+    req = load(req["id"])
     rid, pin, intent = req["id"], req["proposal"], req["intent"]
+    if req["status"] != "executing":
+        return
     if intent.get("question"):
         # A recovery: only the question this request chose. The human may have answered it since; never pick another.
         try:
@@ -580,17 +588,20 @@ def _answer_approval(req):
             return
         _give(req, ask)
         return
+    tapped = next((a["at"] for a in req["audit"] if a["step"] == "executing"), req["created_at"])
     asks = [r for r in for_ledger(req["ledger"], "question") if r.get("proposal") == pin]
+    for ended in (r for r in asks if r["status"] != "open"):
+        given = approval_part(ended)
+        if answered(ended) and given != intent["reply"]:  # the human answered first: that answer stands
+            fail(rid, f"You already answered the builder's question about plan v{pin['version']}: "
+                      f"{given or ended.get('outcome') or 'answered'}. Nothing else was sent.")
+            return
+        if ended.get("created_at", 0) >= tapped and given != intent["reply"]:  # asked after the tap, ended without it
+            fail(rid, f"Not delivered: the builder's question ended without it. {words(req)[1]}")
+            return
     ask = next((r for r in asks if r["status"] == "open"), None)
     if ask is None:
-        done = next((r for r in asks if answered(r)), None)
-        if done and approval_part(done) == intent["reply"]:  # this request's own reply, given by a concurrent step
-            update(rid, intent={**intent, "question": done["id"]})
-            return
-        if done:  # the human answered the builder's question first (here or in the pane): that answer stands
-            fail(rid, f"You already answered the builder's question about plan v{pin['version']}: "
-                      f"{approval_part(done) or done.get('outcome') or 'answered'}. Nothing else was sent.")
-        return  # not asked yet, or asked and abandoned: settle_design gives it when the builder asks again
+        return  # not asked yet, or asked and abandoned before the tap: settle_design gives it when the builder asks
     req = update(rid, intent={**intent, "question": ask["id"]})  # recorded first: a recovery acts on this one only
     _give(req, ask)
 
@@ -612,9 +623,10 @@ def _give(req, ask):
              else f"Not delivered: the builder's question ended without it. {words(req)[1]}")
 
 
-def settle_design(req, live):
-    """One gateway-scan step of an `executing` design request. `live`: the open requests. Gives a waiting reply to
-    its version's approval question once the builder asks; cancels it when a newer version replaced its own
+def settle_design(req):
+    """One gateway-scan step of an `executing` design request. Ends it when the human answered its version's
+    approval question first, or the builder asked and stopped without it; gives a waiting reply once the builder
+    asks; cancels it when a newer version replaced its own
     first; ends it once the bridge settles the question: delivered only on the bridge's ANSWER_SENT. Returns
     the line its card shows meanwhile, or None once it ended."""
     rid, ledger, pin = req["id"], req["ledger"], req["proposal"]
@@ -626,9 +638,8 @@ def settle_design(req, live):
         if newest > pin["version"]:
             fail(rid, f"Plan v{newest} replaced v{pin['version']} before the builder asked. {nothing}")
             return None
-        if any(r["kind"] == "question" and r.get("proposal") == pin and r["status"] == "open" for r in live):
-            _answer_approval(req)
-            req = load(rid)
+        _answer_approval(req)  # ended questions first, even with none open: never a later one after a human answer
+        req = load(rid)
         if req["status"] != "executing":
             return None
         if not req["intent"].get("question"):
