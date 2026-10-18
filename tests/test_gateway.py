@@ -1155,8 +1155,8 @@ def test_a_finished_run_closes_its_topic_once_and_keeps_it(forum):
     tick(forum, 0, n=3)
     assert conversation.load("led1")["state"] == "closed" and int(thread) in forum.bot.closed
     assert int(thread) in forum.bot.topics  # never deleted
-    assert [n for n in forum.adapter.notes if "finished" in n[1]] == [
-        (GROUP_CHAT, "Work finished: this topic is closed. History kept; the worktree is cleaned up separately.",
+    assert [n for n in forum.adapter.notes if "Finished" in n[1]] == [
+        (GROUP_CHAT, "Finished. This topic is now closed.",
          thread)]
 
 
@@ -1591,7 +1591,7 @@ def test_a_close_that_fails_stays_closing_and_is_retried(forum, monkeypatch):
     assert conversation.load("led1")["state"] == "closing" and int(thread) not in forum.bot.closed
     tick(forum, 3)
     assert conversation.load("led1")["state"] == "closed" and int(thread) in forum.bot.closed
-    assert len([n for n in forum.adapter.notes if "finished" in n[1]]) == 1
+    assert len([n for n in forum.adapter.notes if "Finished" in n[1]]) == 1
 
 
 def test_a_delete_that_fails_is_retried(forum, monkeypatch):

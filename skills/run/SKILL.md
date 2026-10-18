@@ -59,7 +59,7 @@ A card whose body says "ad-hoc run", or a wait card whose body names one as its 
      first prompt may not have arrived", "The launch was refused"): the human fixes the cause, then runs
      `hermes muster recover <card>`. For "may not have arrived", they look at the pane first and add
      `--resend` only if it shows no brief.
-   - A card titled "Unsaved work in <repo>": see the `muster:escalation` skill.
+   - A card titled "Workspace kept · …": a cleanup warning; see the `muster:escalation` skill.
 3. At most one message per wake. Nothing new to say, or a muster decision is waiting on the human: reply
    exactly `[SILENT]` (Hermes sends nothing), and after `hermes muster recommend` always.
 

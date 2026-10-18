@@ -174,6 +174,13 @@ def needs(reqs):
     return out
 
 
+def opened(url):
+    """A completed run's one-line summary, the human's ping: the pull request is open and under review, nothing
+    merged or deployed. The coordinator reviews a completed ledger by its kind (skill muster:escalation)."""
+    who = config.settings.get("coordinator_name") or "Coordinator"
+    return f"{pr_name(url)} opened · {who} is reviewing. No action needed; not merged or deployed. {url}"
+
+
 def pr_name(url):
     """"PR #47" from a pull request url (the verified one the `review` evidence holds), else "the pull request"."""
     found = re.search(r"/pull/(\d+)", url or "")

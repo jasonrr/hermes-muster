@@ -61,7 +61,7 @@ removed: its topic closes, then is deleted on the next pass.
 A coding worktree that is quiet for 30 minutes but not clean or not pushed is never removed.
 Unless a pull request from its branch is open (work under way), once per state, a card on the muster
 board, subscribed notify+wake and blocked, pings the human and wakes the agent with the workspace,
-branch and reason, and asks what to do. The card is archived when that state changes; a new problem
+branch, reason and what each choice does. The card is archived when that state changes; a new problem
 opens a new card. This job never pushes, commits, discards, deletes a branch, merges or deploys.
 """
 
@@ -115,8 +115,11 @@ HELPER = re.compile(r"mcp|.+-mcp|mcp-.+|.*langserver.*|.+-language-server|.+-lsp
 # Only these paths may be deleted as copies, and only when `copied` proves them one.
 SCAFFOLD = re.compile(r"AGENTS\.md|\.agents/.+|\.codex/.+")
 FAILURES = (core.CommandError, OSError, ValueError, KeyError, TypeError, AttributeError)
-ASK_LINE = ("This card is a cleanup warning. Tell the human the workspace, branch and reason, and ask what "
-            "to do; never push, commit, discard or remove anything yourself (skill muster:escalation).")
+ASK_LINE = ("This card is a cleanup warning. Its ping already gives the human the reason and what each choice does: "
+            "reply [SILENT] unless you have something new; never push, commit, discard or remove anything yourself "
+            "(skill muster:escalation).")
+KEEP = ("- Keep it: leave it, or archive this warning card to clear it from the board. Nothing is removed while "
+        "this stands.")
 clock = time.time
 
 
@@ -465,21 +468,26 @@ def escalate(link, reason, signature, ledger=None, stranded=False, overdue=False
                 f"still kept: {reason}.\nRecommended: clear that blocker and cleanup removes the worktree by itself; or, once "
                 f"nothing in it is needed, remove it by hand. Archive this card to keep it: this blocker does not ping "
                 f"again.")
-        title, block = f"Worktree kept after finished work in {name}", (
-            f"The work on ledger {ledger} resolved over a day ago; its worktree is still kept: {reason}. Clear the "
-            f"blocker, remove it by hand, or archive this card to keep it.\nOpen Herdr workspace "
-            f"{link.get('workspace')}.")
+        title, block = f"Work finished · workspace kept in {name}", (
+            f"The work resolved over a day ago, but cleanup kept its workspace: {reason}.\n"
+            f"- Clear that blocker: cleanup then removes the workspace by itself. The branch is kept.\n"
+            f"- Remove the workspace by hand, once nothing in it is needed.\n{KEEP}\n"
+            f"Herdr workspace: {link.get('workspace')}.")
     elif stranded:
         body = (f"Cleanup notice. {where}\n{reason}.\nDecision for the human: archive ledger {ledger} to retire "
                 f"this workspace (cleanup then removes it; the branch stays), or keep it.")
-        title, block = f"Closed pull request in {name}", (f"{reason}. Archive ledger {ledger} to retire this "
-                                                          f"workspace, or keep it.\nOpen Herdr workspace {link['workspace']}.")
+        title, block = f"Workspace kept · pull request closed in {name}", (
+            f"{reason}.\n- Retire the run: archive its ledger card {ledger}. That ends its open prompts, deletes its "
+            f"Telegram topic (on Slack, marks its thread archived), and lets cleanup remove the workspace. The branch "
+            f"is kept.\n{KEEP}\nHerdr workspace: {link['workspace']}.")
     else:
         body = (f"Cleanup warning. {where}\nNot removed: {reason}.\nDecision for the human: push or commit the "
                 f"work, discard it, or keep the workspace? Cleanup waits until the checkout is clean and pushed.")
-        title, block = f"Unsaved work in {name}", (f"Cleanup kept a workspace because it has unsaved work: {reason}. "
-                                                   f"Push or commit it, discard it, or keep the workspace?\nOpen "
-                                                   f"Herdr workspace {link['workspace']}.")
+        title, block = f"Workspace kept · unsaved work in {name}", (
+            f"Cleanup kept a finished workspace because it has unsaved work: {reason}.\n"
+            f"- Commit and push it: cleanup then removes the workspace by itself. The branch is kept.\n"
+            f"- Discard it in the workspace: cleanup then removes the workspace. The branch is kept.\n{KEEP}\n"
+            f"Herdr workspace: {link['workspace']}.")
     card = json.loads(core.kanban(
         "create", "--body", f"{body}\n{ASK_LINE}\n{core.PROVENANCE}",
         "--idempotency-key", f"muster-cleanup:{signature}", "--created-by", "muster-cleanup", "--json",

@@ -218,10 +218,11 @@ def rereview(ledger, run=None):
         "create", "--body",
         f"Revised after a send-back. ledger {ledger} | {pr['url']} | head {head} | review cycle {cycle}\n"
         + core.PROVENANCE, "--idempotency-key", f"review:{ledger}:{head}", "--created-by", core.CREATED_BY, "--json",
-        "--", f"{run.get('title') or run['repo'] + '/' + run['branch']}: revised, ready for re-review"))
+        "--", f"{short(run)}: {progress.pr_name(pr['url'])} revised"))
     if card["status"] == "ready":
         core.subscribe(card["id"], ledger)
-        core.kanban("complete", card["id"], "--summary", f"Revised, ready for re-review: {pr['url']} at {head[:7]}; {core.REVIEW_CUE}")
+        core.kanban("complete", card["id"], "--summary", f"{progress.pr_name(pr['url'])} updated to {head[:7]} · "
+                    f"{who()} is re-reviewing. No action needed. {pr['url']}")
         events.expect(card["id"], "done", "rereview")
         progress.touch(ledger, "review", pr["url"])  # only when the card is made: a replay keeps "since"
     for old in for_ledger(ledger, "build"):  # a recommendation for this head is the current one: keep it

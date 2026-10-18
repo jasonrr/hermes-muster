@@ -12,12 +12,12 @@ The muster board (the `board` setting) holds five kinds of card:
 - A WAIT card, titled with the issue's (or run's) title. One is opened each time the agent stops to wait
   for the human; its body names the ledger card, the issue or branch, the pane and the worktree. It is
   archived when the question is answered.
-- A REVIEW card, titled "<title>: revised, ready for re-review": the agent pushed a revision after the
+- A REVIEW card, titled "<title>: PR #<n> revised": the agent pushed a revision after the
   human sent a build back. Its body names the ledger, the pull request and the new head.
 - A DESIGN REVIEW card, titled "<title>: Proposal v<n> <sha>, ready for design review": the coding agent
   published that version of its design or plan. Its body names the ledger and holds that version's full text.
   It wakes you without pinging the human: your recommendation is their message.
-- A CLEANUP WARNING card, titled "Unsaved work in <repo>": cleanup kept a finished workspace because it has
+- A CLEANUP WARNING card, titled "Workspace kept · …" or "Work finished · workspace kept …": cleanup kept a workspace because it has
   unsaved work and no open pull request from its branch. Its body names the workspace, repository, branch, worktree and the reason.
 
 Questions and permission prompts reach the human as their own message (Telegram or Slack), with every option as a
@@ -44,10 +44,11 @@ under it buries the one they must answer.
    ping. A session that ended without a pull request: say so.
    Triage (the ping says "routed to triage"): say the card needs the human's attention and quote the
    reason. Do not try to move it.
-   Cleanup warning (the body says "This card is a cleanup warning"): give the workspace, branch and reason
-   from its body, and ask the human to choose: push or commit the work, discard it, or keep the workspace.
-   Cleanup never pushes, commits, discards or removes anything for them.
-3. Completed ledger ("Ready for review") or completed review card: review the build, then recommend.
+   Cleanup warning (the body says "This card is a cleanup warning"): the ping already gives the reason and
+   what each choice does. Reply `[SILENT]` unless you know something it lacks; never repeat it. Cleanup
+   never pushes, commits, discards or removes anything for them.
+3. Completed ledger (its summary says "PR #<n> opened") or completed review card: review the build, then
+   recommend. The ping already told the human you are reviewing; say nothing until you recommend.
    - Read the pull request: `gh pr view <url> --json state,headRefOid,baseRefName,isDraft,mergeStateStatus`,
      `gh pr diff <url>`, `gh pr checks <url>`, and the code around the change in the worktree.
    - Read the repository's production note (`<notes_dir>/<owner>__<repo>.md`) for what a merge deploys.

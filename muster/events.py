@@ -411,7 +411,7 @@ def move(event, git_dir, link, detail, key, ask=None, proposal=None, bridged=Fal
             # One line: the board keeps a completion's first summary line only. The agent reports done
             # right after opening its pull request; nothing here has merged or deployed it.
             core.kanban("complete", card, "--summary",
-                        f"Ready for review: {detail} (open; not merged or deployed); {core.REVIEW_CUE}")
+                        progress.opened(detail))
             expect(card, "done", event)
             progress.touch(card, "review", detail)
         elif now != "done":

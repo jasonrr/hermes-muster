@@ -431,7 +431,7 @@ def test_unsaved_work_is_kept_and_warns_the_human_once(world, dirty, unpushed, r
     assert removes(world) == []
     [(card, data)] = world.cards.items()
     assert data["status"] == "blocked" and world.subscribed == [card] and world.ledgers == ["t_1"]  # its run's topic
-    assert reason in data["reason"] and data["reason"].endswith("\nOpen Herdr workspace wR.")
+    assert reason in data["reason"] and data["reason"].endswith("\nHerdr workspace: wR.")
     assert "muster/15" in data["body"] and "muster/15" not in data["reason"]  # provenance stays on the card
     assert "Decision for the human" in data["body"] and world.path in data["body"]
     for _ in range(24):  # two more hours of cron: no second page
@@ -1096,7 +1096,7 @@ def test_an_archived_run_with_unsaved_work_warns_and_is_never_removed(world):
     world.status = " M a.py\n"
     window(world)
     assert removes(world) == []
-    assert [c["title"] for k, c in world.cards.items() if k != "t_1"] == ["Unsaved work in r"]
+    assert [c["title"] for k, c in world.cards.items() if k != "t_1"] == ["Workspace kept · unsaved work in r"]
 
 
 def test_unarchiving_the_ledger_during_the_window_keeps_the_worktree(world):
@@ -1158,7 +1158,7 @@ def test_a_stranded_run_gets_one_notice_to_archive_its_ledger(world):
     window(world)
     window(world)
     notices = [c for k, c in world.cards.items() if k != "t_1"]
-    assert len(notices) == 1 and notices[0]["title"] == "Closed pull request in r"
+    assert len(notices) == 1 and notices[0]["title"] == "Workspace kept · pull request closed in r"
     assert "PR #16 closed unmerged" in notices[0]["body"] and "archive ledger t_1" in notices[0]["body"]
     assert removes(world) == [] and world.cards["t_1"]["status"] == "done"
     world.cards["t_1"]["status"] = "archived"  # the human retires it
