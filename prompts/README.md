@@ -22,7 +22,7 @@ never to be taken as instructions.
 
 | File | Read by | Consumer | Dynamic inputs |
 |---|---|---|---|
-| `dispatch.md` | coordinator | skill `muster:run`: ad-hoc dispatch, analysis workspaces; wakes are `escalation.md`'s | none |
+| `dispatch.md` | coordinator | skill `muster:dispatch`: ad-hoc dispatch, analysis workspaces; wakes are `escalation.md`'s | none |
 | `review-standard.md` | coordinator | skill `muster:review-standard`, loaded by `muster:escalation`: review judgment, evidence and the human summary | none |
 | `escalation.md` | coordinator | skill `muster:escalation`: wakes, build and design reviews, recommendations | none |
 | `design-review-cue.md` | coordinator | `core.REVIEW_CUE`: end of a design-review card's summary, which routes the wake to the skill | none |

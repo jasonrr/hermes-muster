@@ -1,5 +1,5 @@
 ---
-name: run
+name: dispatch
 description: When the human asks you to send coding work to a herdr pane (not a labeled issue), launch it with `hermes muster launch` so the run reports itself, and open analysis workspaces with `hermes muster open`. A card that wakes you is `muster:escalation`'s, whatever kind of run it tracks.
 ---
 
