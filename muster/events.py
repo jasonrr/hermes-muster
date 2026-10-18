@@ -514,6 +514,11 @@ def hook(args):
         return propose(link["card"], args.url, git_dir=str(git_dir), link=link)
     if event == "permission":  # before the gate and the outbox: it waits, and prints only a decision
         return bridge.wait(git_dir, link, payload)
+    if event == "prompt":
+        try:  # before the early returns: the pane may have ended a dialog muster still holds open
+            bridge.settle(link["card"], payload)
+        except Exception as caught:  # noqa: BLE001 - a hook never fails the agent
+            log(f"settle card {link['card']}: {' '.join(str(caught).split())}")
     if event == "prompt" and link.get("launch_dir"):
         with contextlib.suppress(OSError, ValueError):  # the launch's evidence that its brief arrived
             core.prompt_seen(link["launch_dir"], payload)

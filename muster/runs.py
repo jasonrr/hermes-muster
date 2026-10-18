@@ -594,6 +594,10 @@ def hook(args):
             core.prepare_env()
             return bridge.wait(run_dir(card), load(card), payload)
         if event == "prompt":
+            try:  # before the early return: the pane may have ended a dialog muster still holds open
+                bridge.settle(card, payload)
+            except Exception as error:  # noqa: BLE001 - a hook never fails the agent
+                log(f"{card} hook settle: {error}")
             core.prompt_seen(run_dir(card), payload)  # the launch's evidence that its brief arrived
         if event == "prompt" and not (run_dir(card) / core.WAIT_KIND).exists() and not pending(card):
             return 0  # every PostToolUse lands here: nothing open, nothing queued, nothing to do

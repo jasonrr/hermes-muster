@@ -1014,3 +1014,10 @@ def test_launch_asks_for_the_runs_topic_before_subscribing_in_it(board, clone, m
                                                                       real(card, ledger)))
     card = launch(clone)["card"]
     assert order[:2] == [("topic", card, "o/r", "Fix the thing", "fix/x"), ("subscribe", card, card)]
+
+
+def test_the_run_hook_settles_a_question_answered_in_the_pane(board, run1, monkeypatch):
+    rid = decisions.create("permission", CARD, card={"command": "ls", "why": "x"})["id"]
+    fire(monkeypatch, "prompt", hook_event_name="UserPromptSubmit", prompt="carry on")
+    assert decisions.load(rid)["outcome"] == "No longer waiting: the pane moved on"
+    assert board["calls"] == []

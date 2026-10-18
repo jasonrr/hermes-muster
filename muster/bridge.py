@@ -7,7 +7,8 @@ dialog to decide, so every failure path prints nothing: muster never allows on e
 nobody answers in PERMISSION_DEADLINE gets an explicit deny (Hermes's own approvals.timeout usually denies first).
 
 How a request ends without a channel answer, all from Claude itself:
-- the pane answers first (or the session stops): Claude sends the hook SIGTERM (seen live, 2.1.295);
+- the pane answers a permission prompt first (or the session stops): Claude sends the hook SIGTERM (seen live,
+  2.1.295); not for an AskUserQuestion (2.1.302, #42): its PostToolUse, or the next prompt, ends it (settle);
 - the hook dies outright: it stops writing `alive`, and the gateway stales the request after ALIVE_MAX.
 
 A subagent's prompt (the payload names `agent_id`) differs: Claude shows its dialog only after this hook
@@ -200,3 +201,33 @@ def deliver(req, tool_input):
 
 def emit(chosen):
     print(json.dumps({"hookSpecificOutput": {"hookEventName": "PermissionRequest", "decision": chosen}}), flush=True)
+
+
+def settle(ledger, payload):
+    """A `prompt` hook's evidence that the pane ended a dialog the bridge still holds: its request is ended here,
+    and the waiting hook, seeing it no longer open, returns printing nothing. Only `open` moves: an `answered` one
+    is bridge.deliver's to report. Claude does not SIGTERM the hook when the pane answers an AskUserQuestion
+    (seen live, 2.1.302: #42), so without this the request stays open and every topic reopen asks it again.
+
+    - PostToolUse of AskUserQuestion: the run's open requests with these questions are done, "Answered in the
+      pane" (a channel's partial answers stay; none are invented). PostToolUseFailure: stale, "Cancelled in the
+      pane". Only one main-agent dialog is up at a time, so an older copy of the same questions is dead too. A
+      subagent's event is ignored: a request records the subagent's type, not which one asked, so two parallel
+      workers asking the same questions are indistinguishable; their requests end by delivery or liveness.
+    - UserPromptSubmit: no prompt is typed while a main-agent dialog is up, so the run's open main-agent questions
+      and permission prompts are stale (an Esc fires neither event above). A subagent's dialog shows only after its
+      hook returns, so the pane cannot have moved past it.
+    """
+    event = payload.get("hook_event_name")
+    if event == "UserPromptSubmit":
+        ended, to, outcome = (lambda r: r.get("kind") in ("question", "permission") and not r.get("subagent"),
+                              "stale", "No longer waiting: the pane moved on")
+    elif event in ("PostToolUse", "PostToolUseFailure") and not payload.get("agent_id") and claude.ask(payload):
+        questions = [normalize(q) for q in claude.ask(payload)]
+        ended = lambda r: r.get("kind") == "question" and r.get("questions") == questions and not r.get("subagent")  # noqa: E731
+        to, outcome = ("done", "Answered in the pane") if event == "PostToolUse" else ("stale", "Cancelled in the pane")
+    else:
+        return
+    for req in decisions.open_requests():
+        if req.get("ledger") == ledger and req.get("status") == "open" and ended(req):
+            decisions.transition(req["id"], ("open",), to, outcome=outcome)

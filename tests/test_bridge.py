@@ -291,3 +291,111 @@ def test_an_unreadable_answer_prints_nothing(tmp_path, capsys):
     bridge.wait(tmp_path, LINK, ASK)
     thread.join()
     assert out(capsys) is None
+
+
+# -- settle: the pane resolved a dialog the hook still holds (#42) ---------------------------------------
+
+TWO = [{"question": "Approve v1?", "header": "Approval", "multiSelect": False,
+        "options": [{"label": "Approve", "description": ""}, {"label": "Revise", "description": ""}]},
+       {"question": "Track it?", "header": "Tracking", "multiSelect": False,
+        "options": [{"label": "Yes", "description": ""}, {"label": "No", "description": ""}]}]
+
+
+def asked(questions=TWO, ledger="t_led", **fields):
+    qs = [bridge.normalize(q) for q in questions]
+    return decisions.create("question", ledger, questions=qs, choices=[bridge.labels(q["options"]) for q in qs],
+                            alive=time.time(), **fields)
+
+
+def used(event, questions=TWO, **extra):
+    """A PostToolUse(Failure) payload: Claude adds the answers it used beside the questions."""
+    return {"hook_event_name": event, "tool_name": "AskUserQuestion", "cwd": "/wt",
+            "tool_input": {"questions": questions, "answers": {q["question"]: "x" for q in questions}}, **extra}
+
+
+def test_a_question_answered_in_the_pane_is_done_and_never_presented_again(tmp_path):
+    rid = asked()["id"]
+    decisions.answer_part(rid, 1, ["Yes", [0]], 2, lambda parts: parts)  # one part came by the channel first
+    bridge.settle("t_led", used("PostToolUse"))
+    req = decisions.load(rid)  # read from disk: what a restarted gateway sees
+    assert (req["status"], req["outcome"]) == ("done", "Answered in the pane")
+    assert req["partial"] == {"1": ["Yes", [0]]} and "answer" not in req  # nothing invented for question 0
+    assert decisions.open_requests() == []  # a topic reopen re-presents only open requests
+    assert decisions.answer_part(rid, 0, ["Approve", [0]], 2, lambda parts: parts)[1] == "closed"  # an old tap
+
+
+def test_the_waiting_hook_exits_silently_once_the_pane_answer_settles_it(tmp_path, capsys):
+    ask = {**ASK, "tool_input": {"questions": TWO}}
+
+    def pane():
+        while not decisions.open_requests():
+            time.sleep(0.01)
+        bridge.settle("t_led", used("PostToolUse"))
+    thread = threading.Thread(target=pane)
+    thread.start()
+    bridge.wait(tmp_path, LINK, ask)  # returns: no SIGTERM came (Claude 2.1.302, #42)
+    thread.join()
+    assert out(capsys) is None and only()["outcome"] == "Answered in the pane"
+
+
+def test_a_question_cancelled_in_the_pane_is_stale(tmp_path):
+    rid = asked()["id"]
+    bridge.settle("t_led", used("PostToolUseFailure", error="User rejected"))
+    assert (decisions.load(rid)["status"], decisions.load(rid)["outcome"]) == ("stale", "Cancelled in the pane")
+
+
+def test_another_question_or_an_answered_one_is_left_alone(tmp_path):
+    pending = asked()["id"]
+    sent = asked(TWO[:1])["id"]
+    decisions.transition(sent, ("open",), "answered", answer={"Approve v1?": "Approve"})
+    bridge.settle("t_led", used("PostToolUse", TWO[:1]))  # bridge.deliver reports this one "Sent to Claude"
+    assert decisions.load(sent)["status"] == "answered"
+    assert decisions.load(pending)["status"] == "open"  # a different question: still answerable
+
+
+def test_every_open_copy_of_the_question_settles_and_a_later_one_is_open(tmp_path):
+    orphan, live = asked()["id"], asked()["id"]  # only one main-agent dialog is up at a time: the older is dead
+    other = asked(ledger="t_other")["id"]
+    sub = asked(subagent="worker")["id"]
+    bridge.settle("t_led", used("PostToolUse"))
+    assert [decisions.load(r)["status"] for r in (orphan, live, other, sub)] == ["done", "done", "open", "open"]
+    assert asked()["status"] == "open"  # a new question on resumed work is presented as usual
+
+
+@pytest.mark.parametrize("event", ["PostToolUse", "PostToolUseFailure"])
+def test_one_workers_answer_never_settles_a_parallel_workers_same_question(tmp_path, event):
+    # two workers of one type ask the same questions; a request records the type, not which worker asked
+    a, b, main = asked(subagent="worker")["id"], asked(subagent="worker")["id"], asked()["id"]
+    bridge.settle("t_led", used(event, agent_id="a1", agent_type="worker"))
+    assert [decisions.load(r)["status"] for r in (a, b, main)] == ["open", "open", "open"]
+    assert decisions.answer_part(b, 0, ["Approve", [0]], 2, lambda parts: parts)[1] == "accepted"  # B answerable
+
+
+def test_a_delivered_workers_post_tool_use_leaves_the_other_worker_open(tmp_path):
+    a, b = asked(subagent="worker")["id"], asked(subagent="worker")["id"]
+    decisions.transition(a, ("open",), "answered", answer={"Approve v1?": "Approve", "Track it?": "Yes"})
+    decisions.transition(a, ("answered",), "done", outcome="Sent to Claude")  # bridge.deliver
+    bridge.settle("t_led", used("PostToolUse", agent_id="a1", agent_type="worker"))
+    assert (decisions.load(a)["outcome"], decisions.load(b)["status"]) == ("Sent to Claude", "open")
+
+
+def test_a_new_prompt_ends_every_main_agent_dialog_of_the_run(tmp_path):
+    question = asked()["id"]
+    permission = decisions.create("permission", "t_led", card={"command": "ls", "why": "x"}, alive=time.time())["id"]
+    sub = asked(subagent="worker")["id"]
+    other = asked(ledger="t_other")["id"]
+    bridge.settle("t_led", {"hook_event_name": "UserPromptSubmit", "prompt": "carry on"})
+    assert [decisions.load(r)["status"] for r in (question, permission, sub, other)] == ["stale", "stale", "open", "open"]
+    assert decisions.load(question)["outcome"] == "No longer waiting: the pane moved on"
+
+
+def test_any_other_tool_use_reads_no_request(tmp_path, monkeypatch):
+    monkeypatch.setattr(decisions, "open_requests", lambda: 1 / 0)
+    bridge.settle("t_led", {"hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_input": {"command": "ls"}})
+
+
+def test_a_request_file_without_a_kind_does_not_stop_the_others_settling(tmp_path):
+    core.save_json(decisions.root() / "0bad.json", {"id": "0bad", "ledger": "t_led", "status": "open", "created_at": 0})
+    rid = asked()["id"]
+    bridge.settle("t_led", {"hook_event_name": "UserPromptSubmit", "prompt": "carry on"})
+    assert decisions.load(rid)["status"] == "stale"
