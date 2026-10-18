@@ -1015,3 +1015,34 @@ def test_a_bundled_question_keeps_its_other_question_live_while_the_review_answe
     assert decisions.load(q["id"])["answer"] == {"Which store?": "Beta",
                                                  "Implement plan v2?": "Approve: the human approved Proposal v2 "
                                                                        "abcdef012345."}
+
+
+def test_five_parents_scan_without_opening_a_thread(monkeypatch):
+    """Acceptance: from the channel alone, each run's task, state, whether it needs you, and its link."""
+    monkeypatch.setitem(config.settings, "repos", ["jasonrr/hermes-muster"])
+    monkeypatch.setitem(config.settings, "coordinator_name", "Ella")
+    runs_ = [("t_dff6c76e", 46, "Show confirmed build start and lightweight agent activity status",
+              "Needs your decision: plan v2 · since 14:05"),
+             ("t_903749e7", 42, "Questions resolved in herdr reappear when their Telegram topic is reopened",
+              "Working · last activity 3 min ago (14:37)"),
+             ("t_aa11bb22", 49, "muster: fix flaky cleanup test", "PR #51 opened · Ella is reviewing · no action needed"),
+             ("t_cc33dd44", None, "", "Quiet 22 min · last tool 14:15 · long tools can be quiet"),
+             ("t_ee55ff66", 41, "Slack thread parents", "Finished · PR #44 merged")]
+    lines = []
+    for ledger, issue, title, state in runs_:
+        if issue:
+            core.save_json(core.intake_dir() / ledger / "launch.json",
+                           {"card": ledger, "repo": "jasonrr/hermes-muster", "issue": issue, "title": title})
+        else:
+            core.save_json(config.data_dir() / "runs" / ledger / "run.json",
+                           {"repo": "jasonrr/hermes-muster", "branch": "muster/bump-herdr", "title": title})
+        lines.append(slack.headline(ledger, state))
+    assert lines[0] == ("*Show confirmed build start and lightweight…*\nNeeds your decision: plan v2 · since 14:05 · "
+                        "<https://github.com/jasonrr/hermes-muster/issues/46|Issue #46>")
+    assert lines[2].startswith("*fix flaky cleanup test*\nPR #51 opened · Ella is reviewing · no action needed")
+    assert lines[3] == "*muster/bump-herdr*\nQuiet 22 min · last tool 14:15 · long tools can be quiet"
+    for line in lines:
+        title, state = line.split("\n")
+        assert title.startswith("*") and len(title) <= 52 and "**" not in line
+        assert "t_" not in line and "muster ·" not in line and "hermes-muster#" not in line
+    assert sum("Needs your decision" in line for line in lines) == 1  # the one run that needs you stands out
