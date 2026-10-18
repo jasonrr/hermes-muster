@@ -7,6 +7,7 @@ import json
 import pytest
 
 import muster.core as core
+import muster.progress as progress
 from tests.fake_herdr import World
 
 DESTRUCTIVE = ("reset", "clean", "stash", "checkout", "branch", "worktree remove", "push")
@@ -80,6 +81,9 @@ def test_start_without_a_task_waits_for_idle_then_submits_the_brief_and_sees_it_
     assert json.loads(prompt[4].split("Task brief (JSON): ", 1)[1]) == "Do the thing.\n"
     assert world.calls.index(start) < world.calls.index(prompt)
     assert last(world)["prompt"]["state"] == "working" and last(world)["step"] == "done"
+    launched = json.loads((progress.activity("t_card") / "launched").read_text())
+    assert launched == {"dir": str(world.dir), "sha256": rec["sha256"]}
+    assert core.seen_at(world.dir, rec["sha256"])  # the brief's own receipt, which the message shows
 
 
 def test_every_side_effect_is_preceded_by_a_saved_record_of_it(world):

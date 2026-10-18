@@ -119,3 +119,8 @@
 
 - A test that patches the conversation clock (`shared.now`) for `closed_at` while requests stamp `created_at` with the real `time.time()` → every request looks newer than any close, so an "older than the close never reopens" test passed through the reopen path; set the patched clock from `time.time()` where both timestamps meet.
 - A follow-up step after a terminal state (unsubscribing a `deleted` run's cards), gated on a new field → every older record lacks the field; gate on `unsubscribed is False`, not falsiness, or each old deleted reference would be stepped again.
+
+## run progress (issue #46, 2026-10-17)
+
+- Ordering "review-ready" against the newest tool event → the agent's own `hook done` runs in a Bash tool whose PostToolUse lands after it, so the run would never read ready; order it against the next human prompt (a send-back), not tool events.
+- A "never repost" guard written as `saved.get("lost_thread") == thread` → with no topics the thread is `None`, so every main-chat run matched and was never posted (caught by the plan attack); compare a stored `{"thread": …}` record, never a bare value that may be None.

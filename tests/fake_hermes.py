@@ -237,6 +237,8 @@ class Adapter:
         self.bot = None  # the Bot whose forum the topics live in (Application.bot)
         self.creates = []  # scripted create_handoff_thread outcomes: "ok", "lost" (made, no reply) or "fail"
         self.notes = []  # send(): (chat, text, thread)
+        self.note_ids = []  # send(): the message id each note got, from the same counter as every prompt
+        self.fail_notes = self.raise_notes = 0  # the next n sends return a failure / raise (a lost reply)
 
     @staticmethod
     def _metadata_thread_id(metadata):
@@ -257,8 +259,15 @@ class Adapter:
         return None if outcome == "lost" else str(thread)
 
     async def send(self, chat_id, content, reply_to=None, metadata=None):
+        if self.fail_notes:
+            self.fail_notes -= 1
+            return SimpleNamespace(success=False, message_id=None, error="boom")
+        if self.raise_notes:
+            self.raise_notes -= 1
+            raise TimeoutError("timed out")
         self.notes.append((chat_id, content, self.landing(metadata)))
         self._n += 1
+        self.note_ids.append(str(self._n))
         return SimpleNamespace(success=True, message_id=str(self._n), error=None)
 
     async def send_exec_approval(self, chat_id, command, session_key, description=None, metadata=None,

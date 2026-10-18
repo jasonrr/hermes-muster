@@ -38,7 +38,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import bridge, claude, config, core, decisions, events
+from . import bridge, claude, config, core, decisions, events, progress
 
 UNACKED_AFTER = 15 * 60
 IDLE_AFTER = 10 * 60
@@ -139,6 +139,8 @@ def complete(run, pr):
         core.kanban("complete", card, "--summary", summary)
         events.expect(card, "done", "complete")
     events.close_wait(run_dir(card), "complete")
+    if pr["state"] != "MERGED":  # merged is no longer waiting for a review
+        progress.touch(card, "review", pr["url"])
     return card
 
 
@@ -590,6 +592,7 @@ def hook(args):
             payload = {}
         if claude.ignore(event, payload):
             return 0  # /clear ends a session, but the agent keeps working in the same pane
+        progress.hooked(card, event, payload)  # the status message's evidence; never raises
         if event == "permission":  # before the gate and the outbox: it waits, and prints only a decision
             core.prepare_env()
             return bridge.wait(run_dir(card), load(card), payload)

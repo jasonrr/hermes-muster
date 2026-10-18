@@ -183,6 +183,29 @@ Opt-in (`notify_topics: true`). Each run (an issue or an ad-hoc launch) gets one
 - **An archived run's card subscriptions are removed** (`hermes kanban notify-unsubscribe`, on both platforms), so its pings stop landing in General or the thread. A removal that fails is retried.
 - On Slack, see [Slack](#slack): the same states, with a thread parent in place of the topic.
 
+## Run progress
+
+Each run launched with this version gets **one status message**, edited in place and never posted again, so you can tell a started build from a quiet or waiting one without asking. On Slack with a run thread it is the thread's parent (`muster · <run>  ⏳ running`, with the line under it); on Telegram, and on Slack without a thread, muster posts it once in the run's topic or the main chat when the brief is sent. Later questions land below it.
+
+What it says, and the evidence for each (the pane's own hooks; never herdr's screen state, never pane content):
+
+| Line | Evidence |
+|---|---|
+| 🚀 Launched 14:01 · brief receipt not confirmed yet. | muster sent the brief; the agent's prompt hook has not reported it, and nothing stronger (a question, a review, a turn end) was seen |
+| Brief received 14:02 · no tool activity observed yet | the UserPromptSubmit hook's hash of the brief (its own time, not later prompts') |
+| … · last tool activity 3 min ago (14:37, as of 14:40) | the newest PostToolUse / PostToolUseFailure (main agent or a subagent) |
+| … · no new activity observed for 40 min (last tool 14:37). Long tools can be quiet; muster takes no action. | no tool finished for 15 min. Unknown, not a failure |
+| ✋ Waiting for you since 14:41 (1 open) · … | an open question or permission request of the run (the same ones muster shows you); only their own answer, settle or liveness paths end them, so another worker's tool does not clear it |
+| 🔍 Ready for review: <PR> (since 15:02) | a verified pull request: an issue run's `hook done`, an ad-hoc run's verified completion, or a verified revision after a send-back. A later prompt (a send-back) ends it |
+| 💬 Turn ended at 15:20: the agent waits at its prompt (no question open). | the Stop hook, with nothing newer |
+| ⛔ Session ended at 15:30. | the SessionEnd hook (not `/clear`) |
+| ✅ Finished: pull request merged. / Archived. | cleanup saw the merge (run topics) / the ledger reads archived. Final: never edited again |
+
+- **Cadence.** An edit when the line's state changes; while the same state only ages its times, at most one edit every 5 minutes. No heartbeat, no polling of GitHub or the pane. An edit never moves an observed time: only hooks and verified completions write them (`<data dir>/runs/<ledger>/activity/`, one file per kind, its mtime the time). `<data dir>/runs/<ledger>/progress.json` keeps the message id.
+- **Never acts.** A quiet or unknown status triggers no retry, redispatch, approval, merge or cleanup.
+- **Restarts and replays** post nothing new. A post or edit Telegram or Slack refused is tried again a minute later (a refused final edit too: the message is final only once it shows it); one whose reply was lost (or a gateway that died mid-send) is not, so there is never a second message, and that run has none. A run archived or finished before its message was ever shown gets none. A remade topic gets one new message.
+- **Gaps.** A long tool (a test suite) fires no hook until it ends. A plain-text question reads as "Turn ended". An MCP elicitation dialog, or a subagent's permission prompt while the gateway is down, has no request, so it does not read as waiting (its Hermes ping still goes out). Between your tap and the agent taking the answer the line already leaves "Waiting". Without `notify_topics` nothing records the merge, so the line stays "Ready for review" until the ledger is archived; an ad-hoc run whose pull request was already merged when it finished reads "Turn ended". On a Slack thread the final state is the parent's own `✅ done` / `archived`. Panes launched before the upgrade get no message. A Telegram send that reports failure after delivering would be retried once a minute (as muster's prompts would). Times are the gateway host's local clock.
+
 ## Ad-hoc runs
 
 For coding work that is not a labeled issue:

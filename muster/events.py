@@ -47,7 +47,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import bridge, claude, config, core, decisions
+from . import bridge, claude, config, core, decisions, progress
 
 STALE_CLAIM = 120  # s: an empty wait marker this old is from a hook killed at its 30 s timeout
 PR_URL = re.compile(r"https://github\.com/([\w.-]+/[\w.-]+)/pull/\d+")
@@ -411,6 +411,7 @@ def move(event, git_dir, link, detail, key, ask=None, proposal=None, bridged=Fal
             core.kanban("complete", card, "--summary",
                         f"Ready for review: {detail} (open; not merged or deployed); {core.REVIEW_CUE}")
             expect(card, "done", event)
+            progress.touch(card, "review", detail)
         elif now != "done":
             raise core.CommandError(f"done: card {card} is {now}; complete it by hand")
         else:  # already done: a revision after a send-back goes back to review
@@ -475,8 +476,6 @@ def hook(args):
         from . import runs  # lazy: runs imports events at module level
         return runs.hook(args)
     event = args.event
-    if event == "stop":
-        return 0  # fires at every turn end; an issue run has nothing to do with it
     payload = {}
     if event not in AGENT_RUN:  # run by the agent from its shell: stdin is no hook payload
         try:
@@ -508,6 +507,9 @@ def hook(args):
             return 1
         return 0
     git_dir, link = found
+    progress.hooked(link.get("card"), event, payload)  # the status message's evidence; never raises
+    if event == "stop":
+        return 0  # fires at every turn end; an issue run has nothing else to do with it
     if event == "duplicate":
         return duplicate(link, args.url, getattr(args, "verdict", None))
     if event == "propose":

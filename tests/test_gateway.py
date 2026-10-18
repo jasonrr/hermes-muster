@@ -1945,3 +1945,195 @@ def test_saved_ids_with_no_platform_are_still_telegrams(hermes):
     telegram.track(req)
     assert telegram.T.messages == {"901": (req["id"], 0)}
     assert run(telegram.outcome(req)) is True and [m for _, m, _ in telegram.T.adapter.edits] == ["901"]
+
+
+# -- the run's status message (#46) ---------------------------------------------------------------
+
+import os  # noqa: E402
+
+from muster import events, progress  # noqa: E402
+
+P = "t_p1"
+NOW = 1_800_000_000.0
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    t = [NOW]
+    monkeypatch.setattr(shared, "now", lambda: t[0])
+    monkeypatch.setattr(events, "status", lambda card: "ready")  # the board read for a run with no topic
+    return t
+
+
+def at(kind, t, ledger=P):
+    path = progress.activity(ledger) / kind
+    path.touch()
+    os.utime(path, (t, t))
+
+
+def launched(t=NOW - 60, received=True, ledger=P):
+    directory = config.data_dir() / "intake" / ledger
+    directory.mkdir(parents=True, exist_ok=True)
+    progress.launched(ledger, directory, "sha")
+    at("launched", t, ledger)
+    if received:
+        (directory / "prompt-seen.jsonl").write_text(f'{{"sha256": "sha", "at": {int(t)}}}\n')
+
+
+def statuses(adapter=None):
+    return [n for n in (adapter or telegram.T.adapter).notes if n[1].startswith("muster · ")]
+
+
+def mtimes():
+    return {p.name: p.stat().st_mtime for p in progress.activity(P).iterdir()}
+
+
+def test_a_confirmed_start_posts_one_status_message_and_a_rescan_posts_nothing(clock):
+    launched()
+    run(gateway.scan())
+    run(gateway.scan())
+    [(chat, text, thread)] = statuses()
+    assert (chat, thread) == (DM, None)
+    assert text == f"muster · {P}\nBrief received {progress.hm(NOW - 60)} · no tool activity observed yet"
+    assert telegram.T.adapter.edits == []
+    assert progress.load(P)["key"] == "received"
+
+
+def test_launch_without_confirmed_receipt_says_so_then_turns_into_received(clock):
+    launched(received=False)
+    run(gateway.scan())
+    assert "brief receipt not confirmed yet" in statuses()[0][1]
+    (config.data_dir() / "intake" / P / "prompt-seen.jsonl").write_text('{"sha256": "sha", "at": 1}\n')
+    run(gateway.scan())
+    assert len(statuses()) == 1 and "Brief received" in telegram.T.adapter.edits[-1][2]
+
+
+def test_activity_times_age_at_most_every_five_minutes_and_no_edit_moves_them(clock):
+    launched()
+    run(gateway.scan())
+    at("tool", NOW - 30)
+    run(gateway.scan())  # received -> working: a new state, edited at once
+    assert len(telegram.T.adapter.edits) == 1 and "last tool activity 0 min ago" in telegram.T.adapter.edits[0][2]
+    before = mtimes()
+    clock[0] = NOW + 120
+    run(gateway.scan())
+    assert len(telegram.T.adapter.edits) == 1  # the same state inside five minutes: nothing
+    clock[0] = NOW + 300
+    run(gateway.scan())
+    assert len(telegram.T.adapter.edits) == 2 and "last tool activity 5 min ago" in telegram.T.adapter.edits[1][2]
+    clock[0] = NOW + 16 * 60
+    run(gateway.scan())  # quiet is its own state: at once, and never called a failure
+    assert "no new activity observed for 16 min" in telegram.T.adapter.edits[2][2]
+    assert mtimes() == before and len(statuses()) == 1
+
+
+def test_a_question_shows_waiting_at_once_below_nothing_and_its_answer_ends_it(clock):
+    launched()
+    run(gateway.scan())
+    [status_id] = telegram.T.adapter.note_ids
+    req = ask(ledger=P)
+    at("tool", NOW)  # a parallel worker's tool: the question is still open
+    run(gateway.scan())
+    assert "✋ Waiting for you since" in telegram.T.adapter.edits[-1][2] and "(1 open)" in telegram.T.adapter.edits[-1][2]
+    assert int(sent()[-1]["mid"]) > int(status_id)  # the question lands below the status message, never above
+    decisions.transition(req["id"], ("open",), "done", outcome="Sent to Claude")
+    run(gateway.scan())
+    [*_, last] = [text for _, mid, text in telegram.T.adapter.edits if mid == status_id]  # not the question's own edit
+    assert "Waiting" not in last and "last tool activity" in last
+
+
+def test_a_restart_never_posts_a_second_status_message(clock, monkeypatch):
+    launched()
+    run(gateway.scan())
+    monkeypatch.setattr(gateway, "S", gateway.State())
+    run(gateway.scan())
+    assert len(statuses()) == 1
+
+
+def test_a_refused_post_is_retried_after_a_minute(clock):
+    launched()
+    telegram.T.adapter.fail_notes = 1
+    run(gateway.scan())
+    run(gateway.scan())
+    assert statuses() == [] and progress.load(P)["retry_at"] == NOW + progress.RETRY
+    clock[0] = NOW + progress.RETRY
+    run(gateway.scan())
+    assert len(statuses()) == 1
+
+
+def test_a_post_whose_reply_was_lost_is_never_repeated(clock):
+    launched()
+    telegram.T.adapter.raise_notes = 1
+    run(gateway.scan())
+    clock[0] = NOW + 3600
+    run(gateway.scan())
+    assert statuses() == [] and progress.load(P)["lost"] == {"thread": None}
+
+
+def test_a_post_cut_by_a_kill_is_never_repeated(clock):
+    launched()
+    progress.save(P, posting={"thread": None})  # saved before the send; the gateway died before the reply
+    run(gateway.scan())
+    assert statuses() == [] and progress.load(P)["lost"] == {"thread": None}
+
+
+def test_a_run_from_before_the_feature_gets_no_message(clock):
+    progress.hooked(P, "prompt", {"hook_event_name": "PostToolUse"})  # no launched evidence: nothing tracked
+    run(gateway.scan())
+    assert statuses() == [] and not progress.activity(P).exists()
+
+
+def test_an_archived_run_never_shown_gets_no_first_post(clock, monkeypatch):
+    launched()
+    monkeypatch.setattr(events, "status", lambda card: "archived")
+    run(gateway.scan())
+    assert statuses() == [] and progress.load(P)["final"] is True
+
+
+def test_a_finished_run_is_edited_once_and_never_revived(forum, monkeypatch):
+    monkeypatch.setattr(shared, "now", lambda: NOW)
+    thread = opened(forum, ledger=P)
+    launched()
+    run(gateway.scan())
+    [(_, _, where)] = statuses(forum.adapter)
+    assert where == thread
+    conversation.update(P, resolved_at=NOW, state="closing")
+    run(gateway.scan())
+    assert forum.adapter.edits[-1][2].endswith("✅ Finished: pull request merged.")
+    assert progress.load(P)["final"] is True
+    edits = len(forum.adapter.edits)
+    at("tool", NOW)  # a late hook
+    monkeypatch.setattr(gateway, "S", gateway.State())  # and a restart
+    run(gateway.scan())
+    assert len(forum.adapter.edits) == edits and len(statuses(forum.adapter)) == 1
+
+
+def test_a_refused_final_edit_is_retried_on_the_same_message_even_after_a_restart(forum, clock, monkeypatch):
+    opened(forum, ledger=P)
+    launched()
+    run(gateway.scan())
+    [status_id] = forum.adapter.note_ids
+    conversation.update(P, resolved_at=NOW, state="closing")
+    forum.adapter.fail_edits = 1
+    run(gateway.scan())
+    assert not progress.load(P).get("final") and progress.load(P)["retry_at"] == NOW + progress.RETRY
+    assert P in progress.tracked()
+    monkeypatch.setattr(gateway, "S", gateway.State())  # a restart before the retry
+    clock[0] = NOW + progress.RETRY
+    run(gateway.scan())
+    [*_, (_, mid, text)] = forum.adapter.edits
+    assert mid == status_id and text.endswith("✅ Finished: pull request merged.")
+    assert progress.load(P)["final"] is True and len(statuses(forum.adapter)) == 1
+
+
+def test_a_remade_topic_gets_one_new_status_message(forum, monkeypatch):
+    monkeypatch.setattr(shared, "now", lambda: NOW)
+    opened(forum, ledger=P)
+    launched()
+    run(gateway.scan())
+    new = str(forum.bot.make_topic(GROUP_CHAT, "again"))
+    conversation.update(P, thread_id=new)
+    run(gateway.scan())
+    run(gateway.scan())
+    assert [where for _, _, where in statuses(forum.adapter)][-2:] != [new, new]
+    assert [where for _, _, where in statuses(forum.adapter)].count(new) == 1

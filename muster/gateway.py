@@ -14,7 +14,7 @@ import json
 import secrets
 import time
 
-from . import channels, config, core, decisions
+from . import channels, config, conversation, core, decisions, progress
 from .channels import shared
 from .channels.shared import log
 
@@ -34,6 +34,7 @@ class State:
         self.edit_failed = set()
         self.swept = False
         self.vetted = {}  # build or feedback request id -> clock() of the last read of its pull request
+        self.final = set()  # ledgers whose status message is final: never read again this boot
 
 
 S = State()
@@ -74,6 +75,10 @@ async def scan_loop():
 async def scan():
     """One pass: each request in its own try block, then release the prompts of the ones that ended."""
     S.loop = asyncio.get_running_loop()
+    try:  # before the steps: a resolved run's last edit lands while its topic is still closing, not closed
+        await progress_pass()
+    except Exception as caught:  # noqa: BLE001
+        log(f"progress: {caught}")
     try:  # before the requests are read: a repair clears the presentations it moves
         await CHANNEL.steps()
     except Exception as caught:  # noqa: BLE001
@@ -112,6 +117,63 @@ async def scan():
                 await settle_edit(rid)
             except Exception as caught:  # noqa: BLE001
                 log(f"request {rid}: edit: {caught}")
+
+
+async def progress_pass():
+    """Each launched run's one status message (muster.progress), one step further. It shows evidence only: nothing
+    here retries, redispatches, approves, merges or cleans up."""
+    waits = {}
+    for req in await asyncio.to_thread(decisions.open_requests):
+        if req["kind"] in ("question", "permission") and req["status"] == "open":  # the bridge's own state
+            waits.setdefault(req["ledger"], []).append(req.get("created_at", 0))
+    for ledger in await asyncio.to_thread(progress.tracked, S.final):
+        try:
+            await show_progress(ledger, waits.get(ledger, []))
+        except Exception as caught:  # noqa: BLE001 - one run's message must not stop the others
+            log(f"{ledger}: progress: {caught}")
+
+
+async def show_progress(ledger, waits):
+    now, saved = shared.now(), await asyncio.to_thread(progress.load, ledger)
+    if now < saved.get("retry_at", 0):
+        return
+    ref = await asyncio.to_thread(conversation.load, ledger)
+    archived = None  # a run with a conversation reference: its state says archived (the channel steps read the board)
+    if ref is None and shared.clock() - shared.checked.get(ledger, float("-inf")) >= shared.CLOSED_EVERY:
+        archived = await shared.archived(ledger)
+    key, text, final = await asyncio.to_thread(progress.state, ledger, now, waits, ref, archived)
+    thread = (await asyncio.to_thread(conversation.target, ledger))["thread_id"]
+    posting = not (saved.get("mid") and saved.get("thread") == thread)
+    if not (posting or progress.due(saved, key, text, now)):
+        return
+    if posting and final:  # archived or finished before it was ever shown here: nothing worth a first post
+        await asyncio.to_thread(progress.save, ledger, final=True, posting=None)
+        S.final.add(ledger)
+        return
+    if posting and {"thread": thread} in (saved.get("lost"), saved.get("posting")):
+        # A post here whose outcome is unknown (it raised, or the gateway died mid-send): never a second one.
+        if saved.get("posting"):
+            log(f"{ledger}: status message post not confirmed; not posted again")
+            await asyncio.to_thread(progress.save, ledger, lost={"thread": thread}, posting=None)
+        return
+    if posting:
+        await asyncio.to_thread(progress.save, ledger, posting={"thread": thread})
+    try:
+        shown = await CHANNEL.show(ledger, text, saved)
+    except Exception as caught:  # noqa: BLE001
+        log(f"{ledger}: status message: {caught}")
+        if posting:
+            await asyncio.to_thread(progress.save, ledger, lost={"thread": thread}, posting=None)
+        return
+    if shown:
+        fields = {**shown, "key": key, "text": text, "edited_at": now, "final": final, "retry_at": 0}
+    elif shown is None and final:  # nothing left to show it on (no message, or the run's conversation is gone)
+        fields = {"final": True}
+    else:  # None: not ready yet, tried again next scan; False: refused (a final edit too), tried after RETRY
+        fields = {} if shown is None else {"retry_at": now + progress.RETRY}
+    await asyncio.to_thread(progress.save, ledger, posting=None, **fields)
+    if fields.get("final"):
+        S.final.add(ledger)
 
 
 async def settle_edit(rid):

@@ -14,6 +14,7 @@ import muster.config as config
 import muster.core as core
 import muster.decisions as decisions
 import muster.events as events
+import muster.progress as progress
 import muster.runs as runs
 
 LINKS = {"card": "t_abc123", "repo": "acme/app", "issue": 397, "pane": "p_agent",
@@ -439,9 +440,44 @@ def test_a_submitted_prompt_leaves_its_sha256_for_the_launcher_and_nothing_else(
 
 
 def test_a_stop_without_a_card_does_nothing_at_all(board, monkeypatch):
-    # Claude fires Stop at every turn end; an issue run has nothing to do with it.
+    # Claude fires Stop at every turn end; an issue run has nothing to do with it on the board.
     assert hook(monkeypatch, "stop") == 0
-    assert board["calls"] == []
+    assert [c for c in board["calls"] if c[0] != "git"] == []  # only the worktree lookup every hook makes
+
+
+def activity():
+    return progress.activity("t_abc123")
+
+
+def test_each_hook_event_leaves_its_observation_for_the_status_message(board, monkeypatch):
+    progress.launched("t_abc123", "/launch", "sha")
+    hook(monkeypatch, "prompt", hook_event_name="UserPromptSubmit", prompt="hi")
+    assert sorted(os.listdir(activity())) == ["launched", "prompt"]
+    hook(monkeypatch, "prompt", hook_event_name="PostToolUse", tool_name="Bash")
+    assert hook(monkeypatch, "stop", hook_event_name="Stop") == 0
+    hook(monkeypatch, "session-end", hook_event_name="SessionEnd", reason="clear")  # /clear is no end
+    assert sorted(os.listdir(activity())) == ["launched", "prompt", "stop", "tool"]
+    hook(monkeypatch, "session-end", hook_event_name="SessionEnd", reason="logout")
+    assert sorted(os.listdir(activity())) == ["end", "launched", "prompt", "stop", "tool"]
+    hook(monkeypatch, "prompt", hook_event_name="PostToolUse", tool_name="Bash")  # a replay moves only a time
+    assert sorted(os.listdir(activity())) == ["end", "launched", "prompt", "stop", "tool"]
+    assert board["cards"]["t_abc123"] == "blocked"  # the session end's own move, unchanged
+
+
+def test_a_stop_with_a_links_file_without_a_card_still_exits_0(board, monkeypatch, capsys):
+    (board["git_dir"] / core.CARD_FILE).write_text(json.dumps({"repo": "acme/app"}))
+    assert hook(monkeypatch, "stop", hook_event_name="Stop") == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_done_marks_review_ready_only_once_the_ledger_reads_done(board, monkeypatch):
+    progress.launched("t_abc123", "/launch", "sha")
+    board["head"] = "other"
+    assert done(PR) == 1
+    assert not (activity() / "review").exists()
+    board["head"] = "muster/397"
+    assert done(PR) == 0
+    assert (activity() / "review").read_text() == PR
 
 
 def test_core_and_events_agree_on_card_file(board, tmp_path):
@@ -978,6 +1014,17 @@ def test_an_issue_run_done_after_a_send_back_makes_one_review_card(board, monkey
     assert decisions.load(open_build)["status"] == "stale"
     assert board["comments"]["t_abc123"][0].startswith(core.LINKS_PREFIX) and len(board["comments"]["t_abc123"]) == 1
     assert capsys.readouterr().out.count("done: card t_abc123 -> done") == 3
+
+
+def test_a_verified_revision_is_review_ready_once_and_a_repeat_keeps_its_time(board, monkeypatch, tmp_path):
+    verified(monkeypatch, tmp_path, board)
+    progress.launched("t_abc123", "/launch", "sha")
+    assert done(PR) == 0
+    review = progress.activity("t_abc123") / "review"
+    assert review.read_text() == PR
+    os.utime(review, (1000, 1000))
+    assert done(PR) == 0  # the review card exists: the time stays
+    assert review.stat().st_mtime == 1000
 
 
 def test_a_second_cycle_makes_a_second_card(board, monkeypatch, tmp_path):

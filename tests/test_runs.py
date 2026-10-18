@@ -12,6 +12,7 @@ import pytest
 import muster.claude as claude
 import muster.config as config
 import muster.core as core
+import muster.progress as progress
 import muster.runs as runs
 from tests.fake_herdr import World
 
@@ -1021,3 +1022,22 @@ def test_the_run_hook_settles_a_question_answered_in_the_pane(board, run1, monke
     fire(monkeypatch, "prompt", hook_event_name="UserPromptSubmit", prompt="carry on")
     assert decisions.load(rid)["outcome"] == "No longer waiting: the pane moved on"
     assert board["calls"] == []
+
+
+def test_hooks_and_a_verified_pr_leave_observations_for_the_status_message(board, run1, monkeypatch):
+    progress.launched(CARD, run1, "sha")
+    fire(monkeypatch, "prompt", hook_event_name="UserPromptSubmit", prompt="hi")
+    fire(monkeypatch, "prompt", hook_event_name="PostToolUse", tool_name="Bash")
+    fire(monkeypatch, "stop", hook_event_name="Stop")  # no pull request yet: not review-ready
+    assert sorted(p.name for p in progress.activity(CARD).iterdir()) == ["launched", "prompt", "stop", "tool"]
+    board["prs"] = [PR]
+    fire(monkeypatch, "stop", hook_event_name="Stop")  # runs.complete: the ad-hoc run's verified completion
+    assert board["cards"][CARD] == "done"
+    assert (progress.activity(CARD) / "review").read_text() == PR["url"]
+
+
+def test_a_merged_pr_is_not_called_ready_for_review(board, run1, monkeypatch):
+    progress.launched(CARD, run1, "sha")
+    board["prs"] = [PR | {"state": "MERGED"}]
+    fire(monkeypatch, "stop", hook_event_name="Stop")
+    assert board["cards"][CARD] == "done" and not (progress.activity(CARD) / "review").exists()
