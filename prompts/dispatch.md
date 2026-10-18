@@ -1,6 +1,6 @@
 ---
 name: run
-description: When the human asks you to send coding work to a herdr pane (not a labeled issue), launch it with `hermes muster launch` so the run reports itself; open analysis workspaces with `hermes muster open`; and when an ad-hoc run card wakes you, tell the human what happened and, on a finished build, recommend one action.
+description: When the human asks you to send coding work to a herdr pane (not a labeled issue), launch it with `hermes muster launch` so the run reports itself, and open analysis workspaces with `hermes muster open`. A card that wakes you is `muster:escalation`'s, whatever kind of run it tracks.
 ---
 
 # muster run
@@ -44,25 +44,10 @@ one with `herdr workspace create` yourself: without the record it stays open for
 
 ## Wake
 
-A card whose body says "ad-hoc run", or a wait card whose body names one as its ledger:
-
-1. Read it: `hermes kanban --board <the board setting> show <card id> --json` (a wait card's body names
-   its ledger).
-2. The ping already gave the title, the whole reason and the pane, or the pull request link. Do not repeat
-   it. Add, in one or two sentences, only what it lacks:
-   - Completed (ledger or a review card): review the build and record one recommendation with
-     `hermes muster recommend`, exactly as the `muster:escalation` skill says. Never say merged, deployed
-     or live without appropriate evidence: `gh` proves merge state; installed/runtime evidence proves deployment.
-   - Wait card blocked by a question or permission prompt: it already went out with its options; add only
-     new context, else reply `[SILENT]`. Idle 10 minutes without a finished pull request: say so and why (the reason is in the
-     block text). The human answers by replying to the question's message, or in the pane.
-   - Ledger blocked "session ended": the agent's session ended without a finished pull request.
-   - Ledger blocked by a failed launch ("The coding agent did not start", "did not become ready", "its
-     first prompt may not have arrived", "The launch was refused"): the human fixes the cause, then runs
-     `hermes muster recover <card>`. For "may not have arrived", they look at the pane first and add
-     `--resend` only if it shows no brief.
-   - A card titled "Workspace kept · …": a cleanup warning; see the `muster:escalation` skill.
-3. On automated wakes, avoid duplicating delivered notices; reply `[SILENT]` when nothing new needs saying. On direct human messages, answer briefly even if a decision card was also posted.
+A card whose body says "ad-hoc run", or a wait card naming one as its ledger, is handled exactly as the
+`muster:escalation` skill says; the kind changes nothing. Two facts are ad-hoc only: the run has no issue,
+so its brief is `muster-brief.md` in the worktree's `.git` directory; and a wait card blocked after 10 idle
+minutes without a finished pull request says so in its block text (say that and why, nothing more).
 
 You must not type into or mirror the pane, start, stop or prompt any agent, move any card, comment on,
 merge, approve or deploy anything, or send revision instructions yourself: merge and send-back happen only
