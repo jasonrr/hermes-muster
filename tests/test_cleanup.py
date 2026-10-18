@@ -154,6 +154,8 @@ class World:
                 return "".join(l for l in self.status.splitlines(True) if not l.startswith("??"))
             if argv[3:] == ["rev-list", "--count", "HEAD", "--not", "--remotes"]:
                 return f"{self.unpushed}\n"
+            if argv[3:] == ["ls-files", "-v", "-z"]:
+                return ""  # no index flags; real-git tests cover them
             raise AssertionError(argv)
         if argv[:2] == ["gh", "api"] and "/pulls?head=" in argv[-1]:
             assert f"repos/{REPO}/pulls?head=o:{self.branch}&state=all&per_page=100" in argv[-1]
@@ -1673,6 +1675,24 @@ def test_what_cannot_be_preserved_keeps_the_worktree_and_says_why(world, case, r
     assert world.removed is False and not cleanup.backups_dir().exists()
     [(card, data)] = world.cards.items()
     assert f"cannot preserve: {reason}" in data["reason"]
+
+
+@pytest.mark.parametrize("flag, tag", [("--assume-unchanged", "h"), ("--skip-worktree", "S")])
+@pytest.mark.parametrize("trigger", ["untracked", "head"])
+def test_edits_git_status_hides_keep_the_worktree_and_its_index_flags(world, flag, tag, trigger):
+    real_checkouts(world)  # issue #49: git status and `git add -u` skip a flagged file, so the backup would miss it
+    git(world.path, "update-index", flag, "app.py")
+    put(world.path, "app.py", "UNSAVED IMPORTANT WORK\n")
+    if trigger == "untracked":
+        put(world.path, "notes.txt", "mine\n")
+    else:  # preservation chosen only because HEAD is not the newest merged head; porcelain looks clean
+        world.pulls.append(world._pr(number=30, sha="newer", merged_at="2026-09-28T17:30:00Z"))
+    window(world)
+    assert world.removed is False and not cleanup.backups_dir().exists()
+    [(card, data)] = world.cards.items()
+    assert "cannot preserve: app.py is marked" in data["reason"]
+    assert git(world.path, "ls-files", "-v", "app.py").startswith(f"{tag} ")
+    assert Path(world.path, "app.py").read_text() == "UNSAVED IMPORTANT WORK\n"
 
 
 @pytest.mark.parametrize("owner", ["question", "outbox"])

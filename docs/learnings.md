@@ -130,3 +130,4 @@
 - Backing up a checkout with `git stash push -u` → it rewrites the working tree and the stash stack every worktree shares; build the same three-parent commit with `commit-tree` from trees written through temporary `GIT_INDEX_FILE`s, so `git stash apply --index` restores it and nothing live is touched.
 - `git bundle create` given a bare commit id → it silently leaves that commit out; name it with a ref (deleted right after), and verify by fetching the bundle into an empty repository, never by `bundle verify` alone.
 - `git init` on an existing directory → succeeds and reuses it; a restore command that must not overwrite starts with `mkdir`.
+- A file flagged assume-unchanged or skip-worktree → `git status`, `git add -u` and `git worktree remove`'s dirty check all skip its edits, so a backup built from them verifies yet misses them; read the flags with `git ls-files -v` (lowercase tag or `S`) and keep the checkout (issue #49).
