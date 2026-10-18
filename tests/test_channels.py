@@ -39,6 +39,9 @@ class Durable:
     async def steps(self):
         pass
 
+    async def show(self, ledger, line, saved):
+        return None
+
     def track(self, req):
         pass
 

@@ -18,6 +18,9 @@ tests/test_channels.py is its test):
 - `release(rid)`, `release_ended(live)`, `track(req)`: the in-process state of a request (no-ops on Slack).
 - `async reply(event) -> dict | None`: pre_gateway_dispatch; {"action": "skip"} when muster took the message.
 - `async steps()`: one lifecycle pass over the conversations (topics, threads).
+- `async show(ledger, line, saved) -> dict | None | False`: the run's one status message (muster.progress): post
+  it once or edit it; {mid, thread} once shown, None when it cannot be shown yet (nothing sent), False when the
+  platform refused (tried again after progress.RETRY). Raises only when a post's outcome is unknown.
 """
 
 import importlib

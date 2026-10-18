@@ -26,7 +26,7 @@ import re
 import threading
 from types import SimpleNamespace
 
-from .. import config, conversation, core, decisions, hermes_private
+from .. import config, conversation, core, decisions, hermes_private, progress
 from . import shared
 from .shared import ensure_config, log, session, soon
 
@@ -399,6 +399,31 @@ async def reply(event):
     if len(waiting) == 1 and clarify_gateway.resolve_text_response_for_session(waiting[0], text):
         return {"action": "skip"}
     return None
+
+
+# -- the run's status message (issue #46) ---------------------------------------------------------
+
+async def show(ledger, line, saved):
+    """Post the run's status message once (its topic, else the main chat), then edit it. Returns {mid, thread}
+    once Telegram took it, None when it cannot be shown yet, False when Telegram refused it (tried later)."""
+    if T.adapter is None:
+        return None
+    ref = await asyncio.to_thread(conversation.load, ledger)
+    state = ref.get("state") if mine(ref) else None
+    if state in ("pending", "creating", "retiring", "deleted"):
+        return None
+    thread = (await asyncio.to_thread(conversation.target, ledger))["thread_id"]
+    chat = core.notify_target()["chat_id"]
+    text = f"muster · {await asyncio.to_thread(progress.name, ledger, ref)}\n{line}"
+    if saved.get("mid") and saved.get("thread") == thread:
+        return {"mid": saved["mid"], "thread": thread} if await edit(chat, saved["mid"], text) else False
+    if state in ("closing", "closed"):
+        return None  # no first post into a topic being closed
+    res = await T.adapter.send(chat, text, metadata={"thread_id": thread} if thread else None)
+    if not res.success:
+        log(f"{ledger}: status message: {getattr(res, 'error', 'failed')}")
+        return False
+    return {"mid": str(res.message_id), "thread": thread}
 
 
 # -- run topics (issue #24) -----------------------------------------------------------------------

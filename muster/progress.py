@@ -18,7 +18,7 @@ final, posting, lost, retry_at}. Only hooks and completions write activity, so a
 import json
 import time
 
-from . import config, core
+from . import config, conversation, core
 
 QUIET = 15 * 60  # s without a tool before the message says no new activity was observed
 REFRESH = 5 * 60  # s between edits that only age the same state's times
@@ -80,10 +80,24 @@ def hooked(ledger, event, payload):
         core.log("progress", f"{ledger}: {event}: {caught}")
 
 
-def tracked():
-    """Ledgers with a launched run whose message is not final yet."""
-    return [file.parent.parent.name for file in sorted((config.data_dir() / "runs").glob("*/activity/launched"))
-            if not load(file.parent.parent.name).get("final")]
+def tracked(skip=()):
+    """Ledgers with a launched run whose message is not final yet; `skip`: ledgers already known final."""
+    names = (file.parent.parent.name for file in sorted((config.data_dir() / "runs").glob("*/activity/launched")))
+    return [n for n in names if n not in skip and not load(n).get("final")]
+
+
+def name(ledger, ref):
+    """The run as its message names it: its topic's name, else the same name built from its launch record."""
+    if ref and ref.get("name"):
+        return ref["name"]
+    for file in (core.intake_dir() / ledger / "launch.json", config.data_dir() / "runs" / ledger / "run.json"):
+        try:
+            rec = json.loads(file.read_text())
+            return conversation.name(rec["repo"], rec.get("title") or "", ledger, issue=rec.get("issue"),
+                                     branch=rec.get("branch"))
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            continue
+    return ledger
 
 
 def mtimes(ledger):
