@@ -3,11 +3,14 @@ recovery that resumes, adopts or refuses without ever sending the brief twice on
 
 import copy
 import json
+import shutil
 
 import pytest
 
+import muster.config as config
 import muster.core as core
 import muster.progress as progress
+import muster.runs as runs
 from tests.fake_herdr import World
 
 DESTRUCTIVE = ("reset", "clean", "stash", "checkout", "branch", "worktree remove", "push")
@@ -366,3 +369,17 @@ def test_a_branch_git_would_refuse_is_refused_before_any_side_effect(world, bran
 def test_a_base_git_would_refuse_is_refused_before_any_side_effect(world, base):
     with pytest.raises(core.LaunchFailure, match="not a valid base branch"):
         core.plan("t", "o/r", world.clone, "fix/x", base, "l", "run-x", "opus", "/s", "run")
+
+
+@pytest.mark.parametrize("missing", ["issue-dispatch", "ad-hoc-run", "builder-workflow", "launch-envelope"])
+def test_a_missing_prompt_file_fails_the_launch_before_any_agent_starts(world, monkeypatch, tmp_path, missing):
+    prompts = tmp_path / "prompts"
+    shutil.copytree(config.PROMPTS, prompts)
+    (prompts / f"{missing}.md").unlink()
+    monkeypatch.setattr(config, "PROMPTS", prompts)
+    run = {"card": "t_card", "repo": "o/r", "branch": "fix/x", "base": "main"}
+    rec = new_rec(world)
+    save = world.saved.append
+    with pytest.raises(FileNotFoundError):
+        core.ensure(rec, save, world.dir, lambda r, g: core.brief("o/r", 1, False) + runs.footer(run))
+    assert not herdr_calls(world, "agent", "start") and not herdr_calls(world, "agent", "prompt")
