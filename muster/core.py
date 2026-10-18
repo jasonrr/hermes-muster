@@ -573,17 +573,22 @@ def prompt_seen(directory, payload):
 
 
 def seen(directory, sha):
+    return seen_at(directory, sha) is not None
+
+
+def seen_at(directory, sha):
+    """When the UserPromptSubmit hook first saw this prompt (its record's `at`), or None."""
     path = Path(directory) / "prompt-seen.jsonl"
     if not path.is_file():
-        return False
+        return None
     for line in path.read_text().splitlines():
         try:
             record = json.loads(line)
             if sha and sha in (record.get("sha256"), record.get("inner")):
-                return True
+                return record.get("at", 0)
         except (ValueError, AttributeError):  # a line torn by a crash, or not a record: not evidence
             continue
-    return False
+    return None
 
 
 def owner_of(path):
