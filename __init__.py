@@ -13,10 +13,9 @@ def register(ctx):
         setup_fn=cli.setup,
         handler_fn=lambda args: cli.main(args, ctx),
     )
-    for name in ("escalation", "run"):
-        path = root / "skills" / name / "SKILL.md"
-        if path.is_file():  # stat only; Task 7 creates the files
-            ctx.register_skill(name, path)
+    # Hermes serves the registered file whole (frontmatter included), so the skills are the prompt files themselves.
+    for name, prompt in (("escalation", "escalation"), ("run", "dispatch")):
+        ctx.register_skill(name, root / "prompts" / f"{prompt}.md")
     hold.CTX = ctx  # ctx.llm: the duplicate check before an automatic approval launches
     if hasattr(ctx, "register_auxiliary_task"):
         try:

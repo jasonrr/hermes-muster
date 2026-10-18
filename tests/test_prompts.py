@@ -3,6 +3,7 @@
 The golden files in tests/golden/ were rendered by the code before the move, with data full of characters a
 template could misread: braces, `$`, backticks, quotes and newlines.
 """
+import re
 import subprocess
 import types
 from pathlib import Path
@@ -72,3 +73,26 @@ def test_prompts_match_pre_refactor_output(nasty, monkeypatch):
     assert sorted(out) == sorted(p.stem for p in GOLDEN.glob("*.txt"))
     for name, text in out.items():
         assert text == (GOLDEN / f"{name}.txt").read_text(), name
+
+
+def test_every_prompt_the_code_names_ships_in_git_and_none_is_orphaned():
+    """Installs are git checkouts: a prompt file that is not tracked is missing from every install."""
+    tracked = subprocess.run(["git", "ls-files", "prompts"], cwd=ROOT, capture_output=True, text=True,
+                             check=True).stdout.split()
+    source = "".join(p.read_text() for p in [ROOT / "__init__.py", *(ROOT / "muster").glob("*.py")])
+    named = set(re.findall(r'config\.prompt\("([\w-]+)"', source)) | {"dispatch", "escalation", "builder-workflow"}
+    assert {f"prompts/{n}.md" for n in named} | {"prompts/README.md"} == set(tracked)
+
+
+def test_the_workflow_override_replaces_the_bundled_workflow_in_the_brief(tmp_path, monkeypatch):
+    custom = tmp_path / "w.md"
+    custom.write_text("\n  My own ${rules} {here}\n")
+    monkeypatch.setitem(config.settings, "workflow_prompt_file", str(custom))
+    text = core.brief("o/r", 1, False)
+    assert "## How to work\n\nMy own ${rules} {here}\n\n## Production" in text
+    assert (config.PROMPTS / "builder-workflow.md").read_text().splitlines()[2] not in text
+
+
+def test_a_placeholder_without_a_value_raises():
+    with pytest.raises(KeyError):
+        config.prompt("design-reply-approve")

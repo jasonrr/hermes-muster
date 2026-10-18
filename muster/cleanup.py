@@ -130,9 +130,7 @@ UNMERGED = {"DD", "AU", "UD", "UA", "DU", "AA", "UU"}
 # Where preserve() names HEAD and the stash-shaped commit, in the clone for the bundle only and in the bundle.
 REFS = "refs/muster-preserve"
 FAILURES = (core.CommandError, OSError, ValueError, KeyError, TypeError, AttributeError)
-ASK_LINE = ("This card is a cleanup warning. Its ping already gives the human the reason and what each choice does: "
-            "reply [SILENT] unless you have something new; never push, commit, discard or remove anything yourself "
-            "(skill muster:escalation).")
+ASK_LINE = config.prompt("cleanup-warning-cue")
 KEEP = ("- Keep it: leave it, or archive this warning card to clear it from the board. Nothing is removed while "
         "this stands.")
 clock = time.time

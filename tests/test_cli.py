@@ -89,10 +89,14 @@ def test_root_loads_as_package_and_dispatches(monkeypatch):
             calls.update(kw)
 
         def register_skill(self, name, path):
-            pass
+            calls.setdefault("skills", {})[name] = path
 
     ctx = Ctx()
     module.register(ctx)
+    # The skills are the prompt files themselves, and Hermes reads each one's name from its frontmatter.
+    assert calls["skills"] == {"escalation": ROOT / "prompts" / "escalation.md", "run": ROOT / "prompts" / "dispatch.md"}
+    for skill, path in calls["skills"].items():
+        assert path.read_text().startswith(f"---\nname: {skill}\ndescription: ")
     monkeypatch.setitem(
         sys.modules, f"{name}.muster.core", types.SimpleNamespace(tick=lambda args: 9)
     )

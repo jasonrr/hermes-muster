@@ -1,6 +1,7 @@
 import os
 import re
 import shutil
+import string
 import subprocess
 from pathlib import Path
 
@@ -24,7 +25,7 @@ DEFAULTS = {
     "coordinator_name": "Coordinator",  # who reviews in the human's messages: "Ella is reviewing"
     "gh_config_dir": "",  # "" → your own gh login; else GH_CONFIG_DIR for gh/git in the pane, GH_TOKEN/GITHUB_TOKEN blanked
     "notes_dir": "",  # "" → data_dir()/"repos"
-    "workflow_prompt_file": "",  # "" → <plugin>/prompts/workflow.md
+    "workflow_prompt_file": "",  # "" → <plugin>/prompts/builder-workflow.md
     "worktrees": "~/.herdr/worktrees",
     "project_owner": "",  # "" → no GitHub Project move; else with project_number: `gh project view <number> --owner <owner>`
     "project_number": 0,
@@ -149,10 +150,19 @@ def notes_dir() -> Path:
     return Path(settings["notes_dir"]).expanduser() if settings["notes_dir"] else data_dir() / "repos"
 
 
+PROMPTS = Path(__file__).resolve().parent.parent / "prompts"
+
+
+def prompt(name, **values) -> str:
+    """prompts/<name>.md, outer blank lines trimmed, with its $placeholders filled once with data (never re-read
+    as template). A missing file or placeholder raises, so nothing is sent with part of its instructions."""
+    return string.Template((PROMPTS / f"{name}.md").read_text().strip("\n")).substitute(values)
+
+
 def workflow_path() -> Path:
     if settings["workflow_prompt_file"]:
         return Path(settings["workflow_prompt_file"]).expanduser()
-    return Path(__file__).resolve().parent.parent / "prompts" / "workflow.md"
+    return PROMPTS / "builder-workflow.md"
 
 
 def workflow_text() -> str:
