@@ -17,7 +17,7 @@ import asyncio
 import json
 import re
 
-from .. import config, conversation, core, decisions
+from .. import config, conversation, core, decisions, progress
 from ..config import ConfigError
 from . import shared
 from .shared import log
@@ -421,8 +421,52 @@ async def destination(req):
     return True, {"thread_id": ref["thread_id"]}
 
 
-def parent_line(ref, status):
-    return f"muster · {ref.get('name') or ref['ledger']}   {PARENT[status]}"
+def parent_line(ref, status, line=None):
+    """The thread parent: the run and its state; while running, the status message's line too (muster.progress), so
+    every parent write keeps it. A final line never shows under "running": a reopened thread is not finished."""
+    text = f"muster · {ref.get('name') or ref['ledger']}   {PARENT[status]}"
+    if status == "running" and line is None:
+        saved = progress.load(ref["ledger"])
+        line = None if saved.get("final") else saved.get("text")
+    return text + (f"\n{line}" if status == "running" and line else "")
+
+
+async def show(ledger, line, saved):
+    """The run's status line (muster.progress, the channel contract): on its thread's parent, the run-status message
+    it already has; without a thread, one channel message posted once, then edited."""
+    if T.client is None:
+        return None
+    ref = await asyncio.to_thread(conversation.load, ledger)
+    state = ref.get("state") if mine(ref) else None
+    if state in ("pending", "creating", "retiring", "deleted"):
+        return None
+    if state in ("open", "closing", "closed"):
+        thread = ref["thread_id"]
+        if state == "open":  # closing or closed: the lifecycle marks the parent done; nothing to add
+            try:
+                await T.client.chat_update(channel=ref["chat_id"], ts=thread,
+                                           text=shared.slack_text(parent_line(ref, "running", line)))
+            except Exception as caught:  # noqa: BLE001 - an update is safe to repeat
+                if error_of(caught) not in GONE:  # a parent gone by hand: nothing left to edit
+                    log(f"{ledger}: status line on the thread parent: {error_of(caught)}")
+                    return False
+        return {"mid": thread, "thread": thread}
+    text = shared.slack_text(f"muster · {await asyncio.to_thread(progress.name, ledger, ref)}\n{line}")
+    if saved.get("mid") and saved.get("thread") is None:
+        try:
+            await T.client.chat_update(channel=chat(), ts=saved["mid"], text=text)
+        except Exception as caught:  # noqa: BLE001
+            log(f"{ledger}: status message: {error_of(caught)}")
+            return False
+        return {"mid": saved["mid"], "thread": None}
+    try:
+        res = await T.client.chat_postMessage(channel=chat(), text=text)
+    except Exception as caught:
+        if getattr(caught, "response", None) is None:
+            raise  # no answer from Slack: the post may have landed (the gateway never repeats it)
+        log(f"{ledger}: status message: {error_of(caught)}")
+        return False
+    return {"mid": res.get("ts"), "thread": None}
 
 
 async def parent(ref):

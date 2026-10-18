@@ -741,3 +741,79 @@ def test_a_hermes_without_the_slack_surfaces_is_logged(monkeypatch):
 
     gateway.setup(Old())
     assert "lacks the slack surfaces" in core.log_path("gateway").read_text()
+
+
+# -- the run's status line (#46) ------------------------------------------------------------------
+
+import os  # noqa: E402
+
+from muster import events, progress  # noqa: E402
+
+P = "t_p1"
+
+
+def launched(t, ledger=P):
+    directory = config.data_dir() / "intake" / ledger
+    directory.mkdir(parents=True, exist_ok=True)
+    progress.launched(ledger, directory, "sha")
+    os.utime(progress.activity(ledger) / "launched", (t, t))
+    (directory / "prompt-seen.jsonl").write_text(f'{{"sha256": "sha", "at": {int(t)}}}\n')
+
+
+def test_the_thread_parent_carries_the_status_line_and_nothing_is_posted(threads):
+    thread = opened(threads, ledger=P)
+    posts = len(threads.client.posts)
+    launched(940)
+    tick(threads)
+    assert len(threads.client.posts) == posts
+    update = threads.client.updates[-1]
+    assert update["ts"] == thread and update["channel"] == CHAN
+    assert update["text"].endswith(f"⏳ running\nBrief received {progress.hm(940)} · no tool activity observed yet")
+    asyncio.run(slack.parent({**conversation.load(P), "parent_text": "running"}))  # a reopen's own parent write
+    assert threads.client.updates[-1]["text"] == update["text"]
+
+
+def test_a_resolved_threads_parent_is_left_to_its_lifecycle(threads):
+    opened(threads, ledger=P)
+    launched(940)
+    tick(threads)
+    conversation.update(P, resolved_at=1000, state="closing")
+    tick(threads)
+    assert progress.load(P)["final"] is True
+    assert threads.client.updates[-1]["text"].endswith("✅ done")
+    assert not any("Finished" in u["text"] for u in threads.client.updates)
+    asyncio.run(slack.parent({**conversation.load(P), "parent_text": "running"}))  # reopened later for new work
+    assert threads.client.updates[-1]["text"].endswith("⏳ running")  # never "running" with a finished line
+
+
+def test_without_a_thread_one_channel_message_is_posted_then_edited(channel, monkeypatch):
+    clock = [1000.0]
+    monkeypatch.setattr(shared, "now", lambda: clock[0])
+    monkeypatch.setattr(events, "status", lambda card: "ready")
+    launched(940)
+    asyncio.run(gateway.scan())
+    [post] = channel.client.posts
+    assert post["channel"] == CHAN and "thread_ts" not in post and post["text"].startswith(f"muster · {P}\n")
+    at = progress.activity(P) / "stop"
+    at.touch()
+    os.utime(at, (990, 990))
+    asyncio.run(gateway.scan())
+    assert len(channel.client.posts) == 1
+    assert channel.client.updates[-1]["ts"] == progress.load(P)["mid"] and "Turn ended" in channel.client.updates[-1]["text"]
+
+
+def test_a_refused_channel_post_is_retried_and_an_unanswered_one_never(channel, monkeypatch):
+    monkeypatch.setattr(shared, "now", lambda: 1000.0)
+    monkeypatch.setattr(events, "status", lambda card: "ready")
+    launched(940)
+    channel.client.fail["chat_postMessage"] = ["channel_not_found"]
+    asyncio.run(gateway.scan())
+    assert channel.client.posts == [] and progress.load(P)["retry_at"] == 1000.0 + progress.RETRY
+
+    async def lost(**kw):
+        raise TimeoutError("no answer")
+    monkeypatch.setattr(channel.client, "chat_postMessage", lost)
+    monkeypatch.setattr(shared, "now", lambda: 2000.0)
+    asyncio.run(gateway.scan())
+    asyncio.run(gateway.scan())
+    assert progress.load(P)["lost"] == {"thread": None}
