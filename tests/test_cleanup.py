@@ -108,7 +108,7 @@ class World:
         rows += self.extra_ps
         return "".join(f"{pid:>6} {ppid:>6} {command}\n" for pid, ppid, command in rows)
 
-    def run(self, argv):
+    def run(self, argv, env=None):
         self.calls.append(argv)
         for prefix in self.fail_on:
             if tuple(argv[:len(prefix)]) == prefix:
@@ -136,10 +136,13 @@ class World:
         if argv[:3] == ["herdr", "workspace", "close"]:
             del self.spaces[argv[3]]
             return json.dumps({"result": {"type": "ok"}})
+        if argv[0] == "git" and self.real_git:
+            done = subprocess.run(argv, capture_output=True, text=True, env=env)
+            if done.returncode:
+                raise core.CommandError(f"{' '.join(argv[:4])}: exit {done.returncode}\n{done.stderr}")
+            return done.stdout
         if argv[0] == "git" and argv[1] == "-C":
             assert argv[2] == self.path, argv
-            if self.real_git:
-                return git(*argv[2:])
             if argv[3] == "rev-parse" and argv[4] == "--absolute-git-dir":
                 return f"{self.git_dir}\n"
             if argv[3] == "rev-parse" and argv[4] == "HEAD":
@@ -183,7 +186,7 @@ class World:
         if argv[:3] == ["herdr", "worktree", "remove"]:
             if self.real_git:  # like herdr without --force: git refuses a checkout with untracked files
                 try:
-                    git(str(self.clone), "worktree", "remove", self.path)
+                    git(str(self.clone), "worktree", "remove", *(["--force"] if "--force" in argv else []), self.path)
                 except subprocess.CalledProcessError as error:
                     raise core.CommandError(error.stderr)
             self.removed = True
@@ -420,8 +423,9 @@ def test_herdr_layout_tool_panes_are_quiet(world, name):
     (" M a.py\n", "0", "1 uncommitted or untracked files"),
     ("", "2", "local commits not pushed (HEAD abc123)"),
 ])
-def test_unsaved_work_is_kept_and_warns_the_human_once(world, dirty, unpushed, reason):
+def test_unsaved_unfinished_work_is_kept_and_warns_the_human_once(world, dirty, unpushed, reason):
     world.status, world.unpushed = dirty, unpushed
+    world.pulls[0].update(state="closed", merged_at=None)  # not finished: nothing is preserved or removed
     if unpushed != "0":
         world.head_sha = "abc123"
         world.pulls[0]["head"]["sha"] = "older"  # HEAD is past the PR head, on no remote ref
@@ -432,6 +436,8 @@ def test_unsaved_work_is_kept_and_warns_the_human_once(world, dirty, unpushed, r
     [(card, data)] = world.cards.items()
     assert data["status"] == "blocked" and world.subscribed == [card] and world.ledgers == ["t_1"]  # its run's topic
     assert reason in data["reason"] and data["reason"].endswith("\nHerdr workspace: wR.")
+    assert "Archive the run's ledger card t_1: cleanup then backs up the unsaved work" in data["reason"]
+    assert "Nothing is removed." in data["reason"]  # committing and pushing unfinished work removes nothing
     assert "muster/15" in data["body"] and "muster/15" not in data["reason"]  # provenance stays on the card
     assert "Decision for the human" in data["body"] and world.path in data["body"]
     for _ in range(24):  # two more hours of cron: no second page
@@ -458,10 +464,10 @@ def test_unsaved_work_with_no_pr_at_all_warns(world):
 
 
 def test_a_new_problem_rearms_and_a_fix_clears_the_warning(world):
-    world.status = " M a.py\n"
+    world.status = "UU a.py\n"
     window(world)
     [first] = world.cards
-    world.status = " M a.py\n?? b.py\n"  # the state changed: old card archived, the window restarts
+    world.status = "UU a.py\n?? b.py\n"  # the state changed: old card archived, the window restarts
     tick(world, 5)
     assert world.cards[first]["status"] == "archived"
     window(world)
@@ -481,7 +487,7 @@ def test_a_pr_head_is_pushed_even_when_no_remote_ref_has_it(world):
 
 
 def test_a_failed_warning_is_retried_and_pages_once(world):
-    world.status = " M a.py\n"
+    world.status = "UU a.py\n"
     world.fail_on = {("hermes", "kanban", "--board", config.settings["board"], "create")}
     window(world)
     assert world.cards == {}
@@ -592,14 +598,14 @@ def test_only_scaffolding_copies_are_backed_up_deleted_and_the_worktree_removed(
     assert str(backup) in capsys.readouterr().out
 
 
-def test_a_unique_file_beside_the_copies_keeps_everything_and_names_it(world):
+def test_a_unique_file_beside_the_copies_is_preserved_with_them(world):
     real_checkouts(world)
     put(world.path, ".agents/skills/x/notes.md", "my work\n")
     window(world)
-    assert removes(world) == [] and Path(world.path, "AGENTS.md").exists()
-    [(card, data)] = world.cards.items()
-    assert "1 uncommitted or untracked files: .agents/skills/x/notes.md" in data["reason"]
-    assert not cleanup.backups_dir().exists()
+    assert removes(world) == [["herdr", "worktree", "remove", "--workspace", "wZ", "--force"]] and world.cards == {}
+    [backup] = cleanup.backups_dir().iterdir()
+    untracked = json.loads((backup / "manifest.json").read_text())["untracked"]
+    assert ".agents/skills/x/notes.md" in untracked and "AGENTS.md" in untracked
 
 
 def test_dry_run_with_scaffolding_deletes_nothing(world, capsys):
@@ -671,7 +677,6 @@ def test_worktree_on_the_wrong_issue_branch_blocks_removal(world):
     lambda w: w.pulls[0]["base"].__setitem__("ref", "dev"),
     lambda w: w.pulls[0].__setitem__("body", "Closes #150\n"),
     lambda w: w.pulls[0].__setitem__("body", "no closing line here\n"),
-    lambda w: w.pulls[0]["head"].__setitem__("sha", "different-sha"),
 ])
 def test_pr_check_blocks_removal(world, mutate):
     mutate(world)
@@ -693,12 +698,6 @@ def test_the_merged_gate_compares_against_the_base_the_launch_recorded(world, pr
     world.pulls[0]["base"]["ref"] = pr_base
     window(world)
     assert len(removes(world)) == removed
-
-
-def test_head_of_an_older_merged_pr_only_is_kept(world):
-    world.pulls.append(world._pr(number=30, sha="newer", merged_at="2026-09-28T17:30:00Z"))
-    window(world)
-    assert removes(world) == []
 
 
 # 10. clock ------------------------------------------------------------------------
@@ -770,7 +769,7 @@ def test_dry_run_prints_would_remove_and_makes_no_call(world, capsys):
 
 
 def test_dry_run_prints_would_warn_and_pages_no_one(world, capsys):
-    world.status = " M a.py\n"
+    world.status = "UU a.py\n"
     window(world, argv=["--dry-run"])
     assert world.cards == {}
     assert "would warn the human" in capsys.readouterr().out
@@ -928,7 +927,7 @@ def test_dry_run_keeps_the_record_of_a_gone_workspace(world):
 
 
 def test_a_warning_card_that_cannot_be_archived_does_not_stall_cleanup(world):
-    world.status = " M a.py\n"
+    world.status = "UU a.py\n"
     window(world)
     world.status = ""
     world.fail_on = {("hermes", "kanban", "--board", config.settings["board"], "show")}
@@ -1091,12 +1090,14 @@ def test_an_archived_run_held_by_a_launch_or_recover_is_kept_and_its_quiet_clock
     assert len(removes(world)) == 1  # the quiet window was not restarted
 
 
-def test_an_archived_run_with_unsaved_work_warns_and_is_never_removed(world):
+def test_an_archived_run_with_work_it_cannot_preserve_warns_and_is_never_removed(world):
     closed_unmerged(world, "archived")
-    world.status = " M a.py\n"
+    world.status = "UU a.py\n"
     window(world)
     assert removes(world) == []
     assert [c["title"] for k, c in world.cards.items() if k != "t_1"] == ["Workspace kept · unsaved work in r"]
+    [warning] = [c["reason"] for k, c in world.cards.items() if k != "t_1"]
+    assert "Resolve that in the workspace" in warning and "Commit and push" not in warning
 
 
 def test_unarchiving_the_ledger_during_the_window_keeps_the_worktree(world):
@@ -1297,13 +1298,11 @@ def topic(ledger="t_1"):
     return conversation.load(ledger)
 
 
-@pytest.mark.parametrize("blocker", ["dirty", "unpushed", "agent-working", "child", "ownership", "reused-id"])
+@pytest.mark.parametrize("blocker", ["unpreservable", "agent-working", "child", "ownership", "reused-id"])
 def test_resolved_work_closes_its_topic_and_keeps_a_blocked_worktree(world, blocker):
     resolvable(world)
-    if blocker == "dirty":
-        world.status = "?? notes.txt\n"
-    elif blocker == "unpushed":
-        world.head_sha, world.unpushed = "def456", "1"
+    if blocker == "unpreservable":
+        world.status = "UU a.py\n"
     elif blocker == "agent-working":
         world.agent_status["wR:p2"] = "working"
     elif blocker == "child":
@@ -1371,7 +1370,7 @@ def test_resolving_is_idempotent_and_a_dry_run_changes_nothing(world, capsys):
 
 def test_a_resolved_runs_unsaved_work_warning_goes_to_the_main_chat(world):
     resolvable(world)
-    world.status = "?? notes.txt\n"
+    world.status = "UU a.py\n"
     window(world)
     assert world.subscribed and world.ledgers == [None]
 
@@ -1484,3 +1483,218 @@ def test_a_resolved_runs_topic_reopened_by_a_request_closes_again_but_a_human_re
     conversation.update("t_1", state="open", resumed=True)  # the human reopened it
     tick(world, 5)
     assert topic()["state"] == "open"
+
+
+# preserved removal: finished work kept only by unsaved state is backed up, verified, then removed ------------------
+
+ME = ["-c", "user.name=t", "-c", "user.email=t@t"]
+
+
+def finished_with_work(world):
+    """A real run worktree whose PR merged, then: a commit past the PR head pushed and its remote branch deleted,
+    staged and unstaged edits to one file, a binary file staged then changed, a tracked deletion, a rename, tracked and
+    untracked symlinks, untracked files in a new directory, and an ignored .env and node_modules."""
+    main = real_checkouts(world)
+    wt, origin = Path(world.path), Path(world.path).parent / "origin.git"
+    git(wt.parent, "init", "-q", "--bare", str(origin))
+    git(main, "remote", "add", "origin", str(origin))
+    git(main, "push", "-q", "origin", "main")
+    put(wt, ".gitignore", ".env\nnode_modules/\n")
+    put(wt, "f.txt", "a\nb\n")
+    put(wt, "gone.txt", "old\n")
+    put(wt, "ren.txt", "r\n")
+    Path(wt, "link").symlink_to("f.txt")
+    git(wt, "add", ".gitignore", "f.txt", "gone.txt", "ren.txt", "link")
+    git(wt, *ME, "commit", "-qm", "the merged work")
+    world.head_sha = world.pulls[0]["head"]["sha"] = git(wt, "rev-parse", "HEAD").strip()
+    put(wt, "f.txt", "a\nb\nc\n")
+    git(wt, *ME, "commit", "-qam", "after the merge")
+    git(wt, "push", "-q", "origin", f"HEAD:refs/heads/{world.branch}")
+    git(wt, "push", "-q", "origin", f":refs/heads/{world.branch}")  # no remote ref holds it any more
+    put(wt, "f.txt", "a\nb\nc\nstaged\n")
+    git(wt, "add", "f.txt")
+    put(wt, "f.txt", "a\nb\nc\nstaged\nunstaged\n")
+    Path(wt, "bin.dat").write_bytes(b"\x00\x01\xff")
+    git(wt, "add", "bin.dat")
+    Path(wt, "bin.dat").write_bytes(b"\x00\x01\xff\x00\x02")
+    git(wt, "rm", "-q", "gone.txt")
+    git(wt, "mv", "ren.txt", "ren2.txt")
+    put(wt, "notes.txt", "my notes\n")
+    put(wt, "d/new.txt", "new\n")
+    Path(wt, "link2").symlink_to("bin.dat")
+    put(wt, ".env", "SECRET=1\n")
+    put(wt, "node_modules/m.js", "x\n")
+    return main, origin
+
+
+def state(path):
+    """Everything a restore must give back, read through git and the files themselves."""
+    return (git(path, "status", "--porcelain", "--untracked-files=all"), git(path, "diff", "--cached", "--binary"),
+            git(path, "diff", "--binary"), git(path, "log", "--format=%H"), git(path, "branch", "--show-current"),
+            Path(path, "bin.dat").read_bytes(), Path(path, "notes.txt").read_text(), Path(path, "d/new.txt").read_text(),
+            os.readlink(Path(path, "link2")), os.readlink(Path(path, "link")))
+
+
+def backup_of(world):
+    [backup] = [b for b in cleanup.backups_dir().iterdir() if not b.name.startswith(".")]
+    return backup, json.loads((backup / "manifest.json").read_text())
+
+
+def test_finished_work_is_preserved_removed_and_restored_without_the_clone(world, capsys):
+    main, origin = finished_with_work(world)
+    before = state(world.path)
+    window(world)
+    assert removes(world) == [["herdr", "worktree", "remove", "--workspace", "wZ", "--force"]] and world.cards == {}
+    assert not Path(world.path).exists() and git(main, "branch", "--list", world.branch).strip()  # the branch stays
+    assert not git(main, "for-each-ref", cleanup.REFS).strip()  # its temporary refs are gone
+    backup, manifest = backup_of(world)
+    assert str(backup) in capsys.readouterr().out
+    assert (manifest["worktree"], manifest["branch"], manifest["head"]) == (world.path, world.branch,
+                                                                            before[3].split()[0])
+    assert {"notes.txt", "d/new.txt", "link2"} <= set(manifest["untracked"])
+    assert not any(".env" in rel or "node_modules" in rel for rel in manifest["untracked"])
+    assert sorted(p.name for p in backup.iterdir()) == ["manifest.json", "repo.bundle"]
+    shutil.rmtree(main)
+    shutil.rmtree(origin)  # restoring needs neither the clone's objects nor a remote
+    subprocess.run(manifest["restore"], shell=True, check=True, capture_output=True)
+    assert state(world.path) == before
+    assert not Path(world.path, ".env").exists() and not Path(world.path, "node_modules").exists()
+    every = git(world.path, "rev-list", "--all")
+    assert not any(name in (".env", "m.js") for c in every.split()
+                   for name in (Path(f).name for f in git(world.path, "ls-tree", "-r", "--name-only", c).split()))
+    again = subprocess.run(manifest["restore"], shell=True, capture_output=True)  # the destination exists now
+    assert again.returncode != 0 and state(world.path) == before
+
+
+def test_head_past_the_merged_head_with_everything_pushed_is_preserved(world):
+    real_checkouts(world)  # muster-112's shape: only scaffolding copies, HEAD not the newest merged PR's head
+    world.pulls.append(world._pr(number=30, sha="newer", merged_at="2026-09-28T17:30:00Z"))
+    window(world)
+    assert removes(world)[0][-1] == "--force"
+    _, manifest = backup_of(world)
+    assert manifest["head"] == world.head_sha
+
+
+def test_local_commits_alone_restore(world):
+    main = real_checkouts(world)
+    for rel in COPIES + [".codex/config.toml"]:
+        Path(world.path, rel).unlink()
+    put(world.path, "app.py", "print(2)\n")
+    git(world.path, *ME, "commit", "-qam", "local only")
+    head = git(world.path, "rev-parse", "HEAD").strip()
+    window(world)
+    _, manifest = backup_of(world)
+    assert manifest["untracked"] == []
+    shutil.rmtree(main)
+    subprocess.run(manifest["restore"], shell=True, check=True, capture_output=True)
+    assert git(world.path, "rev-parse", "HEAD").strip() == head and not git(world.path, "status", "--porcelain")
+
+
+def test_an_archived_run_with_unsaved_work_is_preserved(world):
+    real_checkouts(world)
+    world.pulls[0].update(state="closed", merged_at=None)
+    world.cards["t_run1"] = {"status": "archived", "comments": []}
+    put(world.path, "notes.txt", "mine\n")
+    window(world)
+    assert removes(world)[0][-1] == "--force" and "notes.txt" in backup_of(world)[1]["untracked"]
+
+
+def test_a_failed_backup_keeps_the_worktree_and_leaves_nothing(world):
+    main, _ = finished_with_work(world)
+    world.fail_on = {("git", "-C", world.path, "bundle")}
+    window(world)
+    assert world.removed is False and Path(world.path, "notes.txt").exists()
+    assert list(cleanup.backups_dir().iterdir()) == [] and not git(main, "for-each-ref", cleanup.REFS).strip()
+    world.fail_on = set()
+    window(world)  # the next window tries again
+    assert world.removed and backup_of(world)
+
+
+def test_a_bundle_that_does_not_read_back_keeps_the_worktree(world, monkeypatch, capsys):
+    finished_with_work(world)
+    real = world.run
+
+    def wrong(argv, env=None):
+        out = real(argv, env)
+        return "0" * 40 + "\n" + out if argv[-1].endswith("wip^3^{tree}") else out
+    monkeypatch.setattr(core, "run", wrong)
+    window(world)
+    assert world.removed is False and list(cleanup.backups_dir().iterdir()) == []
+    assert "the bundle does not read back" in capsys.readouterr().out
+
+
+def test_a_change_right_after_the_backup_keeps_the_worktree_and_the_backup(world, monkeypatch, capsys):
+    finished_with_work(world)
+    real = os.replace
+
+    def write_then_replace(src, dst):
+        real(src, dst)
+        if Path(dst).parent == cleanup.backups_dir():  # not the state file's replace
+            put(world.path, "late.txt", "written during the backup\n")
+    monkeypatch.setattr(cleanup.os, "replace", write_then_replace)
+    window(world)
+    assert world.removed is False and Path(world.path, "late.txt").exists()
+    assert backup_of(world) and "changed right after preservation" in capsys.readouterr().out
+
+
+def test_cleanup_interrupted_after_the_backup_preserves_again_and_removes(world):
+    finished_with_work(world)
+    world.fail_on = {("herdr", "worktree", "remove")}  # killed between the backup and the remove
+    window(world)
+    assert world.removed is False and len(list(cleanup.backups_dir().iterdir())) == 1
+    world.fail_on = set()
+    window(world)
+    assert world.removed and len(list(cleanup.backups_dir().iterdir())) == 2
+
+
+def conflict(world, main):
+    put(main, "app.py", "print(2)\n")
+    git(main, *ME, "commit", "-qam", "main moved")
+    put(world.path, "app.py", "print(3)\n")
+    git(world.path, *ME, "commit", "-qam", "mine")
+    subprocess.run(["git", "-C", world.path, *ME, "merge", "-q", "main"], capture_output=True)
+
+
+@pytest.mark.parametrize("case, reason", [
+    ("conflict", "app.py has a merge conflict"),
+    ("intent-to-add", "x.txt is only marked to add"),
+    ("nested-repo", "emb/ is a repository inside the checkout"),
+    ("submodules", "the checkout has submodules"),
+])
+def test_what_cannot_be_preserved_keeps_the_worktree_and_says_why(world, case, reason):
+    main = real_checkouts(world)
+    if case == "conflict":
+        conflict(world, main)
+    elif case == "intent-to-add":
+        put(world.path, "x.txt", "x\n")
+        git(world.path, "add", "-N", "x.txt")
+    elif case == "nested-repo":
+        git(world.path, "init", "-q", "emb")
+        put(world.path, "emb/z", "z\n")
+    else:
+        put(world.path, ".gitmodules", '[submodule "s"]\n\tpath = s\n')
+    window(world)
+    assert world.removed is False and not cleanup.backups_dir().exists()
+    [(card, data)] = world.cards.items()
+    assert f"cannot preserve: {reason}" in data["reason"]
+
+
+@pytest.mark.parametrize("owner", ["question", "outbox"])
+def test_an_unfinished_approval_or_event_keeps_finished_work(world, owner):
+    finished_with_work(world)
+    if owner == "question":
+        decisions.root().mkdir(parents=True, exist_ok=True)
+        (decisions.root() / "q1.json").write_text(json.dumps({"id": "q1", "kind": "question", "ledger": "t_run1",
+                                                                "status": "open"}))
+    else:
+        (runs.run_dir("t_run1") / "outbox").mkdir(parents=True)
+        (runs.run_dir("t_run1") / "outbox" / "1-proposal.json").write_text("{}")
+    window(world)
+    assert world.removed is False and not cleanup.backups_dir().exists()
+
+
+def test_dry_run_preserves_nothing(world, capsys):
+    finished_with_work(world)
+    window(world, argv=["--dry-run"])
+    assert world.removed is False and not cleanup.backups_dir().exists()
+    assert "after preserving it" in capsys.readouterr().out

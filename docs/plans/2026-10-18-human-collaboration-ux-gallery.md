@@ -466,3 +466,14 @@ state machine or dependency.
   converter would make `[x](!here)` a ping. Muster's own links (issue, detail) are built separately.
 - **A missing detail never hides a decision.** If the detail post fails, the card still goes out, and the
   failure is logged. A detail longer than one Slack message's 50 blocks spans several messages.
+- **Cleanup copy follows PR #48 (undoable cleanup).** Finished work with unsaved changes is now backed up and
+  removed, so it no longer gets a card. The "unsaved work" card covers only work that is not finished, or
+  that cleanup cannot back up. For unfinished work it offers two choices. Commit, push and open a pull request,
+  and nothing is removed. Or archive the run's ledger card, and cleanup backs the work up and removes the
+  workspace. For work cleanup cannot back up, it asks the human to resolve that first. Section 9's
+  "Commit or push … cleanup then removes it" no longer holds.
+- **An early plan tap is reconciled against ended questions first (re-review cycle 1).** A tap made before
+  the builder asked ends in either of two cases. In the first, the human answered that version's question,
+  here or in the pane; their answer stands. In the second, the builder asked after the tap and stopped
+  without this reply, and the tap ends as not delivered. This holds even if the question started and ended
+  between two gateway scans. A later question for the same version never gets the old tap.

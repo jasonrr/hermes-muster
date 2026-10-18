@@ -17,8 +17,13 @@ The muster board (the `board` setting) holds five kinds of card:
 - A DESIGN REVIEW card, titled "<title>: Proposal v<n> <sha>, ready for design review": the coding agent
   published that version of its design or plan. Its body names the ledger and holds that version's full text.
   It wakes you without pinging the human: your recommendation is their message.
-- A CLEANUP WARNING card, titled "Workspace kept · …" or "Work finished · workspace kept …": cleanup kept a workspace because it has
-  unsaved work and no open pull request from its branch. Its body names the workspace, repository, branch, worktree and the reason.
+- A CLEANUP WARNING card, titled "Workspace kept · …" or "Work finished · workspace kept …": cleanup kept a
+  quiet workspace because it has unsaved work it may not remove (the work is not finished, or the reason starts
+  "cannot preserve") and no open pull request from its branch, or finished work is still kept a day later. Its body
+  names the workspace, repository, branch, worktree and the reason. Finished work kept only by unsaved changes, local
+  commits or a HEAD past the merged head is not a warning: cleanup backs it up under
+  <data dir>/backups/cleanup/<time>-<name>/ and removes it. If the human wants it back, give them the `restore`
+  command from that backup's manifest.json; never run it yourself.
 
 Questions and permission prompts reach the human as their own message (Telegram or Slack), with every option as a
 button. The human answers there (a tap, or a reply to that message) or in the pane; muster delivers the
