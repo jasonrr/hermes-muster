@@ -71,7 +71,7 @@ def test_answered_question_prints_the_updated_input_and_is_done(tmp_path, capsys
     thread.join()
     assert out(capsys) == {"hookSpecificOutput": {"hookEventName": "PermissionRequest", "decision": {
         "behavior": "allow", "updatedInput": {**ASK["tool_input"], "answers": {"Which db?": "free text"}}}}}
-    assert (only()["status"], only()["outcome"]) == ("done", "Sent to Claude")
+    assert (only()["status"], only()["outcome"]) == ("done", decisions.ANSWER_SENT)
 
 
 def test_the_hook_leaves_no_marker_files(tmp_path):
@@ -92,7 +92,7 @@ def test_sigterm_from_claude_means_the_pane_answered(tmp_path, capsys):
     bridge.wait(tmp_path, LINK, BASH)
     thread.join()
     req = only()
-    assert out(capsys) is None and req["status"] == "stale" and req["outcome"] == "Answered in the pane"
+    assert out(capsys) is None and req["status"] == "stale" and req["outcome"].startswith("Ended in the pane: answered there, or the session stopped.")
 
 
 def test_the_pane_answering_as_the_hook_emits_is_never_reported_confirmed(tmp_path, capsys, monkeypatch):
@@ -103,7 +103,7 @@ def test_the_pane_answering_as_the_hook_emits_is_never_reported_confirmed(tmp_pa
     bridge.wait(tmp_path, LINK, BASH)
     thread.join()
     assert out(capsys)["hookSpecificOutput"]["decision"] == {"behavior": "allow"}
-    assert (only()["status"], only()["outcome"]) == ("done", "Allow sent to Claude")
+    assert (only()["status"], only()["outcome"]) == ("done", "Allowed once · sent to the builder. Muster can't confirm the command ran.")
 
 
 def test_claude_exiting_as_the_hook_emits_is_never_reported_confirmed(tmp_path, capsys, monkeypatch):
@@ -113,7 +113,7 @@ def test_claude_exiting_as_the_hook_emits_is_never_reported_confirmed(tmp_path, 
     bridge.wait(tmp_path, LINK, ASK)
     thread.join()
     assert out(capsys)["hookSpecificOutput"]["decision"]["behavior"] == "allow"
-    assert (only()["status"], only()["outcome"]) == ("done", "Sent to Claude")
+    assert (only()["status"], only()["outcome"]) == ("done", decisions.ANSWER_SENT)
 
 
 def test_the_pane_is_read_from_the_launch_for_an_adhoc_run(tmp_path):
@@ -154,7 +154,7 @@ def test_allow_once_is_done_as_allowed(tmp_path):
     thread = answer_when_open(answer={"decision": "allow"})
     bridge.wait(tmp_path, LINK, BASH)
     thread.join()
-    assert (only()["status"], only()["outcome"]) == ("done", "Allow sent to Claude")
+    assert (only()["status"], only()["outcome"]) == ("done", "Allowed once · sent to the builder. Muster can't confirm the command ran.")
 
 
 def test_deny_with_typed_text_carries_the_message(tmp_path, capsys):
@@ -162,7 +162,7 @@ def test_deny_with_typed_text_carries_the_message(tmp_path, capsys):
     bridge.wait(tmp_path, LINK, BASH)
     thread.join()
     assert out(capsys)["hookSpecificOutput"]["decision"] == {"behavior": "deny", "message": "use make"}
-    assert (only()["status"], only()["outcome"]) == ("done", "Deny sent to Claude: use make")
+    assert (only()["status"], only()["outcome"]) == ("done", "Denied · sent to the builder: use make")
 
 
 def test_plain_deny_has_no_message(tmp_path, capsys):
@@ -170,7 +170,7 @@ def test_plain_deny_has_no_message(tmp_path, capsys):
     bridge.wait(tmp_path, LINK, BASH)
     thread.join()
     assert out(capsys)["hookSpecificOutput"]["decision"] == {"behavior": "deny"}
-    assert only()["outcome"] == "Deny sent to Claude"
+    assert only()["outcome"] == "Denied · sent to the builder"
 
 
 def test_hermess_timeout_deny_is_reported_as_no_answer_in_time(tmp_path, capsys):
@@ -178,7 +178,7 @@ def test_hermess_timeout_deny_is_reported_as_no_answer_in_time(tmp_path, capsys)
     bridge.wait(tmp_path, LINK, BASH)
     thread.join()
     assert out(capsys)["hookSpecificOutput"]["decision"] == {"behavior": "deny", "message": "No answer in time."}
-    assert only()["outcome"] == "No answer in time: deny sent to Claude"
+    assert only()["outcome"] == "Expired: denied, no answer in time. The builder may ask again."
 
 
 @pytest.mark.parametrize("status", ["stale", "done", "failed"])
@@ -222,7 +222,7 @@ def test_the_deadline_stales_an_open_request(tmp_path, capsys, monkeypatch):
     monkeypatch.setattr(bridge, "DEADLINE", 0.05)
     bridge.wait(tmp_path, LINK, ASK)
     req = only()
-    assert out(capsys) is None and req["status"] == "stale" and "No answer in 24 h" in req["outcome"]
+    assert out(capsys) is None and req["status"] == "stale" and "Expired after 24 h" in req["outcome"]
 
 
 def test_a_permission_prompt_waits_only_ten_minutes_then_is_denied(tmp_path, capsys, monkeypatch):
@@ -232,7 +232,7 @@ def test_a_permission_prompt_waits_only_ten_minutes_then_is_denied(tmp_path, cap
     req = only()
     decision = out(capsys)["hookSpecificOutput"]["decision"]
     assert decision["behavior"] == "deny" and "10 minutes" in decision["message"]
-    assert req["status"] == "stale" and req["outcome"] == "No answer in 10 min: deny sent to Claude"
+    assert req["status"] == "stale" and req["outcome"] == "Expired: denied after 10 min. The builder may ask again."
 
 
 def test_a_subagent_prompt_is_sent_when_the_gateway_is_up(tmp_path, capsys, monkeypatch):
@@ -258,7 +258,7 @@ def test_a_main_agent_prompt_is_held_whatever_the_gateway_state(tmp_path, monkey
     thread = answer_when_open(answer={"decision": "deny"})
     bridge.wait(tmp_path, LINK, BASH)
     thread.join()
-    assert only()["outcome"] == "Deny sent to Claude"
+    assert only()["outcome"] == "Denied · sent to the builder"
 
 
 def test_an_answer_that_wins_the_deadline_race_is_used(tmp_path, capsys, monkeypatch):
@@ -348,7 +348,7 @@ def test_another_question_or_an_answered_one_is_left_alone(tmp_path):
     pending = asked()["id"]
     sent = asked(TWO[:1])["id"]
     decisions.transition(sent, ("open",), "answered", answer={"Approve v1?": "Approve"})
-    bridge.settle("t_led", used("PostToolUse", TWO[:1]))  # bridge.deliver reports this one "Sent to Claude"
+    bridge.settle("t_led", used("PostToolUse", TWO[:1]))  # bridge.deliver reports this one decisions.ANSWER_SENT
     assert decisions.load(sent)["status"] == "answered"
     assert decisions.load(pending)["status"] == "open"  # a different question: still answerable
 
@@ -374,9 +374,9 @@ def test_one_workers_answer_never_settles_a_parallel_workers_same_question(tmp_p
 def test_a_delivered_workers_post_tool_use_leaves_the_other_worker_open(tmp_path):
     a, b = asked(subagent="worker")["id"], asked(subagent="worker")["id"]
     decisions.transition(a, ("open",), "answered", answer={"Approve v1?": "Approve", "Track it?": "Yes"})
-    decisions.transition(a, ("answered",), "done", outcome="Sent to Claude")  # bridge.deliver
+    decisions.transition(a, ("answered",), "done", outcome=decisions.ANSWER_SENT)  # bridge.deliver
     bridge.settle("t_led", used("PostToolUse", agent_id="a1", agent_type="worker"))
-    assert (decisions.load(a)["outcome"], decisions.load(b)["status"]) == ("Sent to Claude", "open")
+    assert (decisions.load(a)["outcome"], decisions.load(b)["status"]) == (decisions.ANSWER_SENT, "open")
 
 
 def test_a_new_prompt_ends_every_main_agent_dialog_of_the_run(tmp_path):
@@ -386,7 +386,7 @@ def test_a_new_prompt_ends_every_main_agent_dialog_of_the_run(tmp_path):
     other = asked(ledger="t_other")["id"]
     bridge.settle("t_led", {"hook_event_name": "UserPromptSubmit", "prompt": "carry on"})
     assert [decisions.load(r)["status"] for r in (question, permission, sub, other)] == ["stale", "stale", "open", "open"]
-    assert decisions.load(question)["outcome"] == "No longer waiting: the pane moved on"
+    assert decisions.load(question)["outcome"] == "Ended: the builder moved on in the pane. Nothing was sent."
 
 
 def test_any_other_tool_use_reads_no_request(tmp_path, monkeypatch):

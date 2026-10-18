@@ -137,7 +137,8 @@ def poll(rid, tool_input):
         if os.getppid() != parent:
             return  # Claude is gone
         if TERMINATED:
-            decisions.transition(rid, ("open",), "stale", outcome="Answered in the pane")
+            decisions.transition(rid, ("open",), "stale", outcome="Ended in the pane: answered there, or the session "
+                                                                  "stopped. Nothing was sent from here.")
             return
         try:
             req = decisions.load(rid)
@@ -145,7 +146,8 @@ def poll(rid, tool_input):
             return
         permission = req["kind"] == "permission"
         if req["status"] == "open" and time.monotonic() - start >= (PERMISSION_DEADLINE if permission else DEADLINE):
-            outcome = "No answer in 10 min: deny sent to Claude" if permission else "No answer in 24 h; answer in the pane"
+            outcome = ("Expired: denied after 10 min. The builder may ask again." if permission
+                       else "Expired after 24 h without an answer. Nothing was sent; answer in the pane.")
             req, ok = decisions.transition(rid, ("open",), "stale", outcome=outcome)
             if ok:
                 if permission:
@@ -189,13 +191,13 @@ def deliver(req, tool_input):
     # around this write. "Allow" is permission given, never a command that ran.
     answer = req["answer"]
     if req["kind"] == "question":
-        outcome = "Sent to Claude"
+        outcome = decisions.ANSWER_SENT
     elif answer.get("timeout"):
-        outcome = "No answer in time: deny sent to Claude"
+        outcome = "Expired: denied, no answer in time. The builder may ask again."
     elif chosen["behavior"] == "deny":
-        outcome = "Deny sent to Claude" + (f": {answer['message']}" if answer.get("message") else "")
+        outcome = "Denied · sent to the builder" + (f": {answer['message']}" if answer.get("message") else "")
     else:
-        outcome = "Allow sent to Claude"
+        outcome = "Allowed once · sent to the builder. Muster can't confirm the command ran."
     decisions.transition(req["id"], ("answered",), "done", outcome=outcome)
 
 
@@ -221,7 +223,7 @@ def settle(ledger, payload):
     event = payload.get("hook_event_name")
     if event == "UserPromptSubmit":
         ended, to, outcome = (lambda r: r.get("kind") in ("question", "permission") and not r.get("subagent"),
-                              "stale", "No longer waiting: the pane moved on")
+                              "stale", "Ended: the builder moved on in the pane. Nothing was sent.")
     elif event in ("PostToolUse", "PostToolUseFailure") and not payload.get("agent_id") and claude.ask(payload):
         questions = [normalize(q) for q in claude.ask(payload)]
         ended = lambda r: r.get("kind") == "question" and r.get("questions") == questions and not r.get("subagent")  # noqa: E731

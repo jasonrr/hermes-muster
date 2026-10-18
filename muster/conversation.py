@@ -22,6 +22,7 @@ Only runs launched with `notify_topics` on have one; without it a run uses the m
 import contextlib
 import fcntl
 import json
+import re
 import time
 
 from . import config, core
@@ -29,6 +30,7 @@ from . import config, core
 WAIT = 45  # s a launch waits for the gateway's topic (three attempts 10 s apart)
 POLL = 0.5
 LIMIT = 128  # Telegram's topic name limit
+SHORT = 48  # characters of a title in a run's name
 THREADED = ("open", "closing", "closed")
 
 
@@ -82,12 +84,40 @@ def target(ledger):
     return {**core.notify_target(), "thread_id": thread}
 
 
-def name(repo, title, ledger, issue=None, branch=None):
-    """The topic's name: the run's readable title, ended by its ledger id. The id makes the name unique, so
-    Telegram's topic-created notice (which carries only the name) points at exactly one run."""
-    short, tag = repo.split("/")[-1], f" · {ledger}"
-    head = f"{short}#{issue}" if issue is not None else f"{short} {branch}:"
-    return f"{head} {title}"[:LIMIT - len(tag)] + tag
+def short(title, repo=""):
+    """A run's title as people name it: a leading repo or product tag ("muster: …", "[app] …") dropped, cut at a word
+    near SHORT. The full title stays in the linked issue."""
+    text = " ".join(str(title or "").split())
+    tag = re.match(r"\[([^\]]+)\]\s*|([\w.-]+):\s+", text)
+    if tag and (tag.group(1) or tag.group(2)).lower() in {repo.split("/")[-1].lower(), "muster"}:
+        text = text[tag.end():]
+    if len(text) <= SHORT:
+        return text
+    return (text[:SHORT].rsplit(" ", 1)[0] or text[:SHORT]).rstrip(" ,;:-") + "…"
+
+
+def tag(repo, issue=None, branch=None):
+    """What tells a run apart: its issue number (with the repo's name when several repos are configured), or branch."""
+    if issue is None:
+        return branch or ""
+    return f"{repo.split('/')[-1]}#{issue}" if len(config.settings.get("repos") or []) > 1 else f"#{issue}"
+
+
+def name(repo, title, issue=None, branch=None):
+    """The topic's name: the run's short title, then its issue number or branch. No ledger id: `unique` keeps two
+    live runs' names apart, so Telegram's topic-created notice (which carries only the name) points at one run."""
+    head, end = short(title, repo), tag(repo, issue, branch)
+    return (f"{head} · {end}" if head and head != end else end or head)[:LIMIT]
+
+
+def unique(ledger, wanted):
+    """`wanted`, or `wanted (2)`, (3)…: no other run's live conversation has that name."""
+    taken = {r.get("name") for r in every() if r["ledger"] != ledger and r.get("state") != "deleted"}
+    n, out = 1, wanted
+    while out in taken:
+        n += 1
+        out = f"{wanted[:LIMIT - 6]} ({n})"
+    return out
 
 
 def request(ledger, topic_name):
@@ -103,8 +133,8 @@ def request(ledger, topic_name):
 
         target = core.notify_target()
         base = {"platform": config.settings["notify_platform"], "chat_id": target["chat_id"],
-                "user_id": target["user_id"], "thread_id": None, "name": topic_name, "attempts": 0, "since": 0,
-                "previous": [], "cards": [], "noticed": False, "why": ""}
+                "user_id": target["user_id"], "thread_id": None, "name": unique(ledger, topic_name), "attempts": 0,
+                "since": 0, "previous": [], "cards": [], "noticed": False, "why": ""}
         if not decisions.gateway_up():
             return update(ledger, **{**base, "state": "fallback", "why": "the Hermes gateway is not running"})
         update(ledger, **base, state="pending")

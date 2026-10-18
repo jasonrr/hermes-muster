@@ -105,7 +105,7 @@ def test_choice_blocks():
     req = ask([question(labels=("Redis", "SQLite", "x" * 100))])
     rid = req["id"]
     section, actions, text = slack.blocks(req, 0)
-    assert section["type"] == "section" and section["text"]["text"].startswith("o/r #7")
+    assert section["type"] == "section" and section["text"]["text"].startswith("*Issue #7*")
     assert "tap Other" not in section["text"]["text"] and "Pick one" in section["text"]["text"]
     assert actions["block_id"] == f"mu:{rid}:0:choices"
     assert [e["action_id"] for e in actions["elements"]] == ["muster_choice_0", "muster_choice_1", "muster_choice_2"]
@@ -404,7 +404,8 @@ def test_a_command_never_breaks_out_of_its_preformatted_block(channel, command):
 
 def test_a_long_why_is_cut_before_escaping(channel):
     _, post = card_of(channel, permission(why="<" * 2000))
-    (head,) = [b for b in post["blocks"] if b["type"] == "section"]
+    head, scope = [b for b in post["blocks"] if b["type"] == "section"]
+    assert "Allow once lets the builder run this one command, once." in scope["text"]["text"]
     assert len(head["text"]["text"]) <= slack.CAP and "&lt;" * 500 in head["text"]["text"]
 
 
@@ -412,7 +413,7 @@ def test_a_command_too_long_for_slack_goes_to_the_pane(channel):
     req = permission("x" * 2901)
     sent, post = card_of(channel, req)
     assert not [b for b in post["blocks"] if b["type"] in ("actions", "input")]
-    assert "command too long for Slack (2901 chars)" in json.dumps(post["blocks"])
+    assert "too long for Slack (2901 characters)" in post["blocks"][0]["text"]["text"]
     assert preformatted(post["blocks"]) == ["x" * 500]
     saved = decisions.load(req["id"])
     assert saved["status"] == "stale" and saved["outcome"] == "Command too long for Slack: answer it in the pane"
@@ -459,10 +460,12 @@ def test_approval_refusals(channel):
 def test_an_ended_card_shows_its_outcome(channel):
     req = permission()
     sent, _ = card_of(channel, req)
-    decisions.transition(req["id"], ("open",), "done", outcome="Allow sent to Claude")
+    decisions.transition(req["id"], ("open",), "done",
+                         outcome="Allowed once · sent to the builder. Muster can't confirm the command ran.")
     assert asyncio.run(slack.outcome(decisions.load(req["id"]))) is True
     (update,) = channel.client.updates
-    assert update["ts"] == sent["messages"]["0"][0] and "Allow sent to Claude" in json.dumps(update["blocks"])
+    assert update["ts"] == sent["messages"]["0"][0] and update["blocks"][-1]["elements"][0]["text"] == (
+        "Allowed once · sent to the builder. Muster can't confirm the command ran.")
     assert preformatted(update["blocks"]) == ["touch x"]
     assert not [b for b in update["blocks"] if b["type"] in ("actions", "input")]
 
@@ -545,7 +548,7 @@ def test_the_gateway_posts_the_thread_parent_once(threads):
     tick(threads)
     (parent,) = threads.client.posts
     assert seen[0]["asked"] is True and seen[0]["state"] == "creating" and seen[0]["attempts"] == 1
-    assert "thread_ts" not in parent and "· led1" in parent["text"] and "⏳ running" in parent["text"]
+    assert "thread_ts" not in parent and parent["text"] == "*r#7 Fix it · led1*\nDispatched · waiting for the builder to start"
     ref = conversation.load("led1")
     assert ref["state"] == "open" and ref["thread_id"] == "1.000100"
     req = ask()
@@ -584,10 +587,9 @@ def test_closing_says_done_once_and_marks_the_parent(threads):
     conversation.finish("led1")
     tick(threads)
     tick(threads)
-    (note,) = threads.client.posts[1:]
-    assert note["thread_ts"] == thread and "finished" in note["text"]
+    assert threads.client.posts[1:] == []  # no finish note: the parent says it
     (parent,) = threads.client.updates
-    assert parent["ts"] == thread and "✅ done" in parent["text"]
+    assert parent["ts"] == thread and parent["text"].endswith("\nFinished")
     ref = conversation.load("led1")
     assert ref["state"] == "closed" and ref["closed_at"] == threads.clock[0] and ref["closed_by"] == "muster"
 
@@ -602,7 +604,7 @@ def test_a_parent_update_that_fails_is_retried_after_its_backoff(threads):
     tick(threads, 1)
     assert conversation.load("led1")["state"] == "closing"
     tick(threads, 10)
-    assert conversation.load("led1")["state"] == "closed" and len(threads.client.posts) == 2  # one finish note
+    assert conversation.load("led1")["state"] == "closed" and len(threads.client.posts) == 1  # the parent only
 
 
 @pytest.mark.parametrize("error", slack.GONE)
@@ -627,9 +629,10 @@ def test_a_newer_request_reopens_a_closed_thread_without_waiting_for_the_parent(
     tick(threads)
     assert threads.client.posts[-1]["thread_ts"] == thread and decisions.load(req["id"])["presented"]
     ref = conversation.load("led1")
-    assert ref["state"] == "open" and ref["parent_text"] == "running"
+    assert ref["state"] == "open" and ref["parent_text"] == "reopened"
     tick(threads)
-    assert "⏳ running" in threads.client.updates[-1]["text"] and not conversation.load("led1").get("parent_text")
+    assert threads.client.updates[-1]["text"].endswith("\nReopened for a new request")
+    assert not conversation.load("led1").get("parent_text")
 
 
 def test_a_closed_thread_reopens_for_nothing_older_than_its_close(threads):
@@ -665,7 +668,7 @@ def test_retiring_stales_requests_marks_the_parent_and_unsubscribes(threads):
     ref = conversation.load("led1")
     assert ref["state"] == "deleted" and ref["unsubscribed"] is True
     assert decisions.load(req["id"])["status"] == "stale"
-    assert any(u["ts"] == thread and "archived" in u["text"] for u in threads.client.updates)
+    assert any(u["ts"] == thread and u["text"].endswith("\nArchived") for u in threads.client.updates)
     assert threads.subs.rows["t_card"] == [] and threads.subs.rows["t_wait"] == []
     assert ref["ledger"] not in [r["ledger"] for r in conversation.active()]
 
@@ -705,7 +708,7 @@ def test_a_telegram_runs_ref_is_never_stepped_and_its_requests_go_top_level(thre
     tick(threads, 31)
     assert conversation.load("led1")["state"] == "open" and threads.client.updates == []
     (post,) = threads.client.posts
-    assert "thread_ts" not in post and post["blocks"][0]["text"]["text"].startswith("o/r #7")
+    assert "thread_ts" not in post and post["blocks"][0]["text"]["text"].startswith("*Issue #7*")
     assert decisions.load(req["id"])["presented"]
 
 
@@ -768,7 +771,7 @@ def test_the_thread_parent_carries_the_status_line_and_nothing_is_posted(threads
     assert len(threads.client.posts) == posts
     update = threads.client.updates[-1]
     assert update["ts"] == thread and update["channel"] == CHAN
-    assert update["text"].endswith(f"⏳ running\nBrief received {progress.hm(940)} · no tool activity observed yet")
+    assert update["text"].endswith(f"*\nStarted {progress.hm(940)} · no tool activity yet")
     asyncio.run(slack.parent({**conversation.load(P), "parent_text": "running"}))  # a reopen's own parent write
     assert threads.client.updates[-1]["text"] == update["text"]
 
@@ -780,10 +783,9 @@ def test_a_resolved_threads_parent_is_left_to_its_lifecycle(threads):
     conversation.update(P, resolved_at=1000, state="closing")
     tick(threads)
     assert progress.load(P)["final"] is True
-    assert threads.client.updates[-1]["text"].endswith("✅ done")
-    assert not any("Finished" in u["text"] for u in threads.client.updates)
-    asyncio.run(slack.parent({**conversation.load(P), "parent_text": "running"}))  # reopened later for new work
-    assert threads.client.updates[-1]["text"].endswith("⏳ running")  # never "running" with a finished line
+    assert threads.client.updates[-1]["text"].endswith("\nFinished · the pull request merged")
+    asyncio.run(slack.parent({**conversation.load(P), "parent_text": "reopened"}))  # reopened later for new work
+    assert threads.client.updates[-1]["text"].endswith("\nReopened for a new request")  # never a finished line
 
 
 def test_without_a_thread_one_channel_message_is_posted_then_edited(channel, monkeypatch):
@@ -793,7 +795,7 @@ def test_without_a_thread_one_channel_message_is_posted_then_edited(channel, mon
     launched(940)
     asyncio.run(gateway.scan())
     [post] = channel.client.posts
-    assert post["channel"] == CHAN and "thread_ts" not in post and post["text"].startswith(f"muster · {P}\n")
+    assert post["channel"] == CHAN and "thread_ts" not in post and post["text"].startswith(f"*{P}*\n")
     at = progress.activity(P) / "stop"
     at.touch()
     os.utime(at, (990, 990))
@@ -823,6 +825,239 @@ def test_a_resolved_thread_reopened_for_new_work_gets_no_finished_line_under_run
     thread = opened(threads, ledger=P)
     launched(940)
     conversation.update(P, resolved_at=1000)  # resolved, but its thread is open again for a late request
-    shown = asyncio.run(slack.show(P, "✅ Finished: pull request merged.", {}))
+    shown = asyncio.run(slack.show(P, "Finished · the pull request merged", {}))
     assert shown == {"mid": thread, "thread": thread}
     assert not any("Finished" in u["text"] for u in threads.client.updates)
+
+
+def test_a_parent_headline_is_the_short_title_the_state_and_a_native_issue_link(monkeypatch):
+    monkeypatch.setitem(config.settings, "repos", ["o/r"])
+    core.save_json(core.intake_dir() / "t_h" / "launch.json",
+                   {"card": "t_h", "repo": "o/r", "issue": 46, "title": "r: <!channel> show confirmed build start & "
+                    "lightweight agent activity status"})
+    text = slack.headline("t_h", "Needs your decision: plan v2 · since 14:05")
+    assert text == ("*&lt;!channel&gt; show confirmed build start &amp;…*\n"
+                    "Needs your decision: plan v2 · since 14:05 · <https://github.com/o/r/issues/46|Issue #46>")
+    assert "t_h" not in text and "muster" not in text
+    core.save_json(config.data_dir() / "runs" / "t_a" / "run.json", {"repo": "o/r", "branch": "muster/bump", "title": ""})
+    assert slack.headline("t_a", "Working") == "*muster/bump*\nWorking"  # the branch is the name: not repeated
+
+
+# -- decision cards: summary, whole text, native formatting ---------------------------------------------------------
+
+def kit_ok(blocks, text):
+    """Slack's documented limits (Block Kit reference: message ≤50 blocks, section text ≤3,000 characters, button
+    text ≤75, context ≤10 elements; chat.postMessage keeps a top-level `text` as the notification fallback)."""
+    assert text and len(blocks) <= 50
+    for b in blocks:
+        if b["type"] == "section":
+            assert b["text"]["type"] == "mrkdwn" and 0 < len(b["text"]["text"]) <= 3000
+        if b["type"] == "context":
+            assert len(b["elements"]) <= 10
+        for e in b.get("elements", []):
+            if e.get("type") == "button":
+                assert len(e["text"]["text"]) <= 75
+
+
+def build_request(review, summary=None, feedback=None):
+    text = (f"**PR #9 · Fix it**\n**Coordinator recommends: merge**\n\n{summary or review}\n\n"
+            "Merge squashes PR #9 into main. Muster does not deploy.")
+    labels = ["Merge PR (recommended)", "Review feedback…", "Leave PR open"]
+    return decisions.create("build", "led1", run={"repo": "o/r", "issue": 7, "branch": "muster/7", "title": "Fix it"},
+                            pr="https://github.com/o/r/pull/9", head="a" * 40, base="main", review=review,
+                            summary=summary, feedback=feedback, cycle=1, actions=["merge", "send-back", "nothing"],
+                            choices=[labels], questions=[{"text": text, "header": "Build", "multi": False, "options": [
+                                {"label": label, "description": ""} for label in labels]}])
+
+
+def test_a_long_review_is_its_own_message_whole_and_the_card_keeps_its_deploy_caveat(channel):
+    review = "\n\n".join(f"Paragraph {i}: " + "evidence " * 60 for i in range(40))  # ~20k characters
+    req = build_request(review, summary="Right and tested.\nDeploy on merge: publishes the docs site.")
+    asyncio.run(gateway.scan())
+    detail, card = channel.client.posts
+    kit_ok(detail["blocks"], detail["text"])
+    kit_ok(card["blocks"], card["text"])
+    whole = "\n\n".join(b["text"]["text"] for b in detail["blocks"])
+    for i in range(40):
+        assert f"Paragraph {i}: " in whole  # nothing cut at a section limit
+    assert len(detail["blocks"]) > 1 and detail["text"].startswith("Coordinator's full review · PR #9 · Fix it")
+    shown = "\n".join(b["text"]["text"] for b in card["blocks"] if b["type"] == "section")
+    assert "Deploy on merge: publishes the docs site." in shown and "evidence evidence" not in shown
+    assert shown.startswith("*PR #9 · Fix it*\n*Coordinator recommends: merge*")  # native bold, no ** left
+    assert "**" not in shown and "**" not in whole
+    link = next(b for b in card["blocks"] if b["type"] == "context")["elements"][0]["text"]
+    assert link == f"<https://example.slack.com/archives/{CHAN}/p{detail_ts(req)}|Full review>"
+    assert card["text"] == "PR #9 · Fix it\nCoordinator recommends: merge"  # notification text: the lead, not the review
+    asyncio.run(gateway.scan())
+    assert len(channel.client.posts) == 2  # the detail is posted once
+
+
+def detail_ts(req):
+    return decisions.load(req["id"])["detail"]["id"]
+
+
+def test_a_card_longer_than_a_section_is_split_never_cut(channel):
+    feedback = "\n".join(f"{i}. step " + "x" * 80 for i in range(80))  # ~7k characters the human authorizes
+    req = decisions.create("feedback", "led1", run={"repo": "o/r", "issue": 7, "branch": "muster/7"}, feedback=feedback,
+                           pr="https://github.com/o/r/pull/9", actions=["send", "cancel"],
+                           choices=[["Send feedback to builder", "Don't send"]],
+                           questions=[{"text": f"**Send this to the builder?**\n\n{feedback}", "header": "Feedback",
+                                       "multi": False, "options": [{"label": "Send feedback to builder", "description": ""},
+                                                                   {"label": "Don't send", "description": ""}]}])
+    asyncio.run(gateway.scan())
+    card = channel.client.posts[-1]
+    kit_ok(card["blocks"], card["text"])
+    shown = "\n".join(b["text"]["text"] for b in card["blocks"] if b["type"] == "section")
+    assert all(f"{i}. step " in shown for i in range(80)) and "…" not in shown
+    assert decisions.load(req["id"])["detail"]["platform"] == "slack"  # also whole above, for Telegram parity
+
+
+def test_agent_text_is_escaped_before_hermes_formats_it(channel):
+    seen = []
+    slack.T.adapter = types.SimpleNamespace(format_message=lambda text: seen.append(text) or text.upper())
+    assert slack.mrkdwn("<!channel> **bold** & <@U1>") == "&LT;!CHANNEL&GT; **BOLD** &AMP; &LT;@U1&GT;"
+    assert seen == ["&lt;!channel&gt; **bold** &amp; &lt;@U1&gt;"]  # escaped first: no ping survives
+    slack.T.adapter = None
+    assert slack.mrkdwn("**Plan v2** <b>") == "*Plan v2* &lt;b&gt;"  # without Hermes's converter, muster's own bold
+
+
+# -- one decision surface per plan version ---------------------------------------------------------------------------
+
+PLAN = {"version": 2, "sha": "abcdef012345"}
+
+
+def reviewing_plan(ledger="led1"):
+    from muster import progress
+    progress.activity(ledger).mkdir(parents=True, exist_ok=True)
+    progress.touch(ledger, "proposal", "v2")
+
+
+def approval_ask(**fields):
+    return ask([{"text": "Implement plan v2?", "header": "Approval", "multi": False,
+                 "options": [{"label": "Approve", "description": ""}, {"label": "Revise", "description": ""}]}],
+               proposal=PLAN, **fields)
+
+
+def design_card():
+    labels = ["Approve plan v2 (recommended)", "Send revisions to builder", "Leave pending"]
+    return decisions.create("design", "led1", run={"repo": "o/r", "issue": 7, "branch": "muster/7"}, proposal=PLAN,
+                            review="Fine.", feedback="Drop the cache.", actions=["approve", "send-back", "nothing"],
+                            choices=[labels], questions=[{"text": "**Plan v2 · Issue #7**\n**Coordinator recommends: "
+                                                                  "approve**\n\nFine.", "header": "Design",
+                                                          "multi": False, "options": [
+                                                              {"label": x, "description": ""} for x in labels]}])
+
+
+def texts(blocks):
+    return "\n".join(b["text"]["text"] for b in blocks if b["type"] == "section")
+
+
+def ts_of(req, n=0):
+    return decisions.load(req["id"])["presented"]["messages"][str(n)][0]
+
+
+def test_question_then_review_shows_one_live_approval_surface_then_recorded_then_delivered(channel):
+    reviewing_plan()
+    q = approval_ask()
+    asyncio.run(gateway.scan())
+    (first,) = channel.client.posts
+    first_ts = ts_of(q)
+    assert texts(first["blocks"]).startswith("*Plan v2 ready · Issue #7*\nCoordinator is reviewing. No action needed.")
+    buttons = [e["text"]["text"] for b in first["blocks"] if b["type"] == "actions" for e in b["elements"]]
+    assert buttons == ["Approve without Coordinator's review", "Revise"]  # the early path, labelled
+    d = design_card()
+    asyncio.run(gateway.scan())
+    redirect = channel.client.updates[-1]
+    assert redirect["ts"] == first_ts and redirect["text"] == "Plan v2 ready · decide on Coordinator's review below."
+    assert not [b for b in redirect["blocks"] if b["type"] in ("actions", "input")]  # no second set of controls
+    card = channel.client.posts[-1]
+    assert [b["type"] for b in card["blocks"]].count("actions") == 1 and len(channel.client.posts) == 2
+    tap(channel, d, 0, "muster_choice_0", value=f"{d['id']}|0|0", message_ts=ts_of(d))
+    asked = decisions.load(q["id"])
+    assert asked["status"] == "answered" and asked["answer"] == {"Implement plan v2?": "Approve: the human approved "
+                                                                                       "Proposal v2 abcdef012345."}
+    asyncio.run(gateway.scan())
+    assert channel.client.updates[-1]["text"] == "Approval of plan v2 recorded · delivering to the builder"
+    decisions.transition(q["id"], ("answered",), "done", outcome=decisions.ANSWER_SENT)  # the pane's bridge delivered it
+    asyncio.run(gateway.scan())
+    asyncio.run(gateway.scan())
+    assert decisions.load(d["id"])["outcome"] == "Approval of plan v2 delivered to the builder"
+    assert channel.client.updates[-1]["text"] == "Approval of plan v2 delivered to the builder"
+    assert len(channel.client.posts) == 2  # nothing asked twice
+
+
+def test_review_before_the_question_never_posts_the_question_and_leave_pending_brings_it_back(channel):
+    d = design_card()
+    asyncio.run(gateway.scan())
+    q = approval_ask()
+    asyncio.run(gateway.scan())
+    assert len(channel.client.posts) == 1  # the review is the one surface; the builder's question is not shown
+    tap(channel, d, 0, "muster_choice_2", value=f"{d['id']}|0|2", message_ts=ts_of(d))  # Leave pending
+    assert decisions.load(d["id"])["outcome"] == "Left pending. The builder's question about plan v2 stays open."
+    asyncio.run(gateway.scan())
+    again = channel.client.posts[-1]
+    assert len(channel.client.posts) == 2 and texts(again["blocks"]).startswith("*Plan v2 · Issue #7*\nNeeds your decision.")
+    assert decisions.load(q["id"])["status"] == "open"
+
+
+def test_a_bundled_question_keeps_its_other_question_live_while_the_review_answers_the_approval(channel):
+    q = ask([question("Which store?"), {"text": "Implement plan v2?", "header": "Approval", "multi": False,
+                                        "options": [{"label": "Approve", "description": ""}]}],
+            proposal=PLAN)
+    d = design_card()
+    asyncio.run(gateway.scan())
+    other = [p for p in channel.client.posts if "Which store?" in texts(p["blocks"])]
+    assert len(other) == 1 and len(channel.client.posts) == 2  # the other question, and the review
+    tap(channel, d, 0, "muster_choice_0", value=f"{d['id']}|0|0", message_ts=ts_of(d))
+    asyncio.run(gateway.scan())
+    assert channel.client.updates[-1]["text"] == "Approval of plan v2 recorded · awaiting your other answer above"
+    tap(channel, q, 0, "muster_choice_1", value=f"{q['id']}|0|1", message_ts=ts_of(q))
+    assert decisions.load(q["id"])["answer"] == {"Which store?": "Beta",
+                                                 "Implement plan v2?": "Approve: the human approved Proposal v2 "
+                                                                       "abcdef012345."}
+
+
+def test_five_parents_scan_without_opening_a_thread(monkeypatch):
+    """Acceptance: from the channel alone, each run's task, state, whether it needs you, and its link."""
+    monkeypatch.setitem(config.settings, "repos", ["jasonrr/hermes-muster"])
+    monkeypatch.setitem(config.settings, "coordinator_name", "Ella")
+    runs_ = [("t_dff6c76e", 46, "Show confirmed build start and lightweight agent activity status",
+              "Needs your decision: plan v2 · since 14:05"),
+             ("t_903749e7", 42, "Questions resolved in herdr reappear when their Telegram topic is reopened",
+              "Working · last activity 3 min ago (14:37)"),
+             ("t_aa11bb22", 49, "muster: fix flaky cleanup test", "PR #51 opened · Ella is reviewing · no action needed"),
+             ("t_cc33dd44", None, "", "Quiet 22 min · last tool 14:15 · long tools can be quiet"),
+             ("t_ee55ff66", 41, "Slack thread parents", "Finished · PR #44 merged")]
+    lines = []
+    for ledger, issue, title, state in runs_:
+        if issue:
+            core.save_json(core.intake_dir() / ledger / "launch.json",
+                           {"card": ledger, "repo": "jasonrr/hermes-muster", "issue": issue, "title": title})
+        else:
+            core.save_json(config.data_dir() / "runs" / ledger / "run.json",
+                           {"repo": "jasonrr/hermes-muster", "branch": "muster/bump-herdr", "title": title})
+        lines.append(slack.headline(ledger, state))
+    assert lines[0] == ("*Show confirmed build start and lightweight…*\nNeeds your decision: plan v2 · since 14:05 · "
+                        "<https://github.com/jasonrr/hermes-muster/issues/46|Issue #46>")
+    assert lines[2].startswith("*fix flaky cleanup test*\nPR #51 opened · Ella is reviewing · no action needed")
+    assert lines[3] == "*muster/bump-herdr*\nQuiet 22 min · last tool 14:15 · long tools can be quiet"
+    for line in lines:
+        title, state = line.split("\n")
+        assert title.startswith("*") and len(title) <= 52 and "**" not in line
+        assert "t_" not in line and "muster ·" not in line and "hermes-muster#" not in line
+    assert sum("Needs your decision" in line for line in lines) == 1  # the one run that needs you stands out
+
+
+def test_agent_markdown_links_cannot_ping_mention_or_disguise_a_link(channel):
+    slack.T.adapter = types.SimpleNamespace(format_message=lambda text: __import__("re").sub(
+        r"\[([^\]]+)\]\(([^)]+)\)", r"<\2|\1>", text))  # what Hermes's converter does with a Markdown link
+    out = slack.mrkdwn("[hi](!here) and [boss](@U012AB) [x](https://evil.example)")
+    assert "<!here" not in out and "<@U012AB" not in out and "<https://evil.example|" not in out
+
+
+def test_a_failed_detail_post_still_posts_the_decision_card(channel):
+    req = build_request("Detail. " * 10, summary="Right.\nDeploy on merge: none.")
+    channel.client.fail["chat_postMessage"] = ["msg_too_long"]  # the detail is refused
+    asyncio.run(gateway.scan())
+    (card,) = channel.client.posts
+    assert any(b["type"] == "actions" for b in card["blocks"]) and decisions.load(req["id"])["presented"]["messages"]

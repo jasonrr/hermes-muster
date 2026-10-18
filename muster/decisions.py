@@ -21,6 +21,9 @@ from pathlib import Path
 from . import config, core, events, progress
 
 OPEN = ("open", "answered", "executing")
+DELIVERED = "✓ Feedback delivered · revision pending"  # a feedback request the prompt hook saw arrive (core.seen)
+SENT = (DELIVERED, "Sent ✓")  # its outcome now, and before #48
+ANSWER_SENT = "Answer sent to the builder"  # a question the pane's hook answered (bridge.deliver)
 TERMINAL = ("done", "failed", "stale")
 
 
@@ -149,6 +152,16 @@ def for_ledger(ledger, kind=None):
     return sorted(found, key=lambda r: r.get("created_at", 0), reverse=True)
 
 
+def approval_slot(req):
+    """The index of the question a question request's proposal pin binds (headed `Approval`, claude.APPROVAL), or
+    None for a request that carries no proposal."""
+    from . import claude
+
+    if req.get("kind") != "question" or not req.get("proposal"):
+        return None
+    return next((n for n, q in enumerate(req["questions"]) if q.get("header") == claude.APPROVAL), None)
+
+
 def stale_others(ledger, kinds, keep, why):
     """Stale the ledger's other `open` requests of these kinds; `keep` is the one that stays."""
     for req in for_ledger(ledger):
@@ -186,7 +199,7 @@ def rereview(ledger, run=None):
     """
     from . import runs  # runs imports events, which imports core
 
-    sent = next((r for r in for_ledger(ledger, "feedback") if r["status"] == "done" and r.get("outcome") == "Sent ✓"),
+    sent = next((r for r in for_ledger(ledger, "feedback") if r["status"] == "done" and r.get("outcome") in SENT),
                 None)
     if not sent:
         return None, None
@@ -205,10 +218,11 @@ def rereview(ledger, run=None):
         "create", "--body",
         f"Revised after a send-back. ledger {ledger} | {pr['url']} | head {head} | review cycle {cycle}\n"
         + core.PROVENANCE, "--idempotency-key", f"review:{ledger}:{head}", "--created-by", core.CREATED_BY, "--json",
-        "--", f"{run.get('title') or run['repo'] + '/' + run['branch']}: revised, ready for re-review"))
+        "--", f"{short(run)}: {progress.pr_name(pr['url'])} revised"))
     if card["status"] == "ready":
         core.subscribe(card["id"], ledger)
-        core.kanban("complete", card["id"], "--summary", f"Revised, ready for re-review: {pr['url']} at {head[:7]}; {core.REVIEW_CUE}")
+        core.kanban("complete", card["id"], "--summary", f"{progress.pr_name(pr['url'])} updated to {head[:7]} · "
+                    f"{who()} is re-reviewing. No action needed. {pr['url']}")
         events.expect(card["id"], "done", "rereview")
         progress.touch(ledger, "review", pr["url"])  # only when the card is made: a replay keeps "since"
     for old in for_ledger(ledger, "build"):  # a recommendation for this head is the current one: keep it
@@ -219,7 +233,9 @@ def rereview(ledger, run=None):
 
 # -- recommend: the coordinator's review of a finished build becomes a `build` request ------------------
 
-LABELS = {"merge": "Merge (squash)", "send-back": "Send back", "nothing": "Do nothing"}
+LABELS = {"merge": "Merge PR", "send-back": "Review feedback…", "nothing": "Leave PR open"}  # "…": a second step
+VERBS = {"merge": "merge", "send-back": "send back", "nothing": "leave the PR open"}
+SUMMARY_MAX = 900  # characters: the card shows this summary whole; the full review is its own message above the card
 MERGEABLE = ("CLEAN", "HAS_HOOKS", "UNSTABLE")  # GitHub's mergeStateStatus; it stays the authority on checks
 
 
@@ -271,6 +287,30 @@ def read_text(path, what):
     return text
 
 
+def who():
+    return config.settings.get("coordinator_name") or "Coordinator"
+
+
+def short(run):
+    from . import conversation
+
+    return conversation.short(run.get("title") or "", run.get("repo") or "") or run.get("branch") or run.get("card")
+
+
+def summary_of(args, kind):
+    """The coordinator's card summary (`--summary`), or None: the card then shows the whole review. Refused, never cut,
+    when it is too long; a build's must state the deploy consequence, which no card may hide."""
+    if not getattr(args, "summary", None):
+        return None
+    text = read_text(args.summary, "summary")
+    if len(text) > SUMMARY_MAX:
+        raise ValueError(f"the summary is {len(text)} characters, over {SUMMARY_MAX}: the card shows it whole, so "
+                         f"shorten it (the full review stays in --review)")
+    if kind == "build" and "deploy" not in text.lower():
+        raise ValueError("the summary must state the deploy consequence (\"Deploy on merge: …\" or \"unknown\")")
+    return text
+
+
 def recommend(args):
     """`hermes muster recommend`: print the id of the open `build` request, or the refusal on stderr and 1."""
     core.prepare_env()
@@ -280,6 +320,7 @@ def recommend(args):
             raise ValueError("--choice send-back needs --feedback FILE")
         review = read_text(args.review, "review")
         feedback = read_text(args.feedback, "feedback") if args.feedback else None
+        summary = summary_of(args, "build")
         for req in for_ledger(args.ledger, "build"):
             if req["status"] == "open" and req.get("head") == args.head:
                 print("an open build request already exists for this head; the new text was ignored", file=sys.stderr)
@@ -295,20 +336,26 @@ def recommend(args):
         return 1
     order = [args.choice] + [a for a in LABELS if a != args.choice]
     labels = [LABELS[a] + (" (recommended)" if a == args.choice else "") for a in order]
-    sent = sum(1 for r in for_ledger(args.ledger, "feedback") if r["status"] == "done" and r.get("outcome") == "Sent ✓")
+    sent = sum(1 for r in for_ledger(args.ledger, "feedback") if r["status"] == "done" and r.get("outcome") in SENT)
+    pr = progress.pr_name(args.pr)
+    # what a tap does comes before the review, the one part a long card may cut (it is whole above the card)
+    text = "\n\n".join([f"**{pr} · {short(run)}**\n**{who()} recommends: {VERBS[args.choice]}**",
+                         f"Merge squashes {pr} into {run['base']}. Muster does not deploy.", summary or review])
     req = create("build", args.ledger, run=run, head=args.head, base=run["base"], pr=args.pr, review=review,
-                 feedback=feedback, cycle=1 + sent, proposal=None, wait=None, actions=order, choices=[labels],
-                 recommended=args.choice,
-                 questions=[{"text": review, "header": "Build", "multi": False,
+                 summary=summary, feedback=feedback, cycle=1 + sent, proposal=None, wait=None, actions=order,
+                 choices=[labels], recommended=args.choice,
+                 questions=[{"text": text, "header": "Build", "multi": False,
                              "options": [{"label": label, "description": ""} for label in labels]}])
     stale_others(args.ledger, ("build",), req["id"], "superseded by a newer recommendation")
+    progress.touch(args.ledger, "recommended")
     print(req["id"])
     return 0
 
 
 # -- recommend-design: the coordinator's review of one proposal version becomes a `design` request ----------
 
-DESIGN_LABELS = {"approve": "Approve", "send-back": "Send back", "nothing": "Do nothing"}
+DESIGN_LABELS = {"approve": "Approve plan v{n}", "send-back": "Send revisions to builder", "nothing": "Leave pending"}
+DESIGN_VERBS = {"approve": "approve", "revise": "send revisions", "judgment": None}
 DESIGN_CHOICE = {"approve": "approve", "revise": "send-back", "judgment": None}
 PIN = re.compile(r"v(\d+):([0-9a-f]{12})")
 FEEDBACK_MAX = 1500  # characters: Send back's text leads the message, so the human sees all of it before a tap
@@ -337,6 +384,7 @@ def recommend_design(args):
             raise ValueError(f"Proposal v{pin['version']} does not have hash {pin['sha']}")
         review = read_text(args.review, "review")
         feedback = read_text(args.feedback, "feedback") if args.feedback else None
+        summary = summary_of(args, "design")
         if feedback and len(feedback) > FEEDBACK_MAX:
             raise ValueError(f"the revisions are {len(feedback)} characters, over {FEEDBACK_MAX}: the human must "
                              f"see all of them on the message, so shorten them")
@@ -346,20 +394,34 @@ def recommend_design(args):
                       file=sys.stderr)
                 print(req["id"])
                 return 0
+        given = next((approval_part(r) or r.get("outcome") or "answered" for r in for_ledger(args.ledger, "question")
+                      if r.get("proposal") == pin and (answered(r) or (r["status"] == "open" and approval_part(r)))),
+                     None)
+        if given:  # the human answered first: their answer stands, and nothing asks them again
+            progress.touch(args.ledger, "recommended")
+            raise ValueError(f"the builder's approval question for Proposal v{pin['version']} was already answered "
+                             f"({given}): nothing is left to decide. Post your review as a short note, no buttons")
         run = run_of(args.ledger)
     except (ValueError, OSError, core.CommandError) as caught:
         print(f"recommend-design: {caught}", file=sys.stderr)
         return 1
-    chosen = DESIGN_CHOICE[args.choice]
+    chosen, n = DESIGN_CHOICE[args.choice], pin["version"]
     order = [chosen] + [a for a in DESIGN_LABELS if a != chosen] if chosen else list(DESIGN_LABELS)
-    labels = [DESIGN_LABELS[a] + (" (recommended)" if a == chosen else "") for a in order]
-    sends = f"Send back sends the agent:\n{feedback}\n\n" if feedback else ""  # before the review: never cut
-    text = f"Design review of {events.heading(pin)}\n\n{sends}{review}"
-    req = create("design", args.ledger, run=run, proposal=pin, review=review, feedback=feedback, wait=None,
-                 actions=order, choices=[labels], recommended=chosen,
+    labels = [DESIGN_LABELS[a].format(n=n) + (" (recommended)" if a == chosen else "") for a in order]
+    verb = DESIGN_VERBS[args.choice]
+    lead = f"**{who()} recommends: {verb}**" if verb else f"**{who()}: this one is your call**"
+    sends = [f"Send revisions sends the builder:\n{feedback}"] if feedback else []  # whole: FEEDBACK_MAX
+    # the revisions a tap sends, and what Approve does, come before the review: a long card cuts only the review,
+    # which is whole above the card
+    text = "\n\n".join([f"**Plan v{n} · {short(run)}**\n{lead}", *sends,
+                         f"Approve lets the builder implement plan v{n}. Nothing is merged or deployed.",
+                         summary or review])
+    req = create("design", args.ledger, run=run, proposal=pin, review=review, summary=summary, feedback=feedback,
+                 wait=None, actions=order, choices=[labels], recommended=chosen,
                  questions=[{"text": text, "header": "Design", "multi": False,
                              "options": [{"label": label, "description": ""} for label in labels]}])
     stale_others(args.ledger, ("design",), req["id"], "superseded by a newer design review")
+    progress.touch(args.ledger, "recommended")
     print(req["id"])
     return 0
 
@@ -372,7 +434,7 @@ SEEN_WAIT = 10  # s to wait for the UserPromptSubmit hook to report a sent promp
 SEEN_POLL = 0.5
 HUMAN_GH_DROP = ("GH_TOKEN", "GITHUB_TOKEN", "GH_CONFIG_DIR")
 EXTRA = "Additional instructions from the human:"
-SEND, DONT = "Send as written", "Don't send"
+SEND, DONT = "Send feedback to builder", "Don't send"
 
 
 def human_gh_env():
@@ -417,10 +479,13 @@ def amend(base, text):
 
 
 def make_feedback(req, text, **extra):
+    """The confirmation of a send-back: the whole text it authorizes, shown once, word for word."""
+    shown = (f"**Send this to the builder? · {progress.pr_name(req['pr'])} · {short(req['run'])}**\n\n{text}\n\n"
+             "Typed words are added to it; start with replace: to send only yours.")
     return create("feedback", req["ledger"], run=req["run"], head=req["head"], base=req["base"], pr=req["pr"],
                   review=req.get("review"), cycle=req["cycle"], feedback=text, wait=req.get("wait"), proposal=None,
                   actions=["send", "cancel"], choices=[[SEND, DONT]],
-                  questions=[{"text": text, "header": "Feedback", "multi": False,
+                  questions=[{"text": shown, "header": "Feedback", "multi": False,
                               "options": [{"label": SEND, "description": ""}, {"label": DONT, "description": ""}]}],
                   **extra)
 
@@ -435,7 +500,7 @@ def _execute(rid, boot):
         _design(req, boot)
     elif req["kind"] == "build":
         if text is None and action == "nothing":
-            transition(rid, ("answered",), "done", outcome="No action. PR open, not merged.")
+            transition(rid, ("answered",), "done", outcome="Left open. Not merged.")
         elif text is not None or action == "send-back":
             req, ok = transition(rid, ("answered",), "executing", executing_boot=boot,
                                  intent={"action": "send-back", "head": req["head"]})
@@ -446,7 +511,7 @@ def _execute(rid, boot):
         else:
             fail(rid, f"unknown action {action!r}")
     elif text is None and action == "cancel":
-        transition(rid, ("answered",), "done", outcome="Not sent")
+        transition(rid, ("answered",), "done", outcome="Not sent. Nothing reached the builder.")
     else:
         _send(req, boot)
 
@@ -455,30 +520,65 @@ def _design(req, boot):
     """The human's tap on a design review: the reply their approval question gets, or nothing."""
     rid, head, answer = req["id"], events.heading(req["proposal"]), req.get("answer") or {}
     if "text" not in answer and answer.get("action") == "nothing":
-        transition(rid, ("answered",), "done", outcome="No action. The approval question stays open.")
+        transition(rid, ("answered",), "done", outcome=f"Left pending. The builder's question about plan "
+                                                       f"v{req['proposal']['version']} stays open.")
         return
     if "text" in answer or answer.get("action") == "send-back":
         revisions = amend(req.get("feedback"), answer["text"]) if "text" in answer else req.get("feedback")
         if not revisions:
             fail(rid, "no revisions were proposed; reply to the message with yours")
             return
-        reply = f"Revise {head} before building. Revisions from the human:\n{revisions}"
+        reply, action = f"Revise {head} before building. Revisions from the human:\n{revisions}", "revise"
     elif answer.get("action") == "approve":
-        reply = f"Approve: the human approved {head}."
+        reply, action = f"Approve: the human approved {head}.", "approve"
     else:
         fail(rid, f"unknown action {answer.get('action')!r}")
         return
-    req, ok = transition(rid, ("answered",), "executing", executing_boot=boot, intent={"reply": reply})
+    req, ok = transition(rid, ("answered",), "executing", executing_boot=boot, intent={"reply": reply, "action": action})
     if ok:
         _answer_approval(req)
 
 
+def words(req):
+    """(what the human's tap gave, what an undelivered one means): an approval and a revision request never share
+    words."""
+    n, intent = req["proposal"]["version"], req["intent"]
+    if (intent.get("action") or ("approve" if intent["reply"].startswith("Approve") else "revise")) == "approve":
+        return f"Approval of plan v{n}", "Nothing was approved."
+    return f"Revisions for plan v{n}", "The revisions were not sent."
+
+
+def approval_part(ask):
+    """The answer already on an approval question's Approval part, or None."""
+    slot = approval_slot(ask)
+    part = (ask.get("partial") or {}).get(str(slot))
+    if part:
+        return part[0]
+    answer = ask.get("answer") or {}
+    return answer.get(ask["questions"][slot]["text"]) if slot is not None and isinstance(answer, dict) else None
+
+
+def answered(ask):
+    """True when an approval question was answered and not abandoned: answered, or done by delivery or the pane.
+    A stale one (the builder stopped waiting) delivered nothing, whatever part it held."""
+    return ask["status"] in ("answered", "done")
+
+
 def _answer_approval(req):
-    """Answer the open approval question that carries the reviewed version, through its own open -> answered
-    move: the pane's bridge delivers it as if the human had answered the question itself. Safe to repeat."""
+    """Give the reviewed version's approval question this request's exact reply (intent.reply) as its Approval
+    part, through the question's own first-answer-wins answer_part: the pane's bridge then delivers it as if the
+    human had answered the builder's message, with any other question of it answered on its own message. Before
+    the builder asks, the request waits (`executing`) and settle_design gives it once the question appears. It
+    stays `executing` until the bridge settles the question. Safe to repeat, and from a stale copy: it reads the
+    request again first.
+
+    Before any open question is chosen, every ended question for the version is reconciled: one the human
+    answered (here or in the pane) ends this request, their answer standing; one the builder asked after the tap
+    that ended without this reply ends it undelivered. Either way no later question of the version gets it."""
+    req = load(req["id"])
     rid, pin, intent = req["id"], req["proposal"], req["intent"]
-    head, reply = events.heading(pin), intent["reply"]
-    outcome = "Approval sent to the agent" if reply.startswith("Approve") else "Revisions sent to the agent"
+    if req["status"] != "executing":
+        return
     if intent.get("question"):
         # A recovery: only the question this request chose. The human may have answered it since; never pick another.
         try:
@@ -486,30 +586,82 @@ def _answer_approval(req):
         except (OSError, ValueError) as caught:
             fail(rid, f"the approval question it chose is unreadable ({caught}); nothing sent")
             return
-        if ask.get("answer") == {ask["questions"][0]["text"]: reply}:
-            transition(rid, ("executing",), "done", outcome=outcome)
-        elif ask["status"] == "open" and transition(ask["id"], ("open",), "answered",
-                                                    answer={ask["questions"][0]["text"]: reply})[1]:
-            transition(rid, ("executing",), "done", outcome=outcome)
-        else:
-            fail(rid, f"the approval question about {head} was answered or ended meanwhile; nothing sent")
+        _give(req, ask)
         return
+    tapped = next((a["at"] for a in req["audit"] if a["step"] == "executing"), req["created_at"])
     asks = [r for r in for_ledger(req["ledger"], "question") if r.get("proposal") == pin]
+    for ended in (r for r in asks if r["status"] != "open"):
+        given = approval_part(ended)
+        if answered(ended) and given != intent["reply"]:  # the human answered first: that answer stands
+            fail(rid, f"You already answered the builder's question about plan v{pin['version']}: "
+                      f"{given or ended.get('outcome') or 'answered'}. Nothing else was sent.")
+            return
+        if ended.get("created_at", 0) >= tapped and given != intent["reply"]:  # asked after the tap, ended without it
+            fail(rid, f"Not delivered: the builder's question ended without it. {words(req)[1]}")
+            return
     ask = next((r for r in asks if r["status"] == "open"), None)
-    if not asks:
-        # Tapped before the agent asked: offer the same review again, so the tap is not lost.
-        create("design", req["ledger"], **{k: req.get(k) for k in (
-            "run", "proposal", "review", "feedback", "wait", "actions", "choices", "recommended", "questions")})
-        fail(rid, f"the agent has not asked for approval of {head} yet; tap again on the new message")
-    elif ask is None:
-        fail(rid, f"the approval question about {head} is no longer waiting; nothing sent")
-    elif len(ask["questions"]) != 1:
-        fail(rid, "the approval request asks more than one question; answer it on its own message")
-    elif (update(rid, intent={**intent, "question": ask["id"]})  # recorded first: a recovery acts on this one only
-          and transition(ask["id"], ("open",), "answered", answer={ask["questions"][0]["text"]: reply})[1]):
-        transition(rid, ("executing",), "done", outcome=outcome)
-    else:
-        fail(rid, f"the approval question about {head} was answered meanwhile; nothing sent")
+    if ask is None:
+        return  # not asked yet, or asked and abandoned before the tap: settle_design gives it when the builder asks
+    req = update(rid, intent={**intent, "question": ask["id"]})  # recorded first: a recovery acts on this one only
+    _give(req, ask)
+
+
+def _give(req, ask):
+    rid, reply, slot = req["id"], req["intent"]["reply"], approval_slot(ask)
+    if slot is None:
+        fail(rid, "the builder's question carries no Approval question; nothing sent")
+        return
+    given = approval_part(ask)
+    if given is None and ask["status"] == "open":
+        compose = lambda parts, q=ask: {x["text"]: parts[i][0] for i, x in enumerate(q["questions"])}  # noqa: E731
+        ask, result = answer_part(ask["id"], slot, [reply, None], len(ask["questions"]), compose)
+        if result in ("accepted", "completed"):
+            return
+        given = approval_part(ask)
+    if given != reply:  # another answer won, or the question ended without one: never retargeted
+        fail(rid, f"You already answered this on the builder's question: {given}. Nothing else was sent." if given
+             else f"Not delivered: the builder's question ended without it. {words(req)[1]}")
+
+
+def settle_design(req):
+    """One gateway-scan step of an `executing` design request. Ends it when the human answered its version's
+    approval question first, or the builder asked and stopped without it; gives a waiting reply once the builder
+    asks; cancels it when a newer version replaced its own
+    first; ends it once the bridge settles the question: delivered only on the bridge's ANSWER_SENT. Returns
+    the line its card shows meanwhile, or None once it ended."""
+    rid, ledger, pin = req["id"], req["ledger"], req["proposal"]
+    if req["status"] != "executing":
+        return None
+    what, nothing = words(req)
+    if not req["intent"].get("question"):
+        newest = (events.versions(ledger) or [0])[-1]
+        if newest > pin["version"]:
+            fail(rid, f"Plan v{newest} replaced v{pin['version']} before the builder asked. {nothing}")
+            return None
+        _answer_approval(req)  # ended questions first, even with none open: never a later one after a human answer
+        req = load(rid)
+        if req["status"] != "executing":
+            return None
+        if not req["intent"].get("question"):
+            return f"{what} recorded · the builder hasn't asked yet; it gets this when it does."
+    ask = load(req["intent"]["question"])
+    if ask["status"] == "open":
+        if approval_part(ask) != req["intent"]["reply"]:
+            _give(req, ask)
+            return None if load(rid)["status"] != "executing" else f"{what} recorded · delivering to the builder"
+        return f"{what} recorded · awaiting your other answer above"
+    if ask["status"] == "answered":
+        return f"{what} recorded · delivering to the builder"
+    if ask["status"] == "done" and ask.get("outcome") in (ANSWER_SENT, "Sent to Claude") and approval_part(ask) == \
+            req["intent"]["reply"]:
+        revise = not req["intent"]["reply"].startswith("Approve")
+        transition(rid, ("executing",), "done", outcome=f"{what} delivered to the builder"
+                                                        + (" · revision pending" if revise else ""))
+        if revise:
+            progress.touch(ledger, "revision")
+        return None
+    fail(rid, f"Not delivered: the builder's question ended without it. {nothing}")
+    return None
 
 
 def _feedback_from_build(req):
@@ -524,7 +676,7 @@ def _feedback_from_build(req):
         return
     if not [r for r in for_ledger(req["ledger"], "feedback") if r.get("source") == req["id"]]:
         make_feedback(req, text, source=req["id"])
-    transition(req["id"], ("executing",), "done", outcome="Sending back; confirm the feedback")
+    transition(req["id"], ("executing",), "done", outcome="Feedback ready below: confirm it to send it")
 
 
 def _merge(req, boot):
@@ -557,14 +709,15 @@ def _merge(req, boot):
             continue
         if state.get("state") == "MERGED":
             sha7 = ((state.get("mergeCommit") or {}).get("oid") or head)[:7]
-            transition(rid, ("executing",), "done", outcome=f"Merged {sha7} (squash). Not deployed by muster.")
+            transition(rid, ("executing",), "done", outcome=f"✓ Merged {sha7} (squash). Not deployed by Muster.")
             return
     if error:
         fail(rid, error)
     elif state.get("state") == "OPEN" and state.get("autoMergeRequest"):
-        transition(rid, ("executing",), "done", outcome="Merge queued; not merged yet")
+        transition(rid, ("executing",), "done", outcome="Merge queued · not merged yet")
     else:
-        fail(rid, f"merge not confirmed (the pull request reads {state.get('state') or 'unknown'}); check GitHub")
+        fail(rid, f"Merge not confirmed: GitHub reads {state.get('state') or 'unknown'}. Check the PR before tapping "
+                  "again.")
 
 
 def wire_text(req, run, text):
@@ -589,7 +742,15 @@ def reconcile(req):
     sha, evidence = req.get("prompt_sha"), (req.get("run") or {}).get("evidence_dir")
     if req.get("kind") != "feedback" or req.get("status") != "open" or not sha or not evidence:
         return False
-    return core.seen(evidence, sha) and transition(req["id"], ("open",), "done", outcome="Sent ✓")[1]
+    return core.seen(evidence, sha) and delivered(transition(req["id"], ("open",), "done", outcome=DELIVERED))
+
+
+def delivered(moved):
+    """A transition's (request, ok): on ok, the run's status message learns the revision is pending. Returns ok."""
+    req, ok = moved
+    if ok:
+        progress.touch(req["ledger"], "revision")
+    return ok
 
 
 def _send(req, boot):
@@ -626,7 +787,7 @@ def _send(req, boot):
             _retry(req, "not confirmed delivered")
             return
         time.sleep(min(SEEN_POLL, max(end - time.monotonic(), 0)))
-    transition(rid, ("executing",), "done", outcome="Sent ✓")
+    delivered(transition(rid, ("executing",), "done", outcome=DELIVERED))
 
 
 def _recover(req):
@@ -643,7 +804,7 @@ def _recover(req):
             return
         if pr.get("state") == "MERGED" and pr.get("headRefOid") == req["head"]:
             sha7 = ((pr.get("mergeCommit") or {}).get("oid") or req["head"])[:7]
-            transition(rid, ("executing",), "done", outcome=f"Merged {sha7} (squash). Not deployed by muster.")
+            transition(rid, ("executing",), "done", outcome=f"✓ Merged {sha7} (squash). Not deployed by Muster.")
             return
         if pr.get("state") == "OPEN" and pr.get("headRefOid") == req["head"]:  # unchanged: the human may click again
             create("build", req["ledger"], **{k: req.get(k) for k in (
@@ -656,6 +817,6 @@ def _recover(req):
         if not sha or not evidence:
             fail(rid, "interrupted; cannot confirm delivery")
         elif core.seen(evidence, sha):
-            transition(rid, ("executing",), "done", outcome="Sent ✓")
+            delivered(transition(rid, ("executing",), "done", outcome=DELIVERED))
         else:
             _retry(req, "interrupted; not confirmed delivered")

@@ -72,13 +72,28 @@ def test_target_without_a_reference_is_the_main_chat():
                                            "thread_id": None}
 
 
-def test_name_is_cut_to_telegrams_limit_and_ends_with_the_ledger():
-    assert conversation.name("o/app", "Fix it", "t_1", issue=4) == "app#4 Fix it · t_1"
-    assert conversation.name("o/app", "Thing", "t_2", branch="feat/x") == "app feat/x: Thing · t_2"
-    long = conversation.name("o/app", "x" * 300, "t_0e034c97", issue=4)
-    assert len(long) == 128 and long.endswith(" · t_0e034c97")
-    # the same readable title in two runs: two names
-    assert conversation.name("o/app", "Fix", "t_a", issue=4) != conversation.name("o/app", "Fix", "t_b", issue=4)
+def test_name_is_the_short_title_and_issue_or_branch_without_the_ledger(monkeypatch):
+    monkeypatch.setitem(config.settings, "repos", ["o/app"])
+    assert conversation.name("o/app", "Fix it", issue=4) == "Fix it · #4"
+    assert conversation.name("o/app", "Thing", branch="feat/x") == "Thing · feat/x"
+    assert conversation.name("o/app", "", branch="feat/x") == "feat/x"
+    assert conversation.name("o/app", "app: Fix it", issue=4) == "Fix it · #4"  # the repo tag is not repeated
+    assert conversation.name("o/app", "[muster] Fix it", issue=4) == "Fix it · #4"
+    long = conversation.name("o/app", "Show confirmed build start and lightweight agent activity status", issue=46)
+    assert long == "Show confirmed build start and lightweight… · #46"
+    assert "t_" not in long and len(conversation.name("o/app", "x" * 300, issue=4)) <= 128
+    monkeypatch.setitem(config.settings, "repos", ["o/app", "o/web"])
+    assert conversation.name("o/app", "Fix it", issue=4) == "Fix it · app#4"  # two repos: the number needs its repo
+
+
+def test_unique_keeps_two_live_runs_apart():
+    conversation.update("t_a", name="Fix · #4", state="open")
+    assert conversation.unique("t_a", "Fix · #4") == "Fix · #4"  # its own name
+    assert conversation.unique("t_b", "Fix · #4") == "Fix · #4 (2)"
+    conversation.update("t_b", name="Fix · #4 (2)", state="open")
+    assert conversation.unique("t_c", "Fix · #4") == "Fix · #4 (3)"
+    conversation.update("t_a", state="deleted")
+    assert conversation.unique("t_c", "Fix · #4") == "Fix · #4"  # a deleted topic's name is free again
 
 
 def test_add_card_is_idempotent_and_a_no_op_without_a_reference():
@@ -147,7 +162,7 @@ def test_a_fallback_is_said_once_on_the_ledger(monkeypatch):
     comments = [argv for argv in subs.calls if argv[0] == "comment"]
     assert comments == [("comment", "led1", "topic: not created: the Hermes gateway is not running; this run stays "
                                             "in the main chat")]
-    assert conversation.load("led1")["name"] == "app#3 Fix · led1"
+    assert conversation.load("led1")["name"] == "Fix · app#3"
 
 
 def test_topics_off_a_subscription_writes_no_file(monkeypatch):

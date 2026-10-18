@@ -1,5 +1,5 @@
 """The slice of Slack the channel touches: Bolt's AsyncWebClient (chat_postMessage / chat_update /
-chat_postEphemeral), an AsyncApp holding it, the plugin context's Slack registrations, and block_actions bodies
+chat_postEphemeral / chat_getPermalink), an AsyncApp holding it, the plugin context's Slack registrations, and block_actions bodies
 shaped as Slack sends them. A failure is an ApiError carrying `.response["error"]`, as slack_sdk's SlackApiError."""
 
 
@@ -33,6 +33,10 @@ class Client:
 
     async def chat_postEphemeral(self, **kw):
         return self._call("chat_postEphemeral", kw, self.ephemerals)
+
+    async def chat_getPermalink(self, channel, message_ts):
+        self._call("chat_getPermalink", {}, [])
+        return {"ok": True, "channel": channel, "permalink": f"https://example.slack.com/archives/{channel}/p{message_ts}"}
 
 
 class App:

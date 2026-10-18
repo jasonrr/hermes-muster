@@ -7,7 +7,7 @@ gateway through it.
 import asyncio
 import time
 
-from .. import config, conversation, core, decisions, events
+from .. import config, conversation, core, decisions, events, progress
 
 CTX = None  # the Hermes plugin context; set by gateway.setup
 configured = False
@@ -50,20 +50,83 @@ def soon(loop, coro):
 # -- text -----------------------------------------------------------------------------------------
 
 def title(req):
+    """The run's short title (progress.identity): what people call the task, no repo or card id."""
     run = req.get("run") or {}
-    return f"{run['repo']} #{run['issue']}" if run.get("repo") and run.get("issue") else run.get("branch") or req["ledger"]
+    return progress.identity(req["ledger"], run.get("title") or (
+        f"Issue #{run['issue']}" if run.get("issue") else run.get("branch")))[0]
+
+
+def plain(text):
+    """Text without muster's own emphasis markers (`**`), for a surface that shows them literally."""
+    return str(text).replace("**", "")
+
+
+def fallback(req, n):
+    """A message's notification and screen-reader text: its first lines, never a whole review."""
+    first = plain(req["questions"][n]["text"]).strip().split("\n\n")[0]
+    if decisions.approval_slot(req) == n:
+        first = plain(lead(req, n)).split("\n")[0]
+    return (first if req["kind"] != "question" or decisions.approval_slot(req) == n else f"{title(req)}: {first}")[:300]
+
+
+DETAIL_OVER = 3000  # characters of a review or send-back past which its whole text also gets its own message
+
+
+def detail(req):
+    """The whole text behind a decision card, posted once as its own message just above it: the review (with the
+    plan's full text, for a plan), or a send-back too long for one message. None when the card itself holds it all."""
+    kind, review, run = req["kind"], req.get("review") or "", req.get("run") or {}
+    if kind in ("build", "design") and review and (req.get("summary") or len(review) > DETAIL_OVER):
+        who = config.settings.get("coordinator_name") or "Coordinator"
+        if kind == "build":
+            return f"**{who}'s full review · {progress.pr_name(req.get('pr'))} · {title(req)}**\n\n{review}"
+        n = (req.get("proposal") or {}).get("version")
+        try:
+            plan = (events.proposals(req["ledger"]) / f"v{n}.md").read_text().strip()
+        except OSError:
+            plan = ""
+        return (f"**{who}'s full review · Plan v{n} · {title(req)}**\n\n{review}"
+                + (f"\n\n**Plan v{n}, full text**\n\n{plan}" if plan else ""))
+    if kind == "feedback" and len(req.get("feedback") or "") > DETAIL_OVER:
+        return f"**Feedback, full text · {progress.pr_name(req.get('pr'))} · {title(req)}**\n\n{req['feedback']}"
+    return None
+
+
+def detail_label(req):
+    return {"design": "Full review and plan", "build": "Full review"}.get(req["kind"], "Full text")
+
+
+def reviewing(req, n):
+    """True for a builder's Approval question (decisions.approval_slot) whose plan version still waits for the
+    coordinator's review: answering it skips that review."""
+    if decisions.approval_slot(req) != n:
+        return False
+    m = progress.mtimes(req["ledger"])
+    return m.get("proposal", 0) > m.get("recommended", 0)
+
+
+def lead(req, n):
+    """The lines a question message opens with: the task, and for a plan approval the plan's state. A build, design
+    or feedback request's text opens with its own (decisions)."""
+    if req["kind"] != "question":
+        return ""
+    count = len(req["questions"])
+    if decisions.approval_slot(req) == n:
+        plan = f"Plan v{(req.get('proposal') or {}).get('version')}"
+        if reviewing(req, n):
+            who = config.settings.get("coordinator_name") or "Coordinator"
+            return (f"**{plan} ready · {title(req)}**\n{who} is reviewing. No action needed.\n\n"
+                    f"To decide without {who}'s review, answer the builder's question:")
+        return f"**{plan} · {title(req)}**\nNeeds your decision."
+    return f"**{title(req)}**" + (f" · question {n + 1} of {count}" if count > 1 else "")
 
 
 def render(req, n, *, cap, label_max, tail, number_multi=True):
     """Question n's message text, at most `cap` characters; `tail` is the channel's hint lines. The text names only
     what the buttons (see `buttons`) lack."""
     q = req["questions"][n]
-    card = req.get("wait") or req["ledger"]
-    head = [title(req)]
+    head = [h for h in [lead(req, n)] if h]
     tail = list(tail)
-    if req.get("proposal"):
-        p = req["proposal"]
-        tail.append(f"Proposal v{p.get('version')} {str(p.get('sha', ''))[:8]} (full text on ledger {req['ledger']})")
     shown = buttons(req, n, label_max=label_max, number_multi=number_multi)
 
     def build(described, body):
@@ -79,7 +142,7 @@ def render(req, n, *, cap, label_max, tail, number_multi=True):
 
     text = build(True, q["text"])
     if len(text) > cap:
-        tail.append(f"Full options on wait card {card}")
+        tail.append("Some option details did not fit in this message.")
         text = build(False, q["text"])
     if len(text) > cap:
         room = cap - len(build(False, ""))
@@ -92,16 +155,16 @@ def buttons(req, n, *, label_max, number_multi):
     answer names the numbers (number_multi), or when plain labels would leave a button blank or two alike after the
     cut."""
     choices = req["choices"][n]
-
-    def fit(s):
-        # ponytail: cuts by code point, so a long emoji sequence can split; cut by grapheme if labels carry them
-        return s if len(s) <= label_max else s[:label_max - 1] + "…"
-
-    plain = [fit(c) for c in choices]
+    plain = [fit(c, label_max) for c in choices]
     if (number_multi and req["questions"][n].get("multi")) or len(set(plain)) < len(plain) or not all(
             p.strip() for p in plain):
-        return [fit(f"{i + 1}. {c}") for i, c in enumerate(choices)]
+        return [fit(f"{i + 1}. {c}", label_max) for i, c in enumerate(choices)]
     return plain
+
+
+def fit(s, label_max):
+    # ponytail: cuts by code point, so a long emoji sequence can split; cut by grapheme if labels carry them
+    return s if len(s) <= label_max else s[:label_max - 1] + "…"
 
 
 def slack_text(s):

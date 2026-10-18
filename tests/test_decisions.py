@@ -6,7 +6,7 @@ import threading
 
 import pytest
 
-from muster import config, core, decisions, events, runs
+from muster import config, core, decisions, events, progress, runs
 
 
 def test_create_and_load():
@@ -230,9 +230,29 @@ def files(tmp_path, review="Looks good.", feedback=None):
     return str(tmp_path / "review.md"), (str(tmp_path / "fb.md") if feedback is not None else None)
 
 
-def rec_args(tmp_path, choice="merge", head=HEAD, pr=URL, review="Looks good.", feedback=None):
+def rec_args(tmp_path, choice="merge", head=HEAD, pr=URL, review="Looks good.", feedback=None, summary=None):
     r, f = files(tmp_path, review, feedback)
-    return argparse.Namespace(ledger="t_1", pr=pr, head=head, choice=choice, review=r, feedback=f)
+    if summary is not None:
+        (tmp_path / "summary.md").write_text(summary)
+    return argparse.Namespace(ledger="t_1", pr=pr, head=head, choice=choice, review=r, feedback=f,
+                              summary=str(tmp_path / "summary.md") if summary is not None else None)
+
+
+def test_a_summary_is_the_card_and_the_review_stays_whole(world, tmp_path, capsys):
+    long = "Detail. " * 1000
+    assert decisions.recommend(rec_args(tmp_path, review=long, summary="Right and tested.\nDeploy on merge: none.")) == 0
+    req = decisions.load(capsys.readouterr().out.strip())
+    assert req["review"] == long.strip() and req["summary"] == "Right and tested.\nDeploy on merge: none."
+    assert req["questions"][0]["text"] == ("**PR #9 · T**\n**Coordinator recommends: merge**\n\nMerge squashes PR #9 "
+                                           "into main. Muster does not deploy.\n\nRight and tested.\n"
+                                           "Deploy on merge: none.")
+
+
+@pytest.mark.parametrize("summary, why", [("x deploy " * 200, "over 900"), ("Right and tested.", "deploy consequence")])
+def test_a_summary_too_long_or_without_the_deploy_consequence_is_refused_not_cut(world, tmp_path, capsys, summary,
+                                                                                 why):
+    assert decisions.recommend(rec_args(tmp_path, summary=summary)) == 1
+    assert why in capsys.readouterr().err and decisions.for_ledger("t_1") == []
 
 
 def test_recommend_creates_the_build_request(world, tmp_path, capsys):
@@ -240,16 +260,18 @@ def test_recommend_creates_the_build_request(world, tmp_path, capsys):
     rid = capsys.readouterr().out.strip()
     req = decisions.load(rid)
     assert req["kind"] == "build" and req["status"] == "open" and req["ledger"] == "t_1"
-    assert req["choices"] == [["Send back (recommended)", "Merge (squash)", "Do nothing"]]
+    assert req["choices"] == [["Review feedback… (recommended)", "Merge PR", "Leave PR open"]]
     assert req["actions"] == ["send-back", "merge", "nothing"]
-    assert req["questions"] == [{"text": "Looks good.", "header": "Build", "multi": False, "options": [
+    assert req["questions"] == [{"text": "**PR #9 · T**\n**Coordinator recommends: send back**\n\nMerge squashes "
+                                         "PR #9 into main. Muster does not deploy.\n\nLooks good.",
+                                 "header": "Build", "multi": False, "options": [
         {"label": label, "description": ""} for label in req["choices"][0]]}]
     assert (req["head"], req["base"], req["pr"], req["cycle"]) == (HEAD, "main", URL, 1)
     assert req["review"] == "Looks good." and req["feedback"] == "Fix the null case."
     assert req["run"]["pane"] == "p_1" and req["run"]["repo"] == "acme/app"
 
 
-@pytest.mark.parametrize("choice, first", [("merge", "Merge (squash) (recommended)"), ("nothing", "Do nothing (recommended)")])
+@pytest.mark.parametrize("choice, first", [("merge", "Merge PR (recommended)"), ("nothing", "Leave PR open (recommended)")])
 def test_recommended_choice_goes_first(world, tmp_path, capsys, choice, first):
     decisions.recommend(rec_args(tmp_path, choice))
     req = decisions.load(capsys.readouterr().out.strip())
@@ -349,7 +371,7 @@ def state(rid):
 def test_do_nothing_touches_nothing(world):
     rid = build(world, {"action": "nothing"})
     decisions.execute(rid)
-    assert state(rid) == ("done", "No action. PR open, not merged.") and world.calls == []
+    assert state(rid) == ("done", "Left open. Not merged.") and world.calls == []
 
 
 def test_merge_revalidates_then_squash_merges_pinned_to_the_head_with_the_humans_gh(world, monkeypatch):
@@ -359,7 +381,7 @@ def test_merge_revalidates_then_squash_merges_pinned_to_the_head_with_the_humans
     monkeypatch.setenv("KEEP_ME", "1")
     rid = build(world, {"action": "merge"})
     decisions.execute(rid, "boot1")
-    assert state(rid) == ("done", "Merged ccccccc (squash). Not deployed by muster.")
+    assert state(rid) == ("done", "✓ Merged ccccccc (squash). Not deployed by Muster.")
     kinds = [a[2] for a, _ in world.calls]
     assert kinds == ["view", "merge", "view"]
     assert world.merge_calls() == [["gh", "pr", "merge", URL, "--squash", "--match-head-commit", HEAD]]
@@ -445,7 +467,7 @@ def test_a_queued_merge_is_reported_as_queued(world, monkeypatch):
     monkeypatch.setattr(core, "run", queue)
     rid = build(world, {"action": "merge"})
     decisions.execute(rid)
-    assert state(rid) == ("done", "Merge queued; not merged yet")
+    assert state(rid) == ("done", "Merge queued · not merged yet")
 
 
 def test_two_answer_deliveries_make_one_merge_call(world):
@@ -485,16 +507,18 @@ def test_send_back_makes_a_feedback_request(world):
     assert state(rid)[0] == "done"
     fb = feedback_of(rid)
     assert fb["status"] == "open" and fb["feedback"] == "Fix the null case." and fb["cycle"] == 1
-    assert fb["choices"] == [["Send as written", "Don't send"]] and fb["actions"] == ["send", "cancel"]
+    assert fb["choices"] == [["Send feedback to builder", "Don't send"]] and fb["actions"] == ["send", "cancel"]
     q = fb["questions"][0]
-    assert q["text"] == "Fix the null case." and [o["label"] for o in q["options"]] == fb["choices"][0]
+    assert q["text"] == ("**Send this to the builder? · PR #9 · T**\n\nFix the null case.\n\n"  # whole, verbatim
+                         "Typed words are added to it; start with replace: to send only yours.")
+    assert [o["label"] for o in q["options"]] == fb["choices"][0]
     assert fb["run"] == world.run_dict and fb["pr"] == URL and fb["head"] == HEAD and world.prompts == []
 
 
 def test_build_free_text_is_a_send_back_with_the_humans_words(world):
     rid = build(world, {"text": "also add a test"})
     decisions.execute(rid)
-    assert state(rid) == ("done", "Sending back; confirm the feedback")
+    assert state(rid) == ("done", "Feedback ready below: confirm it to send it")
     assert feedback_of(rid)["feedback"] == "Fix the null case.\n\nAdditional instructions from the human:\nalso add a test"
 
 
@@ -515,7 +539,7 @@ def test_send_back_executing_twice_makes_one_feedback_request(world):
 
 def feedback(world, answer, text="Fix the null case.", **fields):
     req = decisions.create("feedback", "t_1", run=world.run_dict, head=HEAD, base="main", pr=URL, cycle=2,
-                           feedback=text, actions=["send", "cancel"], choices=[["Send as written", "Don't send"]],
+                           feedback=text, actions=["send", "cancel"], choices=[["Send feedback to builder", "Don't send"]],
                            questions=[{"text": text, "header": "Feedback", "multi": False, "options": []}], **fields)
     return decisions.transition(req["id"], ("open",), "answered", answer=answer)[0]["id"]
 
@@ -535,13 +559,13 @@ def sha(text):
 def test_dont_send_is_a_clean_end(world):
     rid = feedback(world, {"action": "cancel"})
     decisions.execute(rid)
-    assert state(rid) == ("done", "Not sent") and world.prompts == []
+    assert state(rid) == ("done", "Not sent. Nothing reached the builder.") and world.prompts == []
 
 
 def test_send_delivers_and_confirms_by_the_prompt_hook(world):
     rid = feedback(world, {"action": "send"})
     decisions.execute(rid, "b1")
-    assert state(rid) == ("done", "Sent ✓")
+    assert state(rid) == ("done", decisions.DELIVERED)
     assert world.prompts == [wire_of(rid)]
     req = decisions.load(rid)
     assert req["intent"] == {"action": "send-back", "head": HEAD, "prompt_sha": sha(wire_of(rid))}
@@ -623,14 +647,14 @@ def test_a_prompt_that_never_shows_up_is_failed_with_a_retry(world):
     retry = [r for r in decisions.for_ledger("t_1", "feedback") if r["id"] != rid]
     assert len(retry) == 1 and retry[0]["status"] == "open" and retry[0]["retry_of"] == rid
     assert retry[0]["feedback"] == "Fix the null case.\n\nAdditional instructions from the human:\nextra"
-    assert retry[0]["cycle"] == 2 and retry[0]["questions"][0]["text"] == retry[0]["feedback"]
+    assert retry[0]["cycle"] == 2 and f"\n\n{retry[0]['feedback']}\n\n" in retry[0]["questions"][0]["text"]
 
 
 def test_a_herdr_error_that_did_deliver_is_still_sent(world):
     world.prompt_error = "herdr: exit 1\ntimeout"
     rid = feedback(world, {"action": "send"})
     decisions.execute(rid)
-    assert state(rid) == ("done", "Sent ✓")
+    assert state(rid) == ("done", decisions.DELIVERED)
 
 
 def test_a_retry_never_double_sends_when_the_first_send_was_in_fact_seen(world):
@@ -641,7 +665,7 @@ def test_a_retry_never_double_sends_when_the_first_send_was_in_fact_seen(world):
     core.prompt_seen(world.evidence, {"prompt": pasted(world.prompts[0])})  # the hook fired late
     decisions.transition(retry, ("open",), "answered", answer={"action": "send"})
     decisions.execute(retry)
-    assert state(retry) == ("done", "Sent ✓") and len(world.prompts) == 1
+    assert state(retry) == ("done", decisions.DELIVERED) and len(world.prompts) == 1
 
 
 def test_a_second_confirmation_while_the_agent_works_on_the_first_is_sent_without_a_resend(world):
@@ -653,7 +677,7 @@ def test_a_second_confirmation_while_the_agent_works_on_the_first_is_sent_withou
     world.agent = {"agent_status": "working"}  # on the first send's instructions
     decisions.transition(retry, ("open",), "answered", answer={"action": "send"})
     decisions.execute(retry)
-    assert state(retry) == ("done", "Sent ✓") and len(world.prompts) == 1
+    assert state(retry) == ("done", decisions.DELIVERED) and len(world.prompts) == 1
     assert len(decisions.for_ledger("t_1", "feedback")) == 2  # no further retry was offered
 
 
@@ -664,7 +688,7 @@ def test_a_retry_still_open_when_the_late_evidence_arrives_is_retired_as_sent(wo
     (retry,) = [r for r in decisions.for_ledger("t_1", "feedback") if r["id"] != first]
     assert retry["prompt_sha"] == sha(wire_of(first)) and not decisions.reconcile(retry)
     core.prompt_seen(world.evidence, {"prompt": pasted(world.prompts[0])})  # the hook fired late
-    assert decisions.reconcile(decisions.load(retry["id"])) and state(retry["id"]) == ("done", "Sent ✓")
+    assert decisions.reconcile(decisions.load(retry["id"])) and state(retry["id"]) == ("done", decisions.DELIVERED)
     assert not decisions.reconcile(decisions.load(retry["id"]))
     assert decisions.transition(retry["id"], ("open",), "answered", answer={"action": "send"})[1] is False
     decisions.execute(retry["id"])  # a stale tap: nothing is sent
@@ -700,7 +724,7 @@ def test_recover_a_merge_that_landed(world):
     world.pr.update(state="MERGED", mergeCommit={"oid": "c" * 40})
     req = executing(world, "merge")
     decisions.recover(req)
-    assert state(req["id"]) == ("done", "Merged ccccccc (squash). Not deployed by muster.") and world.merge_calls() == []
+    assert state(req["id"]) == ("done", "✓ Merged ccccccc (squash). Not deployed by Muster.") and world.merge_calls() == []
 
 
 def test_recover_a_merge_that_did_not_fails_and_offers_a_fresh_build_request(world):
@@ -741,7 +765,7 @@ def executing_send(world, seen):
 def test_recover_a_send_that_was_seen_is_done(world):
     req = executing_send(world, True)
     decisions.recover(req)
-    assert state(req["id"]) == ("done", "Sent ✓") and world.prompts == []
+    assert state(req["id"]) == ("done", decisions.DELIVERED) and world.prompts == []
 
 
 def test_recover_a_send_not_seen_is_failed_with_a_retry_and_sends_nothing(world):
@@ -815,10 +839,12 @@ def test_recommend_design_creates_a_request_bound_to_the_version(world, tmp_path
     req = decisions.load(capsys.readouterr().out.strip())
     assert req["kind"] == "design" and req["status"] == "open" and req["proposal"] == {"version": 2, "sha": s2}
     assert req["actions"] == ["send-back", "approve", "nothing"]
-    assert req["choices"] == [["Send back (recommended)", "Approve", "Do nothing"]]
-    # what Send back sends is on the message, ahead of the review, so the human sees it before tapping
-    assert req["questions"][0]["text"] == (f"Design review of Proposal v2 {s2}\n\nSend back sends the agent:\n"
-                                           "Drop the cache.\n\nSmall and right.")
+    assert req["choices"] == [["Send revisions to builder (recommended)", "Approve plan v2", "Leave pending"]]
+    # what Send revisions sends is on the message, whole, so the human sees it before tapping
+    assert req["questions"][0]["text"] == ("**Plan v2 · T**\n**Coordinator recommends: send revisions**\n\n"
+                                           "Send revisions sends the builder:\nDrop the cache.\n\n"
+                                           "Approve lets the builder implement plan v2. Nothing is merged or deployed.\n\n"
+                                           "Small and right.")
     assert req["feedback"] == "Drop the cache." and req["run"]["repo"] == "acme/app"
     assert decisions.recommend_design(design_args(tmp_path, f"v2:{s2}")) == 0  # the same version again
     assert capsys.readouterr().out.strip() == req["id"] and len(decisions.for_ledger("t_1", "design")) == 1
@@ -852,55 +878,171 @@ def design(answer, feedback="Drop the cache.", pin=PIN):
     return rid
 
 
+APPROVE = f"Approve: the human approved {HEADING}."
+REVISE = f"Revise {HEADING} before building. Revisions from the human:\nDrop the cache."
+BOTH = [({"action": "approve"}, APPROVE, "Approval of plan v2"), ({"action": "send-back"}, REVISE, "Revisions for plan v2")]
+
+
+def settle(rid):
+    return decisions.settle_design(decisions.load(rid))
+
+
+def delivered(ask):
+    """What the pane's bridge does once it handed the answer to Claude (bridge.deliver)."""
+    decisions.transition(ask, ("answered",), "done", outcome=decisions.ANSWER_SENT)
+
+
 @pytest.mark.parametrize("answer, reply", [
-    ({"action": "approve"}, f"Approve: the human approved {HEADING}."),
-    ({"action": "send-back"}, f"Revise {HEADING} before building. Revisions from the human:\nDrop the cache."),
-    ({"text": "also X"}, f"Revise {HEADING} before building. Revisions from the human:\nDrop the cache.\n\n"
-                         "Additional instructions from the human:\nalso X"),
+    ({"action": "approve"}, APPROVE),
+    ({"action": "send-back"}, REVISE),
+    ({"text": "also X"}, f"{REVISE}\n\nAdditional instructions from the human:\nalso X"),
     ({"text": "replace: only Y"}, f"Revise {HEADING} before building. Revisions from the human:\nonly Y"),
 ])
 def test_a_tap_answers_the_approval_question_that_carries_the_reviewed_version(world, answer, reply):
+    progress.activity("t_1").mkdir(parents=True)  # a launched run's evidence
     ask, rid = approval(), design(answer)
     decisions.execute(rid)
     assert decisions.load(ask)["status"] == "answered"
-    assert decisions.load(ask)["answer"] == {"Approve this design 0?": reply}  # the bridge delivers it to the pane
-    assert state(rid)[0] == "done"
+    assert decisions.load(ask)["answer"] == {"Approve this design 0?": reply}  # the exact words, to the bridge
+    what = "Approval" if reply == APPROVE else "Revisions"
+    assert state(rid)[0] == "executing" and settle(rid).startswith(what) and "recorded · delivering" in settle(rid)
     decisions.execute(rid)  # a second delivery of the same tap
-    assert len(decisions.load(ask)["audit"]) == 2
+    assert len(decisions.load(ask)["audit"]) == 3  # open, part, answered: given once
+    delivered(ask)
+    assert settle(rid) is None
+    status, outcome = state(rid)
+    assert status == "done" and outcome == (
+        "Approval of plan v2 delivered to the builder" if what == "Approval"
+        else "Revisions for plan v2 delivered to the builder · revision pending")
+    assert ("revision" in progress.mtimes("t_1")) is (what == "Revisions")
 
 
-def test_do_nothing_leaves_the_approval_question_open(world):
+def test_leave_pending_leaves_the_approval_question_open(world):
     ask, rid = approval(), design({"action": "nothing"})
     decisions.execute(rid)
-    assert state(rid)[0] == "done" and decisions.load(ask)["status"] == "open"
+    assert state(rid) == ("done", "Left pending. The builder's question about plan v2 stays open.")
+    assert decisions.load(ask)["status"] == "open"
 
 
-@pytest.mark.parametrize("setup, answer, why", [
-    (lambda: approval({"version": 1, "sha": "0" * 12}), {"action": "approve"}, "has not asked"),
-    (lambda: decisions.transition(approval(), ("open",), "stale"), {"action": "approve"}, "no longer waiting"),
-    (lambda: decisions.transition(approval(), ("open",), "done", outcome="Answered in the pane"),  # bridge.settle
-     {"action": "send-back"}, "no longer waiting"),
-    (lambda: approval(questions=2), {"action": "approve"}, "more than one question"),
-])
-def test_a_tap_never_answers_another_version_or_an_ended_question(world, setup, answer, why):
-    setup()
+@pytest.mark.parametrize("answer, reply, what", BOTH)
+def test_a_tap_before_the_builder_asks_is_kept_and_given_once_it_asks(world, answer, reply, what):
+    rid = design(answer)
+    decisions.execute(rid)
+    assert state(rid)[0] == "executing" and decisions.for_ledger("t_1", "design") == [decisions.load(rid)]  # no re-ask
+    assert settle(rid) == f"{what} recorded · the builder hasn't asked yet; it gets this when it does."
+    ask = approval()
+    assert settle(rid) == f"{what} recorded · delivering to the builder"
+    assert decisions.load(ask)["answer"] == {"Approve this design 0?": reply}
+    delivered(ask)
+    settle(rid)
+    assert state(rid)[0] == "done"
+
+
+@pytest.mark.parametrize("answer, reply, what", BOTH)
+def test_a_newer_version_cancels_a_tap_the_builder_never_asked_for(world, answer, reply, what):
+    rid = design(answer)
+    decisions.execute(rid)
+    save_versions("one", "two", "three")
+    assert settle(rid) is None
+    status, outcome = state(rid)
+    assert status == "failed" and outcome.startswith("Plan v3 replaced v2 before the builder asked.")
+    assert ("Nothing was approved." if reply == APPROVE else "The revisions were not sent.") in outcome
+    ask = approval()  # a late ask for the old version gets nothing from it
+    settle(rid)
+    assert decisions.load(ask)["status"] == "open"
+
+
+@pytest.mark.parametrize("answer, reply, what", BOTH)
+def test_a_bundled_approval_gets_only_its_part_and_the_other_answer_survives(world, answer, reply, what):
+    ask = decisions.create("question", "t_1", proposal=PIN, questions=[
+        {"text": "Which store?", "header": "Store", "options": [], "multi": False},
+        {"text": "Approve this design?", "header": "Approval", "options": [], "multi": False}])["id"]
+    rid = design(answer)
+    decisions.execute(rid)
+    assert decisions.load(ask)["partial"] == {"1": [reply, None]} and decisions.load(ask)["status"] == "open"
+    assert settle(rid) == f"{what} recorded · awaiting your other answer above"
+    compose = lambda parts: {"Which store?": parts[0][0], "Approve this design?": parts[1][0]}  # noqa: E731
+    assert decisions.answer_part(ask, 0, ["SQLite", [0]], 2, compose)[1] == "completed"
+    assert decisions.load(ask)["answer"] == {"Which store?": "SQLite", "Approve this design?": reply}
+    assert "delivering" in settle(rid)
+    delivered(ask)
+    settle(rid)
+    assert state(rid)[0] == "done"
+
+
+@pytest.mark.parametrize("answer, reply, what", BOTH)
+def test_a_human_answer_in_between_stands_and_is_never_retargeted(world, answer, reply, what):
+    ask = approval()
+    decisions.answer_part(ask, 0, ["Revise: drop the queue", None], 1, lambda parts: {"Approve this design 0?": parts[0][0]})
     rid = design(answer)
     decisions.execute(rid)
     status, outcome = state(rid)
-    assert status == "failed" and why in outcome
-    assert not [r for r in decisions.for_ledger("t_1", "question") if r["status"] == "answered"]
+    assert status == "failed" and outcome == ("You already answered the builder's question about plan v2: Revise: drop "
+                                              "the queue. Nothing else was sent.")
+    assert decisions.load(ask)["answer"] == {"Approve this design 0?": "Revise: drop the queue"}
+    second = approval()  # the same version asked again: an ended decision is never moved onto it
+    settle(rid)
+    assert decisions.load(second)["status"] == "open"
 
 
-def test_a_tap_before_the_agent_asked_offers_the_review_again(world):
+@pytest.mark.parametrize("ending, outcome", [("stale", "Ended: the builder stopped waiting. Nothing was sent."), ("done", "Answered in the pane")])
+def test_a_question_that_ended_before_the_tap_is_not_answered_again(world, ending, outcome):
+    ask = approval()
+    decisions.transition(ask, ("open",), ending, outcome=outcome)
     rid = design({"action": "approve"})
     decisions.execute(rid)
-    assert state(rid)[0] == "failed"
-    (again,) = [r for r in decisions.for_ledger("t_1", "design") if r["status"] == "open"]
-    assert again["proposal"] == PIN and again["feedback"] == "Drop the cache."
-    ask = approval()
-    decisions.transition(again["id"], ("open",), "answered", answer={"action": "approve"})
-    decisions.execute(again["id"])
-    assert decisions.load(ask)["answer"] == {"Approve this design 0?": f"Approve: the human approved {HEADING}."}
+    if ending == "done":  # answered in the pane: that answer stands
+        assert state(rid) == ("failed", "You already answered the builder's question about plan v2: Answered in the "
+                                        "pane. Nothing else was sent.")
+    else:  # abandoned unanswered: the tap waits for the builder to ask again
+        assert state(rid)[0] == "executing"
+        again = approval()
+        settle(rid)
+        assert decisions.load(again)["answer"] == {"Approve this design 0?": APPROVE}
+
+
+@pytest.mark.parametrize("restart", [False, True])
+@pytest.mark.parametrize("answer, reply, what", BOTH)
+def test_a_question_answered_between_scans_ends_an_early_tap_and_a_later_one_gets_nothing(world, answer, reply, what,
+                                                                                          restart):
+    rid = design(answer)
+    decisions.execute(rid)  # tapped before the builder asked
+    q1 = approval()  # asked and answered in the pane between two gateway scans
+    decisions.transition(q1, ("open",), "done", outcome="Answered in the pane",
+                         answer={"Approve this design 0?": "Request changes"})
+    if restart:
+        decisions.recover(decisions.load(rid))
+    else:
+        assert settle(rid) is None
+    assert state(rid) == ("failed", "You already answered the builder's question about plan v2: Request changes. "
+                                    "Nothing else was sent.")
+    q2 = approval()  # the same version asked again
+    settle(rid)
+    decisions.recover(decisions.load(rid))
+    assert decisions.load(q2)["status"] == "open" and "partial" not in decisions.load(q2)
+    assert decisions.load(q1)["answer"] == {"Approve this design 0?": "Request changes"}
+
+
+@pytest.mark.parametrize("answer, reply, what", BOTH)
+def test_a_question_asked_after_an_early_tap_that_ended_unanswered_ends_it_undelivered(world, answer, reply, what):
+    rid = design(answer)
+    decisions.execute(rid)
+    q1 = approval()
+    decisions.transition(q1, ("open",), "stale", outcome="Ended: the builder stopped waiting. Nothing was sent.")
+    settle(rid)
+    nothing = "Nothing was approved." if reply == APPROVE else "The revisions were not sent."
+    assert state(rid) == ("failed", f"Not delivered: the builder's question ended without it. {nothing}")
+    q2 = approval()
+    settle(rid)
+    assert decisions.load(q2)["status"] == "open" and "partial" not in decisions.load(q2)
+
+
+def test_a_question_that_ends_before_delivery_says_nothing_was_approved(world):
+    ask, rid = approval(), design({"action": "approve"})
+    decisions.execute(rid)
+    decisions.transition(ask, ("answered",), "stale", outcome="Ended: the builder stopped waiting. Nothing was sent.")
+    assert settle(rid) is None
+    assert state(rid) == ("failed", "Not delivered: the builder's question ended without it. Nothing was approved.")
 
 
 def test_send_back_without_revisions_sends_nothing(world):
@@ -911,35 +1053,32 @@ def test_send_back_without_revisions_sends_nothing(world):
 
 def test_recover_a_design_tap_answers_once(world):
     ask, rid = approval(), design({"action": "approve"})
-    reply = f"Approve: the human approved {HEADING}."
-    decisions.transition(rid, ("answered",), "executing", intent={"reply": reply})
+    decisions.transition(rid, ("answered",), "executing", intent={"reply": APPROVE, "action": "approve"})
     decisions.recover(decisions.load(rid))
-    assert decisions.load(ask)["answer"] == {"Approve this design 0?": reply} and state(rid)[0] == "done"
+    assert decisions.load(ask)["answer"] == {"Approve this design 0?": APPROVE} and state(rid)[0] == "executing"
     rid2 = design({"action": "approve"})  # killed after it answered its question
-    decisions.transition(rid2, ("answered",), "executing", intent={"reply": reply, "question": ask})
+    decisions.transition(rid2, ("answered",), "executing", intent={"reply": APPROVE, "question": ask})
     decisions.recover(decisions.load(rid2))
-    assert state(rid2)[0] == "done" and len(decisions.load(ask)["audit"]) == 2
+    assert state(rid2)[0] == "executing" and len(decisions.load(ask)["audit"]) == 3
 
 
 def test_recovery_acts_only_on_the_question_it_chose(world):
     q1, rid = approval(), design({"action": "approve"})
-    reply = f"Approve: the human approved {HEADING}."
-    decisions.transition(rid, ("answered",), "executing", intent={"reply": reply, "question": q1})  # then killed
+    decisions.transition(rid, ("answered",), "executing", intent={"reply": APPROVE, "question": q1})  # then killed
     decisions.transition(q1, ("open",), "answered", answer={"Approve this design 0?": "Revise; do not implement."})
     q2 = approval()  # the same pin asked again
     decisions.recover(decisions.load(rid))
     status, outcome = state(rid)
-    assert status == "failed" and "answered or ended meanwhile" in outcome
+    assert status == "failed" and "You already answered this on the builder's question: Revise" in outcome
     assert decisions.load(q2)["status"] == "open"
     assert decisions.load(q1)["answer"] == {"Approve this design 0?": "Revise; do not implement."}
 
 
 def test_recovery_answers_the_chosen_question_when_it_is_still_open(world):
     q1, rid = approval(), design({"action": "approve"})
-    reply = f"Approve: the human approved {HEADING}."
-    decisions.transition(rid, ("answered",), "executing", intent={"reply": reply, "question": q1})  # killed before
+    decisions.transition(rid, ("answered",), "executing", intent={"reply": APPROVE, "question": q1})  # killed before
     decisions.recover(decisions.load(rid))
-    assert decisions.load(q1)["answer"] == {"Approve this design 0?": reply} and state(rid)[0] == "done"
+    assert decisions.load(q1)["answer"] == {"Approve this design 0?": APPROVE} and state(rid)[0] == "executing"
 
 
 def test_an_earlier_question_answered_alike_does_not_count_as_this_taps_answer(world):
@@ -949,7 +1088,19 @@ def test_an_earlier_question_answered_alike_does_not_count_as_this_taps_answer(w
     second = approval()  # the same version proposed again and asked again
     rid = design({"action": "approve"})
     decisions.execute(rid)
-    assert decisions.load(second)["status"] == "answered" and state(rid)[0] == "done"
+    assert decisions.load(second)["status"] == "answered" and state(rid)[0] == "executing"
+
+
+def test_recommend_design_refuses_a_version_the_human_already_answered(world, tmp_path, capsys):
+    progress.activity("t_1").mkdir(parents=True)
+    s1, s2 = save_versions("plan one", "plan two")
+    pin = {"version": 2, "sha": s2}
+    ask = approval(pin)
+    decisions.answer_part(ask, 0, ["Approve", [0]], 1, lambda parts: {"Approve this design 0?": parts[0][0]})
+    assert decisions.recommend_design(design_args(tmp_path, f"v2:{s2}")) == 1
+    err = capsys.readouterr().err
+    assert "already answered (Approve)" in err and "short note" in err and decisions.for_ledger("t_1", "design") == []
+    assert "recommended" in progress.mtimes("t_1")  # the run no longer reads "reviewing"
 
 
 # -- obsolete: a saved build or feedback request is checked against its pull request before it is shown ---------
@@ -1013,3 +1164,38 @@ def test_answer_part_two_threads_lose_neither_part():
     [t.join() for t in threads]
     assert sorted(results) == ["accepted", "completed"]
     assert decisions.load(rid)["answer"] == {"p": [["a0", None], ["a1", None]]}
+
+
+def test_revisions_and_what_approve_does_lead_the_card_so_a_long_review_never_cuts_them(world, tmp_path, capsys):
+    from muster.channels import shared
+    s1, s2 = save_versions("plan one", "plan two")
+    args = design_args(tmp_path, f"v2:{s2}", "revise", "DROP THE CACHE")
+    (tmp_path / "review.md").write_text("Long review. " * 500)  # no --summary: the card is the review
+    assert decisions.recommend_design(args) == 0
+    req = decisions.load(capsys.readouterr().out.strip())
+    text = shared.render(req, 0, cap=3500, label_max=64, tail=["x"])  # Telegram's cap
+    assert "DROP THE CACHE" in text and "Approve lets the builder implement plan v2" in text
+    assert shared.detail(req).count("Long review.") == 500  # the cut review is whole above the card
+
+
+def test_a_concurrent_step_that_gave_this_reply_is_not_mistaken_for_a_human_answer(world):
+    ask, rid = approval(), design({"action": "approve"})
+    decisions.transition(rid, ("answered",), "executing", intent={"reply": APPROVE, "action": "approve"})
+    stale_copy = decisions.load(rid)
+    decisions.recover(decisions.load(rid))  # a boot's recover gives the reply first
+    decisions.settle_design(stale_copy)  # the scan, with its copy from before
+    assert state(rid)[0] == "executing" and decisions.load(rid)["intent"]["question"] == ask
+    delivered(ask)
+    settle(rid)
+    assert state(rid) == ("done", "Approval of plan v2 delivered to the builder")
+
+
+def test_an_abandoned_ask_with_an_undelivered_part_does_not_block_a_later_tap(world):
+    ask = decisions.create("question", "t_1", proposal=PIN, questions=[
+        {"text": "Approve this design?", "header": "Approval", "options": [], "multi": False},
+        {"text": "Which store?", "header": "Store", "options": [], "multi": False}])["id"]
+    decisions.answer_part(ask, 0, ["Approve", [0]], 2, lambda parts: {})
+    decisions.transition(ask, ("open",), "stale", outcome="Ended: the builder moved on in the pane. Nothing was sent.")
+    rid = design({"action": "approve"})
+    decisions.execute(rid)
+    assert state(rid)[0] == "executing"  # waits for the builder to ask again
