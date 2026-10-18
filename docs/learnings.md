@@ -124,3 +124,10 @@
 
 - Ordering "review-ready" against the newest tool event → the agent's own `hook done` runs in a Bash tool whose PostToolUse lands after it, so the run would never read ready; order it against the next human prompt (a send-back), not tool events.
 - A "never repost" guard written as `saved.get("lost_thread") == thread` → with no topics the thread is `None`, so every main-chat run matched and was never posted (caught by the plan attack); compare a stored `{"thread": …}` record, never a bare value that may be None.
+
+## human collaboration UX (2026-10-18)
+
+- Formatting Slack text by running agent text through Hermes's `adapter.format_message` alone → it escapes only broadcast mentions, so a raw `<@U…>` in agent text would still ping; escape with `shared.slack_text` first, then convert: `format_message` keeps existing entities and still turns `**bold**`, headings and `[x](url)` into mrkdwn.
+- Writing Markdown into a Telegram clarify prompt → muster's clarify path (`send_labelled_clarify`, like Hermes's `send_clarify`) HTML-escapes the text, so `**` shows literally; Telegram cards get plain text (`shared.plain`), and only a separate `adapter.send` message (the full review) gets Hermes's MarkdownV2 conversion.
+- Using a stored outcome string as a state marker ("Sent ✓" picked out delivered send-backs) → rewording it for humans would have silently broken re-review; match outcomes through a constant that also accepts the old string (`decisions.SENT`).
+- Telegram's re-presentation after a restart cleared `partial`, so a human's answer to one question of several was lost on every gateway restart; keep the parts and present only the unanswered questions.

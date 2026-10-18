@@ -432,3 +432,30 @@ state machine or dependency.
   rule). The copy says "delivered to the builder", never "applied".
 - Hermes's own Slack/Telegram noise remains until you take it up separately. If you want, the optional
   follow-up is Hermes's existing `display.tool_progress` setting.
+
+---
+
+## As built (approved v2; deviations recorded during the build)
+
+- **Coordinator name.** Choice A was approved as a setting. `coordinator_name` defaults to "Coordinator", not
+  "the reviewer", because the copy reads "Coordinator is reviewing". Set it to "Ella".
+- **Summary contract.** `--summary` is refused, never cut, over 900 characters. A build summary must contain
+  the word "deploy" (the deploy consequence). Without `--summary` the card shows the whole review, as before.
+- **Detail message.** It is posted when the request has a summary, or when the review (or a send-back)
+  runs over 3,000 characters. A plan's detail message carries the review and the plan's full text. Slack
+  links to it by `chat.getPermalink`. If that call fails, the card has no link and the detail stays just
+  above the card.
+- **Slack text.** Text is escaped, then converted by Hermes's `adapter.format_message`. Without that method
+  (an older Hermes), Muster converts only its own `**bold**`. Long text is split into sections at
+  paragraph, line or space breaks, never cut.
+- **Telegram.** Cards are plain text, because the clarify path HTML-escapes its text. Only the detail
+  message gets Hermes's Markdown formatting.
+- **Topic names.** Topic names are `<short title> · #<issue>` (or `· <branch>`, or `repo#n` when several
+  repos are configured). A second live run with the same name gets ` (2)`.
+- **"Delivered".** Plan approvals and revisions say "delivered" on the bridge's hook evidence. They carry
+  no ✓, because the decision-channels rule keeps ✓ for outcomes Muster verified itself (merge read-back,
+  feedback prompt hash).
+- **Telegram close note.** It is now "Finished. This topic is now closed." It makes no merge claim, because
+  the close can follow cleanup of an archived run.
+- **Not built (deferred, as agreed).** Hermes tool traces, memory and skill notices, onboarding notices.
+  The optional host setting for those is Hermes's existing `display.tool_progress`.
