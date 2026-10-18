@@ -34,6 +34,7 @@ class State:
         self.edit_failed = set()
         self.swept = False
         self.vetted = {}  # build or feedback request id -> clock() of the last read of its pull request
+        self.covered = set()  # (ledger, proposal) of each open design review: it stands in for that approval question
         self.final = set()  # ledgers whose status message is final: never read again this boot
 
 
@@ -94,11 +95,14 @@ async def scan():
                 background(decisions.recover, req)
             elif req["status"] == "answered":  # tapped, but the gateway went down before it started
                 background(decisions.execute, req["id"], BOOT)
+    S.covered = {(r["ledger"], pinned(r)) for r in reqs if r["kind"] == "design" and r["status"] == "open"}
     for req in reqs:
         CHANNEL.track(req)
         if (req.get("presented") or {}).get("messages"):
             S.watch.add(req["id"])
         try:
+            if req["kind"] == "design" and req["status"] == "executing":
+                await waiting(req, reqs)
             await handle(req)
         except Exception as caught:  # noqa: BLE001 - one poisoned request must not stop the others
             log(f"request {req.get('id')}: {caught}")
@@ -212,14 +216,19 @@ async def handle(req):
     shown = req.get("presented") or {}
     if shown and shown.get("platform", "telegram") != CHANNEL.name:  # shown on another platform (none: Telegram)
         await asyncio.to_thread(decisions.update, rid, presented={}, partial={})  # its ids and answers are not ours
-        shown = {}
-    if shown.get("boot") == BOOT:
-        return
-    slots = ["0"] if kind == "permission" else [str(n) for n in range(len(req["questions"]))]
-    if CHANNEL.durable_prompts:  # a prompt already sent still works: send only the ones never sent
+        shown, req = {}, {**req, "partial": {}}
+    covered = decisions.approval_slot(req)
+    if covered is not None and (req["ledger"], pinned(req)) in S.covered:
+        shown = await redirect(req, covered, shown)
+    else:
+        covered = None
+    # a question already answered keeps its answer across restarts; one a design review stands in for is not shown
+    slots = ["0"] if kind == "permission" else [str(n) for n in range(len(req["questions"]))
+                                                if str(n) not in (req.get("partial") or {}) and n != covered]
+    if CHANNEL.durable_prompts or shown.get("boot") == BOOT:  # a prompt sent (this boot) still works: only new ones
         slots = [n for n in slots if not (shown.get("messages") or {}).get(n)]
-        if not slots:
-            return
+    if not slots:
+        return
     wait = S.retry.get(rid)
     if wait and time.monotonic() < wait[0]:
         return
@@ -240,6 +249,37 @@ async def handle(req):
         await presented(rid, messages, sent["failure"])
     finally:
         S.presenting.discard(rid)
+
+
+def pinned(req):
+    return json.dumps(req.get("proposal"), sort_keys=True)
+
+
+async def redirect(req, slot, shown):
+    """The builder's Approval question while a design review of its version stands in for it: its messages say so
+    and lose their controls (a typed answer still counts: first answer wins). Their ids move to `redirected`, so
+    the question shows again if the review ends without answering it. Returns the new presentation."""
+    ids = (shown.get("messages") or {}).get(str(slot))
+    if not ids:
+        return shown
+    who = config.settings.get("coordinator_name") or "Coordinator"
+    line = f"Plan v{req['proposal'].get('version')} ready · decide on {who}'s review below."
+    chat = core.notify_target()["chat_id"]
+    for mid in ids:
+        await CHANNEL.edit(chat, mid, line)
+    messages = {k: v for k, v in shown["messages"].items() if k != str(slot)}
+    redirected = {**(shown.get("redirected") or {}), str(slot): [*(shown.get("redirected") or {}).get(str(slot), []),
+                                                                 *ids]}
+    shown = {**shown, "messages": messages, "redirected": redirected}
+    await asyncio.to_thread(decisions.update, req["id"], presented=shown)
+    return shown
+
+
+async def waiting(req, reqs):
+    """An `executing` design request one step further (decisions.settle_design); its card says what it waits on."""
+    line = await asyncio.to_thread(decisions.settle_design, req, reqs)
+    if line and line != req.get("interim") and await CHANNEL.outcome({**req, "outcome": line}):
+        await asyncio.to_thread(decisions.update, req["id"], interim=line)
 
 
 async def obsolete(req):

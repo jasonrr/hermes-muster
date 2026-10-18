@@ -395,7 +395,7 @@ def test_every_question_must_be_answered_and_a_double_answer_counts_once(monkeyp
     assert len(called) == 1
 
 
-def test_a_telegram_restart_presents_again_and_forgets_the_earlier_answers(hermes, monkeypatch):
+def test_a_telegram_restart_presents_only_the_unanswered_questions_and_keeps_the_answers(hermes, monkeypatch):
     called = []
     monkeypatch.setattr(gateway, "on_answered", called.append)
     two = [question(f"Q{i}", ("Yes", "No")) for i in range(2)]
@@ -409,19 +409,15 @@ def test_a_telegram_restart_presents_again_and_forgets_the_earlier_answers(herme
         telegram.release(rid)
         gateway.S, telegram.T = gateway.State(), telegram.State()  # a restart: its prompts are dead
         telegram.T.adapter = fh.Adapter()
-        registered = []
-        real = hermes.register
-        monkeypatch.setattr(hermes, "register", lambda *a: (registered.append(decisions.load(rid)["partial"]),
-                                                          real(*a))[1])
         monkeypatch.setattr(gateway, "BOOT", "boot2")
         await gateway.scan()
-        assert len(sent()) == 2 and registered[0] == {}  # cleared before any waiter registers
-        assert hermes.resolve_gateway_clarify(f"mu{rid}q0", "No")
-        assert hermes.resolve_gateway_clarify(f"mu{rid}q1", "Yes")
+        (again,) = sent()  # only the question still unanswered; the human's first answer stands
+        assert again["cid"] == f"mu{rid}q1" and decisions.load(rid)["partial"] == {"0": ["Yes", [0]]}
+        assert hermes.resolve_gateway_clarify(f"mu{rid}q1", "No")
         await until(lambda: status(req) == "answered")
 
     run(go())
-    assert decisions.load(rid)["answer"] == {"Q0": "No", "Q1": "Yes"} and len(called) == 1
+    assert decisions.load(rid)["answer"] == {"Q0": "Yes", "Q1": "No"} and len(called) == 1
 
 
 def test_record_answers_a_permission_once_and_touches_no_channel_state():
@@ -2158,3 +2154,28 @@ def test_telegram_posts_a_reviews_whole_text_once_above_a_plain_text_card(hermes
     monkeypatch.setattr(gateway, "S", gateway.State())  # a restart presents the card again, never the detail
     run(gateway.scan())
     assert len(telegram.T.adapter.notes) == 1 and decisions.load(req["id"])["detail"]["platform"] == "telegram"
+
+
+def test_telegram_points_the_approval_at_the_review_and_a_restart_never_brings_it_back(hermes, monkeypatch):
+    pin = {"version": 2, "sha": "abcdef012345"}
+    q = ask(questions=[{"text": "Implement plan v2?", "header": "Approval", "multi": False,
+                        "options": [{"label": "Approve", "description": ""}]}], choices=[["Approve"]], proposal=pin)
+    run(gateway.scan())
+    (asked,) = sent()
+    labels = ["Approve plan v2 (recommended)", "Leave pending"]
+    d = decisions.create("design", "led1", run={"repo": "o/r", "issue": 7}, proposal=pin, review="Fine.",
+                         actions=["approve", "nothing"], choices=[labels],
+                         questions=[{"text": "**Plan v2 · Issue #7**\n\nFine.", "header": "Design", "multi": False,
+                                     "options": [{"label": x, "description": ""} for x in labels]}])
+    run(gateway.scan())
+    assert (asked["mid"], "Plan v2 ready · decide on Coordinator's review below.") in [
+        (mid, text) for _, mid, text in telegram.T.adapter.edits]
+    assert [m["cid"] for m in sent()] == [asked["cid"], f"mu{d['id']}q0"]
+    telegram.release(q["id"])
+    telegram.release(d["id"])
+    monkeypatch.setattr(gateway, "S", gateway.State())  # a restart
+    telegram.T = telegram.State()
+    telegram.T.adapter = fh.Adapter()
+    monkeypatch.setattr(gateway, "BOOT", "boot2")
+    run(gateway.scan())
+    assert [m["cid"] for m in sent()] == [f"mu{d['id']}q0"]  # the review again; the covered question stays retired

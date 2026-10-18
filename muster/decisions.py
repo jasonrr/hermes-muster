@@ -391,6 +391,12 @@ def recommend_design(args):
                       file=sys.stderr)
                 print(req["id"])
                 return 0
+        given = next((approval_part(r) for r in for_ledger(args.ledger, "question")
+                      if r.get("proposal") == pin and approval_part(r)), None)
+        if given:  # the human answered first: their answer stands, and nothing asks them again
+            progress.touch(args.ledger, "recommended")
+            raise ValueError(f"the builder's approval question for Proposal v{pin['version']} was already answered "
+                             f"({given}): nothing is left to decide. Post your review as a short note, no buttons")
         run = run_of(args.ledger)
     except (ValueError, OSError, core.CommandError) as caught:
         print(f"recommend-design: {caught}", file=sys.stderr)
@@ -507,30 +513,51 @@ def _design(req, boot):
     """The human's tap on a design review: the reply their approval question gets, or nothing."""
     rid, head, answer = req["id"], events.heading(req["proposal"]), req.get("answer") or {}
     if "text" not in answer and answer.get("action") == "nothing":
-        transition(rid, ("answered",), "done", outcome="No action. The approval question stays open.")
+        transition(rid, ("answered",), "done", outcome=f"Left pending. The builder's question about plan "
+                                                       f"v{req['proposal']['version']} stays open.")
         return
     if "text" in answer or answer.get("action") == "send-back":
         revisions = amend(req.get("feedback"), answer["text"]) if "text" in answer else req.get("feedback")
         if not revisions:
             fail(rid, "no revisions were proposed; reply to the message with yours")
             return
-        reply = f"Revise {head} before building. Revisions from the human:\n{revisions}"
+        reply, action = f"Revise {head} before building. Revisions from the human:\n{revisions}", "revise"
     elif answer.get("action") == "approve":
-        reply = f"Approve: the human approved {head}."
+        reply, action = f"Approve: the human approved {head}.", "approve"
     else:
         fail(rid, f"unknown action {answer.get('action')!r}")
         return
-    req, ok = transition(rid, ("answered",), "executing", executing_boot=boot, intent={"reply": reply})
+    req, ok = transition(rid, ("answered",), "executing", executing_boot=boot, intent={"reply": reply, "action": action})
     if ok:
         _answer_approval(req)
 
 
+def words(req):
+    """(what the human's tap gave, what an undelivered one means): an approval and a revision request never share
+    words."""
+    n, intent = req["proposal"]["version"], req["intent"]
+    if (intent.get("action") or ("approve" if intent["reply"].startswith("Approve") else "revise")) == "approve":
+        return f"Approval of plan v{n}", "Nothing was approved."
+    return f"Revisions for plan v{n}", "The revisions were not sent."
+
+
+def approval_part(ask):
+    """The answer already on an approval question's Approval part, or None."""
+    slot = approval_slot(ask)
+    part = (ask.get("partial") or {}).get(str(slot))
+    if part:
+        return part[0]
+    answer = ask.get("answer") or {}
+    return answer.get(ask["questions"][slot]["text"]) if slot is not None and isinstance(answer, dict) else None
+
+
 def _answer_approval(req):
-    """Answer the open approval question that carries the reviewed version, through its own open -> answered
-    move: the pane's bridge delivers it as if the human had answered the question itself. Safe to repeat."""
+    """Give the reviewed version's approval question this request's exact reply (intent.reply) as its Approval
+    part, through the question's own first-answer-wins answer_part: the pane's bridge then delivers it as if the
+    human had answered the builder's message, with any other question of it answered on its own message. Before
+    the builder asks, the request waits (`executing`) and settle_design gives it once the question appears. It
+    stays `executing` until the bridge settles the question. Safe to repeat."""
     rid, pin, intent = req["id"], req["proposal"], req["intent"]
-    head, reply = events.heading(pin), intent["reply"]
-    outcome = "Approval sent to the agent" if reply.startswith("Approve") else "Revisions sent to the agent"
     if intent.get("question"):
         # A recovery: only the question this request chose. The human may have answered it since; never pick another.
         try:
@@ -538,30 +565,76 @@ def _answer_approval(req):
         except (OSError, ValueError) as caught:
             fail(rid, f"the approval question it chose is unreadable ({caught}); nothing sent")
             return
-        if ask.get("answer") == {ask["questions"][0]["text"]: reply}:
-            transition(rid, ("executing",), "done", outcome=outcome)
-        elif ask["status"] == "open" and transition(ask["id"], ("open",), "answered",
-                                                    answer={ask["questions"][0]["text"]: reply})[1]:
-            transition(rid, ("executing",), "done", outcome=outcome)
-        else:
-            fail(rid, f"the approval question about {head} was answered or ended meanwhile; nothing sent")
+        _give(req, ask)
         return
     asks = [r for r in for_ledger(req["ledger"], "question") if r.get("proposal") == pin]
     ask = next((r for r in asks if r["status"] == "open"), None)
-    if not asks:
-        # Tapped before the agent asked: offer the same review again, so the tap is not lost.
-        create("design", req["ledger"], **{k: req.get(k) for k in (
-            "run", "proposal", "review", "feedback", "wait", "actions", "choices", "recommended", "questions")})
-        fail(rid, f"the agent has not asked for approval of {head} yet; tap again on the new message")
-    elif ask is None:
-        fail(rid, f"the approval question about {head} is no longer waiting; nothing sent")
-    elif len(ask["questions"]) != 1:
-        fail(rid, "the approval request asks more than one question; answer it on its own message")
-    elif (update(rid, intent={**intent, "question": ask["id"]})  # recorded first: a recovery acts on this one only
-          and transition(ask["id"], ("open",), "answered", answer={ask["questions"][0]["text"]: reply})[1]):
-        transition(rid, ("executing",), "done", outcome=outcome)
-    else:
-        fail(rid, f"the approval question about {head} was answered meanwhile; nothing sent")
+    if ask is None:
+        done = next((r for r in asks if approval_part(r) or r["status"] in ("answered", "done")), None)
+        if done:  # the human answered the builder's question first (here or in the pane): that answer stands
+            fail(rid, f"You already answered the builder's question about plan v{pin['version']}: "
+                      f"{approval_part(done) or done.get('outcome') or 'answered'}. Nothing else was sent.")
+        return  # not asked yet, or asked and abandoned: settle_design gives it when the builder asks again
+    req = update(rid, intent={**intent, "question": ask["id"]})  # recorded first: a recovery acts on this one only
+    _give(req, ask)
+
+
+def _give(req, ask):
+    rid, reply, slot = req["id"], req["intent"]["reply"], approval_slot(ask)
+    if slot is None:
+        fail(rid, "the builder's question carries no Approval question; nothing sent")
+        return
+    given = approval_part(ask)
+    if given is None and ask["status"] == "open":
+        compose = lambda parts, q=ask: {x["text"]: parts[i][0] for i, x in enumerate(q["questions"])}  # noqa: E731
+        ask, result = answer_part(ask["id"], slot, [reply, None], len(ask["questions"]), compose)
+        if result in ("accepted", "completed"):
+            return
+        given = approval_part(ask)
+    if given != reply:  # another answer won, or the question ended without one: never retargeted
+        fail(rid, f"You already answered this on the builder's question: {given}. Nothing else was sent." if given
+             else f"Not delivered: {(ask.get('outcome') or 'the builder stopped waiting').rstrip('.')}. {words(req)[1]}")
+
+
+def settle_design(req, live):
+    """One gateway-scan step of an `executing` design request. `live`: the open requests. Gives a waiting reply to
+    its version's approval question once the builder asks; cancels it when a newer version replaced its own
+    first; ends it once the bridge settles the question: delivered only on the bridge's "Sent to Claude". Returns
+    the line its card shows meanwhile, or None once it ended."""
+    rid, ledger, pin = req["id"], req["ledger"], req["proposal"]
+    if req["status"] != "executing":
+        return None
+    what, nothing = words(req)
+    if not req["intent"].get("question"):
+        newest = (events.versions(ledger) or [0])[-1]
+        if newest > pin["version"]:
+            fail(rid, f"Plan v{newest} replaced v{pin['version']} before the builder asked. {nothing}")
+            return None
+        if any(r["kind"] == "question" and r.get("proposal") == pin and r["status"] == "open" for r in live):
+            _answer_approval(req)
+            req = load(rid)
+        if req["status"] != "executing":
+            return None
+        if not req["intent"].get("question"):
+            return f"{what} recorded · the builder hasn't asked yet; it gets this when it does."
+    ask = load(req["intent"]["question"])
+    if ask["status"] == "open":
+        if approval_part(ask) != req["intent"]["reply"]:
+            _give(req, ask)
+            return None if load(rid)["status"] != "executing" else f"{what} recorded · delivering to the builder"
+        return f"{what} recorded · awaiting your other answer above"
+    if ask["status"] == "answered":
+        return f"{what} recorded · delivering to the builder"
+    if ask["status"] == "done" and str(ask.get("outcome") or "").startswith("Sent") and approval_part(ask) == \
+            req["intent"]["reply"]:
+        revise = not req["intent"]["reply"].startswith("Approve")
+        transition(rid, ("executing",), "done", outcome=f"✓ {what} delivered to the builder"
+                                                        + (" · revision pending" if revise else ""))
+        if revise:
+            progress.touch(ledger, "revision")
+        return None
+    fail(rid, f"Not delivered: {(ask.get('outcome') or 'the builder stopped waiting').rstrip('.')}. {nothing}")
+    return None
 
 
 def _feedback_from_build(req):

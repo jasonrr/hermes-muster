@@ -281,7 +281,6 @@ async def present(req, meta, questions):
     from tools import clarify_gateway
 
     chat = core.notify_target()["chat_id"]
-    await asyncio.to_thread(decisions.update, rid, partial={})  # this boot's prompts start over; the old ones are dead
     text = shared.detail(req)
     if text and (req.get("detail") or {}).get("platform") != name:  # once, above the card; Hermes formats and splits it
         res = await T.adapter.send(chat, text, metadata=meta)
@@ -293,7 +292,7 @@ async def present(req, meta, questions):
         q = req["questions"][n]
         cid, choices = f"mu{rid}q{n}", req["choices"][n]
         clarify_gateway.register(cid, session(rid, n), q["text"], choices, bool(q.get("multi")))
-        T.shown[rid] = n + 1
+        T.shown[rid] = max(T.shown.get(rid, 0), n + 1)
         threading.Thread(target=waiter, args=(rid, n, cid, loop), daemon=True).start()
         try:
             res = await hermes_private.send_labelled_clarify(T.adapter, chat, render(req, n), buttons(req, n),

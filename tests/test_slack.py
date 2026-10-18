@@ -916,3 +916,99 @@ def test_agent_text_is_escaped_before_hermes_formats_it(channel):
     assert seen == ["&lt;!channel&gt; **bold** &amp; &lt;@U1&gt;"]  # escaped first: no ping survives
     slack.T.adapter = None
     assert slack.mrkdwn("**Plan v2** <b>") == "*Plan v2* &lt;b&gt;"  # without Hermes's converter, muster's own bold
+
+
+# -- one decision surface per plan version ---------------------------------------------------------------------------
+
+PLAN = {"version": 2, "sha": "abcdef012345"}
+
+
+def reviewing_plan(ledger="led1"):
+    from muster import progress
+    progress.activity(ledger).mkdir(parents=True, exist_ok=True)
+    progress.touch(ledger, "proposal", "v2")
+
+
+def approval_ask(**fields):
+    return ask([{"text": "Implement plan v2?", "header": "Approval", "multi": False,
+                 "options": [{"label": "Approve", "description": ""}, {"label": "Revise", "description": ""}]}],
+               proposal=PLAN, **fields)
+
+
+def design_card():
+    labels = ["Approve plan v2 (recommended)", "Send revisions to builder", "Leave pending"]
+    return decisions.create("design", "led1", run={"repo": "o/r", "issue": 7, "branch": "muster/7"}, proposal=PLAN,
+                            review="Fine.", feedback="Drop the cache.", actions=["approve", "send-back", "nothing"],
+                            choices=[labels], questions=[{"text": "**Plan v2 · Issue #7**\n**Coordinator recommends: "
+                                                                  "approve**\n\nFine.", "header": "Design",
+                                                          "multi": False, "options": [
+                                                              {"label": x, "description": ""} for x in labels]}])
+
+
+def texts(blocks):
+    return "\n".join(b["text"]["text"] for b in blocks if b["type"] == "section")
+
+
+def ts_of(req, n=0):
+    return decisions.load(req["id"])["presented"]["messages"][str(n)][0]
+
+
+def test_question_then_review_shows_one_live_approval_surface_then_recorded_then_delivered(channel):
+    reviewing_plan()
+    q = approval_ask()
+    asyncio.run(gateway.scan())
+    (first,) = channel.client.posts
+    first_ts = ts_of(q)
+    assert texts(first["blocks"]).startswith("*Plan v2 ready · Issue #7*\nCoordinator is reviewing. No action needed.")
+    buttons = [e["text"]["text"] for b in first["blocks"] if b["type"] == "actions" for e in b["elements"]]
+    assert buttons == ["Approve without Coordinator's review", "Revise"]  # the early path, labelled
+    d = design_card()
+    asyncio.run(gateway.scan())
+    redirect = channel.client.updates[-1]
+    assert redirect["ts"] == first_ts and redirect["text"] == "Plan v2 ready · decide on Coordinator's review below."
+    assert not [b for b in redirect["blocks"] if b["type"] in ("actions", "input")]  # no second set of controls
+    card = channel.client.posts[-1]
+    assert [b["type"] for b in card["blocks"]].count("actions") == 1 and len(channel.client.posts) == 2
+    tap(channel, d, 0, "muster_choice_0", value=f"{d['id']}|0|0", message_ts=ts_of(d))
+    asked = decisions.load(q["id"])
+    assert asked["status"] == "answered" and asked["answer"] == {"Implement plan v2?": "Approve: the human approved "
+                                                                                       "Proposal v2 abcdef012345."}
+    asyncio.run(gateway.scan())
+    assert channel.client.updates[-1]["text"] == "Approval of plan v2 recorded · delivering to the builder"
+    decisions.transition(q["id"], ("answered",), "done", outcome="Sent to Claude")  # the pane's bridge delivered it
+    asyncio.run(gateway.scan())
+    asyncio.run(gateway.scan())
+    assert decisions.load(d["id"])["outcome"] == "✓ Approval of plan v2 delivered to the builder"
+    assert channel.client.updates[-1]["text"] == "✓ Approval of plan v2 delivered to the builder"
+    assert len(channel.client.posts) == 2  # nothing asked twice
+
+
+def test_review_before_the_question_never_posts_the_question_and_leave_pending_brings_it_back(channel):
+    d = design_card()
+    asyncio.run(gateway.scan())
+    q = approval_ask()
+    asyncio.run(gateway.scan())
+    assert len(channel.client.posts) == 1  # the review is the one surface; the builder's question is not shown
+    tap(channel, d, 0, "muster_choice_2", value=f"{d['id']}|0|2", message_ts=ts_of(d))  # Leave pending
+    assert decisions.load(d["id"])["outcome"] == "Left pending. The builder's question about plan v2 stays open."
+    asyncio.run(gateway.scan())
+    again = channel.client.posts[-1]
+    assert len(channel.client.posts) == 2 and texts(again["blocks"]).startswith("*Plan v2 · Issue #7*\nNeeds your decision.")
+    assert decisions.load(q["id"])["status"] == "open"
+
+
+def test_a_bundled_question_keeps_its_other_question_live_while_the_review_answers_the_approval(channel):
+    q = ask([question("Which store?"), {"text": "Implement plan v2?", "header": "Approval", "multi": False,
+                                        "options": [{"label": "Approve", "description": ""}]}],
+            proposal=PLAN)
+    d = design_card()
+    asyncio.run(gateway.scan())
+    other = [p for p in channel.client.posts if "Which store?" in texts(p["blocks"])]
+    assert len(other) == 1 and len(channel.client.posts) == 2  # the other question, and the review
+    tap(channel, d, 0, "muster_choice_0", value=f"{d['id']}|0|0", message_ts=ts_of(d))
+    asyncio.run(gateway.scan())
+    assert channel.client.updates[-1]["text"] == "Approval of plan v2 recorded · awaiting your other answer above"
+    tap(channel, q, 0, "muster_choice_1", value=f"{q['id']}|0|1", message_ts=ts_of(q))
+    assert decisions.load(q["id"])["answer"] == {"Which store?": "Beta",
+                                                 "Implement plan v2?": "Approve: the human approved Proposal v2 "
+                                                                       "abcdef012345."}

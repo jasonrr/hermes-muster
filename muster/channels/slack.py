@@ -286,6 +286,11 @@ async def too_many(req, n, meta, messages):
     return {"messages": messages, "failure": None}
 
 
+async def edit(chat_, mid, text):
+    """A message's text in place of its blocks (its buttons and inputs go). True when Slack took it."""
+    return await update(mid, [section(text)], text)
+
+
 def release(rid):
     """Nothing in memory: a prompt is answered from the request file."""
 
