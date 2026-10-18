@@ -888,7 +888,7 @@ def settle(rid):
 
 def delivered(ask):
     """What the pane's bridge does once it handed the answer to Claude (bridge.deliver)."""
-    decisions.transition(ask, ("answered",), "done", outcome="Sent to Claude")
+    decisions.transition(ask, ("answered",), "done", outcome=decisions.ANSWER_SENT)
 
 
 @pytest.mark.parametrize("answer, reply", [
@@ -911,8 +911,8 @@ def test_a_tap_answers_the_approval_question_that_carries_the_reviewed_version(w
     assert settle(rid) is None
     status, outcome = state(rid)
     assert status == "done" and outcome == (
-        "✓ Approval of plan v2 delivered to the builder" if what == "Approval"
-        else "✓ Revisions for plan v2 delivered to the builder · revision pending")
+        "Approval of plan v2 delivered to the builder" if what == "Approval"
+        else "Revisions for plan v2 delivered to the builder · revision pending")
     assert ("revision" in progress.mtimes("t_1")) is (what == "Revisions")
 
 
@@ -984,7 +984,7 @@ def test_a_human_answer_in_between_stands_and_is_never_retargeted(world, answer,
     assert decisions.load(second)["status"] == "open"
 
 
-@pytest.mark.parametrize("ending, outcome", [("stale", "The agent is no longer waiting"), ("done", "Answered in the pane")])
+@pytest.mark.parametrize("ending, outcome", [("stale", "Ended: the builder stopped waiting. Nothing was sent."), ("done", "Answered in the pane")])
 def test_a_question_that_ended_before_the_tap_is_not_answered_again(world, ending, outcome):
     ask = approval()
     decisions.transition(ask, ("open",), ending, outcome=outcome)
@@ -1003,9 +1003,9 @@ def test_a_question_that_ended_before_the_tap_is_not_answered_again(world, endin
 def test_a_question_that_ends_before_delivery_says_nothing_was_approved(world):
     ask, rid = approval(), design({"action": "approve"})
     decisions.execute(rid)
-    decisions.transition(ask, ("answered",), "stale", outcome="The agent is no longer waiting")
+    decisions.transition(ask, ("answered",), "stale", outcome="Ended: the builder stopped waiting. Nothing was sent.")
     assert settle(rid) is None
-    assert state(rid) == ("failed", "Not delivered: The agent is no longer waiting. Nothing was approved.")
+    assert state(rid) == ("failed", "Not delivered: the builder's question ended without it. Nothing was approved.")
 
 
 def test_send_back_without_revisions_sends_nothing(world):

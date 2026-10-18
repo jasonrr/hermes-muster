@@ -3,7 +3,7 @@
 Runs inside the Hermes gateway process. A scan task presents each `open` request (muster.decisions) through the
 configured channel (muster.channels: Telegram or Slack, picked by `notify_platform`), waits for the answer the
 channel hands back (`channels.shared.answer` / `permission`), and edits every message of an ended request to its
-outcome (Sent to Claude, Deny sent to Claude, Answered in the pane...), so the human knows whether muster passed
+outcome (Answer sent to the builder, Denied · sent to the builder, Answered in the pane...), so the human knows whether muster passed
 their answer on (not that Claude applied it). It also retries a failed send with backoff (Hermes sends once), and
 on a channel whose prompts die with the process (Telegram) presents open requests again on each boot.
 Nothing here runs at import or register time: the channel's Hermes factory starts the scan when the adapter connects.
@@ -197,7 +197,7 @@ async def handle(req):
     if kind in ("question", "permission") and time.time() - req.get("alive", req.get("created_at", 0)) > ALIVE_MAX:
         # the hook stopped writing `alive`: it died without SIGTERM (a SIGTERM closes the request itself)
         await asyncio.to_thread(decisions.transition, rid, ("open", "answered"), "stale",
-                                outcome="The agent is no longer waiting")
+                                outcome="Ended: the builder stopped waiting. Nothing was sent.")
         CHANNEL.release(rid)
         return
     if req["status"] != "open" or rid in S.presenting:
@@ -318,7 +318,7 @@ async def presented(rid, messages, failure):
         return
     chat = core.notify_target()["chat_id"]
     for mid in earlier:
-        await CHANNEL.edit(chat, mid, "Superseded: see the newer message")
+        await CHANNEL.edit(chat, mid, "Replaced after a restart · use the newer message below.")
 
 
 async def record(rid, answer):

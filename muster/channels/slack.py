@@ -225,12 +225,14 @@ def approval_body(req):
     card = req["card"]
     command = card["command"]
     if len(command) > COMMAND_MAX:
-        head = f"{shared.title(req)} needs a permission in the pane: command too long for Slack ({len(command)} chars)"
-        command = command[:SHOWN_MAX]
+        head = (f"**Permission needed · {shared.title(req)}**\nThe command is too long for Slack ({len(command)} "
+                f"characters): answer it in the pane. Its start:")
+        command, scope = command[:SHOWN_MAX], []
     else:
-        head = f"{shared.title(req)} wants to run this. {str(card.get('why') or '')[:SHOWN_MAX]}"
+        head = f"**Permission needed · {shared.title(req)}**\n{str(card.get('why') or '')[:SHOWN_MAX]}"
+        scope = [section("Allow once lets the builder run this one command, once. Muster can't confirm it ran.")]
     return [section(head), {"type": "rich_text", "elements": [
-        {"type": "rich_text_preformatted", "elements": [{"type": "text", "text": command}]}]}]
+        {"type": "rich_text_preformatted", "elements": [{"type": "text", "text": command}]}]}, *scope]
 
 
 async def present_approval(req, meta):
@@ -239,7 +241,7 @@ async def present_approval(req, meta):
     too long to show whole gets a card with no buttons, and the request goes to the pane (stale): nothing is approved
     unseen, and nothing retries forever."""
     rid, kept = req["id"], approval_body(req)
-    text = f"{shared.title(req)}: permission"
+    text = f"{shared.title(req)}: permission needed"
     oversized = len(req["card"]["command"]) > COMMAND_MAX
     blocks_ = kept if oversized else [*kept, {"type": "actions", "block_id": f"mu:{rid}:approval", "elements": [
         {"type": "button", "action_id": "muster_allow", "text": plain("Allow once"), "style": "primary", "value": rid},
@@ -362,7 +364,8 @@ async def handle(body_, action):
         return await notice(body_, ended(req))
     if result == "duplicate":
         await notice(body_, f"Already answered: {part[0]}")
-    await settled(body_, req, n, body(req, n), f"Answered: {part[0]}")
+    await settled(body_, req, n, body(req, n), f"Answered: {part[0]}" if req["kind"] == "question"
+                  else f"Recorded: {part[0]}")
 
 
 async def choice(body_, action, req, n, block, action_id):
@@ -395,13 +398,14 @@ async def approve(body_, action, req):
     req, ok = await shared.permission(rid, answer)
     if not ok:
         return await notice(body_, ended(req))
-    line = "Answered: Allow once" if answer["decision"] == "allow" else (
-        f"Answered: Deny: {answer['message']}" if answer.get("message") else "Answered: Deny")
+    line = "Allow once recorded · sending to the builder" if answer["decision"] == "allow" else (
+        f"Deny recorded · sending to the builder: {answer['message']}" if answer.get("message")
+        else "Deny recorded · sending to the builder")
     await settled(body_, req, 0, approval_body(req), line)
 
 
 def ended(req):
-    return req.get("outcome") or f"This request is {req['status']}"
+    return req.get("outcome") or "This decision already ended. Nothing was changed."
 
 
 async def notice(body_, text):

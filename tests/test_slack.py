@@ -404,7 +404,8 @@ def test_a_command_never_breaks_out_of_its_preformatted_block(channel, command):
 
 def test_a_long_why_is_cut_before_escaping(channel):
     _, post = card_of(channel, permission(why="<" * 2000))
-    (head,) = [b for b in post["blocks"] if b["type"] == "section"]
+    head, scope = [b for b in post["blocks"] if b["type"] == "section"]
+    assert "Allow once lets the builder run this one command, once." in scope["text"]["text"]
     assert len(head["text"]["text"]) <= slack.CAP and "&lt;" * 500 in head["text"]["text"]
 
 
@@ -412,7 +413,7 @@ def test_a_command_too_long_for_slack_goes_to_the_pane(channel):
     req = permission("x" * 2901)
     sent, post = card_of(channel, req)
     assert not [b for b in post["blocks"] if b["type"] in ("actions", "input")]
-    assert "command too long for Slack (2901 chars)" in json.dumps(post["blocks"])
+    assert "too long for Slack (2901 characters)" in post["blocks"][0]["text"]["text"]
     assert preformatted(post["blocks"]) == ["x" * 500]
     saved = decisions.load(req["id"])
     assert saved["status"] == "stale" and saved["outcome"] == "Command too long for Slack: answer it in the pane"
@@ -459,10 +460,12 @@ def test_approval_refusals(channel):
 def test_an_ended_card_shows_its_outcome(channel):
     req = permission()
     sent, _ = card_of(channel, req)
-    decisions.transition(req["id"], ("open",), "done", outcome="Allow sent to Claude")
+    decisions.transition(req["id"], ("open",), "done",
+                         outcome="Allowed once · sent to the builder. Muster can't confirm the command ran.")
     assert asyncio.run(slack.outcome(decisions.load(req["id"]))) is True
     (update,) = channel.client.updates
-    assert update["ts"] == sent["messages"]["0"][0] and "Allow sent to Claude" in json.dumps(update["blocks"])
+    assert update["ts"] == sent["messages"]["0"][0] and update["blocks"][-1]["elements"][0]["text"] == (
+        "Allowed once · sent to the builder. Muster can't confirm the command ran.")
     assert preformatted(update["blocks"]) == ["touch x"]
     assert not [b for b in update["blocks"] if b["type"] in ("actions", "input")]
 
@@ -975,11 +978,11 @@ def test_question_then_review_shows_one_live_approval_surface_then_recorded_then
                                                                                        "Proposal v2 abcdef012345."}
     asyncio.run(gateway.scan())
     assert channel.client.updates[-1]["text"] == "Approval of plan v2 recorded · delivering to the builder"
-    decisions.transition(q["id"], ("answered",), "done", outcome="Sent to Claude")  # the pane's bridge delivered it
+    decisions.transition(q["id"], ("answered",), "done", outcome=decisions.ANSWER_SENT)  # the pane's bridge delivered it
     asyncio.run(gateway.scan())
     asyncio.run(gateway.scan())
-    assert decisions.load(d["id"])["outcome"] == "✓ Approval of plan v2 delivered to the builder"
-    assert channel.client.updates[-1]["text"] == "✓ Approval of plan v2 delivered to the builder"
+    assert decisions.load(d["id"])["outcome"] == "Approval of plan v2 delivered to the builder"
+    assert channel.client.updates[-1]["text"] == "Approval of plan v2 delivered to the builder"
     assert len(channel.client.posts) == 2  # nothing asked twice
 
 

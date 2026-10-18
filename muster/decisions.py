@@ -23,6 +23,7 @@ from . import config, core, events, progress
 OPEN = ("open", "answered", "executing")
 DELIVERED = "✓ Feedback delivered · revision pending"  # a feedback request the prompt hook saw arrive (core.seen)
 SENT = (DELIVERED, "Sent ✓")  # its outcome now, and before #48
+ANSWER_SENT = "Answer sent to the builder"  # a question the pane's hook answered (bridge.deliver)
 TERMINAL = ("done", "failed", "stale")
 
 
@@ -593,13 +594,13 @@ def _give(req, ask):
         given = approval_part(ask)
     if given != reply:  # another answer won, or the question ended without one: never retargeted
         fail(rid, f"You already answered this on the builder's question: {given}. Nothing else was sent." if given
-             else f"Not delivered: {(ask.get('outcome') or 'the builder stopped waiting').rstrip('.')}. {words(req)[1]}")
+             else f"Not delivered: the builder's question ended without it. {words(req)[1]}")
 
 
 def settle_design(req, live):
     """One gateway-scan step of an `executing` design request. `live`: the open requests. Gives a waiting reply to
     its version's approval question once the builder asks; cancels it when a newer version replaced its own
-    first; ends it once the bridge settles the question: delivered only on the bridge's "Sent to Claude". Returns
+    first; ends it once the bridge settles the question: delivered only on the bridge's ANSWER_SENT. Returns
     the line its card shows meanwhile, or None once it ended."""
     rid, ledger, pin = req["id"], req["ledger"], req["proposal"]
     if req["status"] != "executing":
@@ -625,15 +626,15 @@ def settle_design(req, live):
         return f"{what} recorded · awaiting your other answer above"
     if ask["status"] == "answered":
         return f"{what} recorded · delivering to the builder"
-    if ask["status"] == "done" and str(ask.get("outcome") or "").startswith("Sent") and approval_part(ask) == \
+    if ask["status"] == "done" and ask.get("outcome") in (ANSWER_SENT, "Sent to Claude") and approval_part(ask) == \
             req["intent"]["reply"]:
         revise = not req["intent"]["reply"].startswith("Approve")
-        transition(rid, ("executing",), "done", outcome=f"✓ {what} delivered to the builder"
+        transition(rid, ("executing",), "done", outcome=f"{what} delivered to the builder"
                                                         + (" · revision pending" if revise else ""))
         if revise:
             progress.touch(ledger, "revision")
         return None
-    fail(rid, f"Not delivered: {(ask.get('outcome') or 'the builder stopped waiting').rstrip('.')}. {nothing}")
+    fail(rid, f"Not delivered: the builder's question ended without it. {nothing}")
     return None
 
 

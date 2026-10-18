@@ -617,9 +617,9 @@ def test_the_approval_guard_covers_muster_cards_and_leaves_hermess_own():
 def test_a_finished_request_edits_its_newest_message_to_the_outcome():
     req = ask()
     run(gateway.scan())
-    decisions.transition(req["id"], ("open",), "done", outcome="Sent to Claude")
+    decisions.transition(req["id"], ("open",), "done", outcome=decisions.ANSWER_SENT)
     run(gateway.scan())
-    assert (DM, sent()[0]["mid"], "Sent to Claude") in telegram.T.adapter.edits
+    assert (DM, sent()[0]["mid"], decisions.ANSWER_SENT) in telegram.T.adapter.edits
     assert decisions.load(req["id"])["edited"] is True
     n = len(telegram.T.adapter.edits)
     run(gateway.scan())
@@ -629,16 +629,16 @@ def test_a_finished_request_edits_its_newest_message_to_the_outcome():
 def test_reply_prompts_are_edited_to_the_outcome_too(hermes):
     req, mid = presented(hermes)
     decisions.update(req["id"], presented={**decisions.load(req["id"])["presented"], "replies": {"0": ["901"]}})
-    decisions.transition(req["id"], ("open",), "done", outcome="Sent to Claude")
+    decisions.transition(req["id"], ("open",), "done", outcome=decisions.ANSWER_SENT)
     run(gateway.scan())
     assert sorted(m for _, m, _ in telegram.T.adapter.edits) == sorted([mid, "901"])
-    assert {t for _, _, t in telegram.T.adapter.edits} == {"Sent to Claude"}
+    assert {t for _, _, t in telegram.T.adapter.edits} == {decisions.ANSWER_SENT}
 
 
 def test_a_failed_edit_is_retried_once_then_dropped():
     req = ask()
     run(gateway.scan())
-    decisions.transition(req["id"], ("open",), "done", outcome="Sent to Claude")
+    decisions.transition(req["id"], ("open",), "done", outcome=decisions.ANSWER_SENT)
     telegram.T.adapter.fail_edits = 2
     run(gateway.scan())
     assert not decisions.load(req["id"]).get("edited") and req["id"] in gateway.S.watch
@@ -665,8 +665,8 @@ def test_representing_edits_the_earlier_messages_to_superseded(hermes):
     req = ask(presented={"boot": "old", "messages": {"0": ["7", "8"]}})
     run(gateway.scan())
     (msg,) = sent()
-    assert telegram.T.adapter.edits == [(DM, "7", "Superseded: see the newer message"),
-                                       (DM, "8", "Superseded: see the newer message")]
+    assert telegram.T.adapter.edits == [(DM, "7", "Replaced after a restart · use the newer message below."),
+                                       (DM, "8", "Replaced after a restart · use the newer message below.")]
     assert decisions.load(req["id"])["presented"]["messages"] == {"0": ["7", "8", msg["mid"]]}
 
 
@@ -683,7 +683,7 @@ def test_a_failed_partial_send_supersedes_what_this_boot_sent():
     adapter._send_prompt = second_fails
     run(gateway.scan())
     (first,) = sent()
-    assert (DM, first["mid"], "Superseded: see the newer message") in adapter.edits
+    assert (DM, first["mid"], "Replaced after a restart · use the newer message below.") in adapter.edits
 
 
 # -- restart ----------------------------------------------------------------------------------------
@@ -692,7 +692,7 @@ def test_a_request_from_an_earlier_boot_is_represented(hermes):
     req = ask(presented={"boot": "old", "messages": {"0": ["7"]}})
     run(gateway.scan())
     (msg,) = sent()
-    assert telegram.T.adapter.edits == [(DM, "7", "Superseded: see the newer message")]
+    assert telegram.T.adapter.edits == [(DM, "7", "Replaced after a restart · use the newer message below.")]
     assert decisions.load(req["id"])["presented"] == {"boot": gateway.BOOT, "messages": {"0": ["7", msg["mid"]]},
                                                       "platform": "telegram"}
 
@@ -715,7 +715,7 @@ def test_a_silent_hook_stales_the_request():
     req = ask(alive=time.time() - 31)
     run(gateway.scan())
     got = decisions.load(req["id"])
-    assert (got["status"], got["outcome"]) == ("stale", "The agent is no longer waiting")
+    assert (got["status"], got["outcome"]) == ("stale", "Ended: the builder stopped waiting. Nothing was sent.")
     assert not sent()
 
 
@@ -751,7 +751,7 @@ def test_a_permission_prompt_is_hermess_approval_card():
         card = await card_for(req)
         assert card["command"] == "touch x" and card["session"] == f"muster:{req['id']}"
         assert card["permanent"] is False and card["session_button"] is False  # Allow once and Deny only
-        assert card["text"].startswith("b: Create x.") and "reply to this message" in card["text"]
+        assert card["text"].startswith("Permission needed · b: Create x.") and "reply to this message" in card["text"]
         assert decisions.load(req["id"])["presented"]["messages"] == {"0": [card["mid"]]}
     run(go())
 
@@ -1928,7 +1928,7 @@ def test_saved_slack_message_ids_are_neither_reply_bound_nor_edited(hermes):
     req = ask()
     decisions.update(req["id"], presented={"boot": "b", "platform": "slack", "messages": {"0": [SLACK_THREAD]},
                                            "replies": {"0": ["1792269000.000200"]}})
-    req, _ = decisions.transition(req["id"], ("open",), "done", outcome="Sent to Claude")
+    req, _ = decisions.transition(req["id"], ("open",), "done", outcome=decisions.ANSWER_SENT)
     telegram.track(req)
     assert telegram.T.messages == {}
     assert run(telegram.outcome(req)) is True and telegram.T.adapter.edits == []
@@ -1937,7 +1937,7 @@ def test_saved_slack_message_ids_are_neither_reply_bound_nor_edited(hermes):
 def test_saved_ids_with_no_platform_are_still_telegrams(hermes):
     req = ask()
     decisions.update(req["id"], presented={"boot": "b", "messages": {"0": ["901"]}})
-    req, _ = decisions.transition(req["id"], ("open",), "done", outcome="Sent to Claude")
+    req, _ = decisions.transition(req["id"], ("open",), "done", outcome=decisions.ANSWER_SENT)
     telegram.track(req)
     assert telegram.T.messages == {"901": (req["id"], 0)}
     assert run(telegram.outcome(req)) is True and [m for _, m, _ in telegram.T.adapter.edits] == ["901"]
@@ -2033,7 +2033,7 @@ def test_a_question_shows_waiting_at_once_below_nothing_and_its_answer_ends_it(c
     run(gateway.scan())
     assert "Needs your decision: question · since" in telegram.T.adapter.edits[-1][2]
     assert int(sent()[-1]["mid"]) > int(status_id)  # the question lands below the status message, never above
-    decisions.transition(req["id"], ("open",), "done", outcome="Sent to Claude")
+    decisions.transition(req["id"], ("open",), "done", outcome=decisions.ANSWER_SENT)
     run(gateway.scan())
     [*_, last] = [text for _, mid, text in telegram.T.adapter.edits if mid == status_id]  # not the question's own edit
     assert "Needs your decision" not in last and "last activity" in last

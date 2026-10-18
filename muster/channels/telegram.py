@@ -314,7 +314,8 @@ async def present_approval(req, meta):
     rid, card = req["id"], req["card"]
     chat, loop = core.notify_target()["chat_id"], asyncio.get_running_loop()
     sent = loop.create_future()
-    why = f"{shared.title(req)}: {card['why']}. To deny with a message to the agent, reply to this message."
+    why = (f"Permission needed · {shared.title(req)}: {card['why']}. Allow once lets the builder run this one "
+           "command, once; Muster can't confirm it ran. To deny with a message to the builder, reply to this message.")
 
     def notify(_data):  # runs in the wait thread, after Hermes queued the request
         future = asyncio.run_coroutine_threadsafe(T.adapter.send_exec_approval(
