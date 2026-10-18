@@ -1,5 +1,10 @@
 # Human collaboration UX: message gallery and plan (checkpoint for approval)
 
+v2 changes from v1, as Jason asked:
+- Section 1's priority: an Approval under review reads "Ella reviewing", with both examples.
+- Section 3's timing cases and recorded/delivered outcomes now cover Send revisions as well as
+  Approve, with the binding rules spelled out.
+
 Audit: `docs/plans/2026-10-18-human-collaboration-ux-audit.md` (Jason's approved brief, copied whole).
 Base: origin/main at 07c7422, which includes PR #47 (one status message per run). PR #47 is merged but
 not deployed. Nothing is implemented yet. This document is the gate.
@@ -57,9 +62,25 @@ Rules:
 - Line 2 is the state, then whether it needs you, then a native link. The link is built from the
   validated repo and number (`<https://github.com/…/issues/46|Issue #46>`), never from agent text.
 - The state reads in this order. The first match wins:
-  1. Needs your decision. An open question, permission, plan or build decision for this run.
-  2. Ella reviewing, no action needed. A plan version or PR is waiting for her recommendation.
+  1. Needs your decision. Any open request the human must answer: a question or permission (other
+     than an Approval still under review), or Ella's plan or build card.
+  2. Ella reviewing, no action needed. A plan version or PR is waiting for her recommendation. That
+     includes the builder's open `Approval` question for a version with no design card yet. That
+     question alone never yields "Needs your decision". Early approval is still offered on its message,
+     as the labelled exception (section 3).
   3. Feedback delivered, revision pending.
+
+  Both cases side by side. Each gets its own regression test:
+
+  > *Agent activity status*
+  > Ella reviewing plan v2 · no action needed · <Issue #46>
+
+  (only the builder's Approval question for v2 is open, with no review yet)
+
+  > *Agent activity status*
+  > Needs your decision: 1 question · <Issue #46>
+
+  (the same pending review, plus an unanswered question or permission)
   4. PR #47's existing states, reworded: Dispatched, waiting for the builder · Started · Working ·
      Quiet N min · Turn ended, the builder is waiting at its prompt · Session ended.
   5. Finished, or Archived.
@@ -128,30 +149,52 @@ wins (existing `answer_part` guard).
 
 ### The four timing cases (smallest complete approach)
 
-| Case | Today | Proposed |
-|---|---|---|
-| Review before question | Tap fails: "tap again on the new message" | The tap is recorded on the design request (`executing`, waiting). When the builder's question for **the same version** appears, the scan answers it once. Card: "Approval recorded · the builder hasn't asked yet; it gets this when it does." A newer plan version ends the wait: "Plan v3 replaced v2; your approval of v2 was not sent." |
-| Question before review | Two live cards | The question shows "Ella reviewing" (above). When the review arrives, the question message is edited to point at it and loses its buttons. |
-| Answered before review | Review card appears; its tap fails | `recommend-design` refuses: "already answered (Approve)". The skill then posts the review as a plain note, with no buttons: "You approved v2 before my review finished. I'd still change X: …" Your answer stands. Nothing asks again. |
-| Bundled questions (approval + others) | Ella's tap fails: "answer it on its own message" | Ella's tap answers only the `Approval` question, through the same per-question `answer_part` the channels use. The other questions keep their own messages and controls. Card: "Approval recorded · it reaches the builder after you answer the other question above." |
+Every rule below applies to **both** of the card's sending actions: **Approve plan vN** and **Send
+revisions to builder**. Each keeps its own words. A revision is never called an approval anywhere: not
+on the card, not in an outcome, not in the reply sent to the builder. The exact text of the reply
+("Approve: the human approved vN." or "Revise vN before building. Revisions from the human: …", with
+any typed additions) is fixed when you tap. It is stored in `intent.reply` on the design request and
+bound to that version, and it is delivered word for word.
+
+| Case | Today | Proposed: Approve | Proposed: Send revisions |
+|---|---|---|---|
+| Review before question | Tap fails: "tap again on the new message" | The tap is recorded on the design request (`executing`, waiting). When the builder's question for **the same version** appears, the scan answers it once. Card: "Approval of v2 recorded · the builder hasn't asked yet; it gets this when it does." | Same path, with the exact authorized revisions kept. Card: "Revisions for v2 recorded · the builder hasn't asked yet; they go when it does." |
+| Newer version before the builder asks | (not handled) | The pending delivery is cancelled, and nothing is sent. "Plan v3 replaced v2. Your approval of v2 was not sent." | "Plan v3 replaced v2. Your revisions for v2 were not sent." |
+| Question before review | Two live cards | The question shows "Ella reviewing" (above). When the review arrives, the question message is edited to point at it and loses its buttons. | Same. |
+| Answered before review | Review card appears; its tap fails | `recommend-design` refuses: "already answered (Approve)". The skill posts the review as a plain note, with no buttons: "You approved v2 before my review finished. I'd still change X: …" Your answer stands. Nothing asks again. | Same refusal, and the same note. Your original answer, whatever it was, is never re-sent or overridden. |
+| Bundled questions (approval + others) | Ella's tap fails: "answer it on its own message" | Ella's tap answers only the `Approval` question, through the same per-question `answer_part` the channels use. The other questions keep their own messages and controls. Card: "Approval recorded · awaiting your other answer above." | "Revisions recorded · awaiting your other answer above." |
+
+Binding, unchanged where it exists today and kept in every new path:
+- **Exact-request recovery binding.** `intent.question` is written before the answer is attempted. A
+  recovery (restart, or a re-run of the scan) acts only on that question id. It never picks another
+  question, even one for the same version.
+- **First answer wins.** The approval part goes through `answer_part`, under the same lock as a direct
+  tap.
+- **No retargeting.** A human answer that lands in between can be a direct tap on the builder's
+  question, a typed reply or a pane answer. When one does, Ella's card fails with "You already answered
+  this on the builder's question: <answer>. Nothing else was sent." The accepted decision is never
+  moved to a different question or version.
 
 No new orchestration. The changes are one scan check and the existing answer paths:
 - `decisions._answer_approval` keeps its version binding and answers a part, not the whole request.
-- The gateway scan applies a waiting design answer to a newly open question for the same pin.
+- The gateway scan applies a waiting design answer to a newly open question for the same pin, and
+  cancels it when a newer version exists.
 - `handle()` skips the approval slot while an open design request covers it.
 
-### Recorded vs delivered (plan approval)
+### Recorded vs delivered (both actions)
 
-> ✓ Approval recorded · delivering to the builder
+Ella's design request stays `executing` until the builder's question ends. Only bridge evidence changes
+"recorded" to "delivered": the question ends `done` with the hook's "Sent to Claude".
 
-then, when the builder's question ends with the hook's "Sent to Claude":
+| Moment | Approve | Send revisions |
+|---|---|---|
+| After the tap | ✓ Approval of v2 recorded · delivering to the builder | ✓ Revisions for v2 recorded · delivering to the builder |
+| Other bundled answers missing | Approval recorded · awaiting your other answer above | Revisions recorded · awaiting your other answer above |
+| Bridge evidence | ✓ Approval delivered to the builder | ✓ Revisions delivered to the builder · revision pending |
+| The question ends any other way | Not delivered: the builder stopped waiting. Nothing was approved. | Not delivered: the builder stopped waiting. The revisions were not sent. |
 
-> ✓ Approval delivered to the builder
-
-Today the card says "Approval sent to the agent" as soon as the answer is recorded, before the pane
-picks it up. Proposed: the design request stays `executing` until its question ends. The outcome edit
-then reports what happened. If the question ends any other way: "Not delivered: the builder stopped
-waiting. Nothing was approved."
+Today the card says "Approval sent to the agent" or "Revisions sent to the agent" as soon as the answer
+is recorded, before the pane picks it up.
 
 ## 4. Independent questions
 
@@ -319,8 +362,10 @@ state machine or dependency.
      material caveats, deploy consequence.
 2. **One surface per decision.**
    - In `decisions`: `_answer_approval` answers the `Approval` part, through the same lock-guarded
-     `answer_part`. A waiting design answer is applied to a new question for the same pin. A newer
-     version fails a waiting answer.
+     `answer_part`, for Approve and Send revisions alike. A waiting design answer (its exact
+     `intent.reply`) is applied to a new question for the same pin. A newer version cancels it. The
+     `intent.question` recovery binding and first-answer-wins are kept, and nothing is retargeted
+     after a human answer that lands in between.
    - In `gateway.handle`: the covered approval slot is skipped, and the question message is edited to
      point at the review.
    - `recommend-design` refuses for a version already answered.
@@ -342,7 +387,11 @@ state machine or dependency.
 - Renderer fixtures for every gallery message, in Slack blocks and Telegram text.
 - Slack payloads are checked against Block Kit limits. The section/markdown schema rules are taken from
   Slack's docs and Hermes's own `sanitize_blocks`, not just a mock that accepts any send.
-- The four timing cases.
+- The four timing cases, plus newer-version cancel, each for both Approve and Send revisions.
+- An intervening human answer: no retarget.
+- Recovery acts only on `intent.question`.
+- Parent state: an Approval under review alone reads "Ella reviewing". Add an unrelated question or
+  permission and it reads "Needs your decision".
 - A bundled question set answered partially, across a restart.
 - Stale taps.
 - A long review with a deploy caveat near the limit: the caveat stays on the card, and the full text
