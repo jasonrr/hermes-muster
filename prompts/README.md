@@ -10,8 +10,8 @@ Edit the file to change the prompt; nothing else holds a copy.
 - **Framing.** Blank lines at the start and end of a file are trimmed. The code adds the newlines that join one prompt
   to another, so an editor that trims trailing whitespace changes nothing that is sent.
 - **Skills.** `dispatch.md`, `escalation.md` and `review-standard.md` are registered as Hermes skills themselves
-  (`ctx.register_skill`, in `__init__.py`). Hermes serves the file whole, frontmatter included. Keep the
-  frontmatter's `name` and `description`.
+  (`ctx.register_skill`, in `__init__.py`). Hermes serves the file whole, frontmatter included; `__init__.py` reads the
+  frontmatter's `description` line and registers it, which is what Hermes lists. Keep `name` and `description`.
 - **Overrides.** `workflow_prompt_file` replaces `builder-workflow.md`. No other prompt has an override.
 
 ## Inventory

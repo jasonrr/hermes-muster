@@ -8,6 +8,10 @@ uncommitted changes. Then the human is told, with the pull request's link.
 
 $ask
 
+The brief above is the human's request. When it already says the approach and the scope, so that a design
+would only restate it, it is the approved design: build. When you would have to choose an approach, cut
+scope or resolve an open question, write the design and propose it as above.
+
 Never push to $base, merge, deploy or force-push.
 
 ## How to work

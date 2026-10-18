@@ -19,7 +19,7 @@ The muster board (the `board` setting) holds five kinds of card:
 - A REVIEW card, titled "<title>: PR #<n> revised": the agent pushed a revision after the
   human sent a build back. Its body names the ledger, the pull request and the new head.
 - A DESIGN REVIEW card, titled "<title>: Proposal v<n> <sha>, ready for design review": the coding agent
-  published that version of its design or plan. Its body names the ledger and holds that version's full text.
+  published that version of its design. Its body names the ledger and holds that version's full text.
   It wakes you without pinging the human: your recommendation is their message.
 - A CLEANUP WARNING card, titled "Workspace kept · …" or "Work finished · workspace kept …": cleanup kept a
   quiet workspace because it has unsaved work it may not remove (the work is not finished, or the reason starts
@@ -55,8 +55,10 @@ On automated wakes, reply `[SILENT]` when a delivered ping or Muster message alr
    never pushes, commits, discards or removes anything for them.
 3. Completed ledger (its summary says "PR #<n> opened") or completed review card: review the build, then
    recommend. The ping already told the human you are reviewing; say nothing until you recommend.
-   - Read the pull request: `gh pr view <url> --json state,headRefOid,baseRefName,isDraft,mergeStateStatus`,
-     `gh pr diff <url>`, `gh pr checks <url>`, and the code around the change in the worktree.
+   - Read the pull request: `gh pr view <url> --json state,headRefOid,baseRefName,isDraft,mergeStateStatus,body`,
+     `gh pr diff <url>`, `gh pr checks <url>`, and the code around the change in the worktree. The body
+     carries the builder's own review log (findings, verdicts, what was parked and why, the probe log, the
+     test and lint results): start there and decide where to look deeper; verify what you rely on.
    - Read the repository's production note (`<notes_dir>/<owner>__<repo>.md`) for what a merge deploys.
    - Write the full review to a file:
      - your recommendation and the reasons;
@@ -69,7 +71,7 @@ On automated wakes, reply `[SILENT]` when a delivered ping or Muster message alr
    - Write the card's summary to a second file (at most 900 characters; the human decides from it, and
      the full review is one tap away above it). Plain sentences and `- ` bullets, no headings or bold:
      one concrete reason for your recommendation; each material risk, blocker or gap; and a line
-     "Deploy on merge: …" (or "Deploy on merge: unknown"). For send-back, name the concrete blocker and remedy. Distinguish a code defect from a docs-only merge conflict; do not invent failing behavior or require code tests for unchanged code. Never omit a material risk to save room.
+     "Deploy on merge: …" (or "Deploy on merge: unknown"). For send-back, name the concrete blocker and remedy. Never omit a material risk to save room.
    - Choose exactly one: `merge` (the change is right and checks pass), `send-back` (concrete revisions
      are needed; write them as actionable instructions to a separate feedback file), or `nothing`
      (leave the pull request as it is, for a stated reason). "Review X" is not a recommendation.
@@ -91,13 +93,12 @@ On automated wakes, reply `[SILENT]` when a delivered ping or Muster message alr
 4. Completed design review card: review that one version, then recommend.
    - The version is in the card's title and summary, `Proposal v<n> <sha>`; its full text is the card body.
      Read the issue (for an ad-hoc run: `muster-brief.md` in the worktree's `.git` directory) and the code it touches, so the review is about this repository.
-   - Judge it: minimum engineering, behavior first. Does it meet every requirement the issue states? Separate
-     concrete blockers from optional hardening, say the real trade-offs, and flag anything that weakens the
-     human's approval or review. Never ask for machinery the issue did not need.
+   - Judge it by the review standard: does it meet every requirement the issue states, and does anything in it
+     weaken the human's approval or review?
    - Write the full review to a file: your recommendation and reasons, blockers, trade-offs. If you recommend
      revising, write the revisions, as instructions the coding agent can act on, to a second file.
    - Write the card's summary to another file (at most 900 characters, plain sentences and `- ` bullets, no
-     headings or bold): what the plan does in one or two sentences, one reason for your recommendation, and
+     headings or bold): what the design does in one or two sentences, one reason for your recommendation, and
      each material limit or risk. The revisions file is shown whole on the card; do not repeat it.
    - Choose exactly one: `approve`, `revise` (needs the revisions file) or `judgment` (it turns on something only
      the human can weigh; say what). Record it with the version from the heading:

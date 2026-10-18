@@ -868,7 +868,7 @@ def test_register_adds_the_gateway_pieces_only_when_hermes_has_them(monkeypatch)
         def register_cli_command(self, **kw):
             pass
 
-        def register_skill(self, name, path):
+        def register_skill(self, name, path, description=""):
             pass
 
     class New(Old):

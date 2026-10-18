@@ -86,7 +86,7 @@ def test_data_dir_honors_hermes_home(tmp_path, monkeypatch):
 
 def test_workflow_text_reads_bundled_prompt():
     lines = config.workflow_text().splitlines()
-    assert lines[0] == "# How to work"
+    assert lines[0].startswith("1. Bug: reproduce it first")
     assert sum(1 for line in lines if re.match(r"\d+\. ", line)) == 13
 
 

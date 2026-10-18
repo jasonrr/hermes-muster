@@ -1,4 +1,5 @@
 import argparse
+import re
 import importlib.util
 import sys
 import types
@@ -88,8 +89,9 @@ def test_root_loads_as_package_and_dispatches(monkeypatch):
         def register_cli_command(self, **kw):
             calls.update(kw)
 
-        def register_skill(self, name, path):
+        def register_skill(self, name, path, description=""):
             calls.setdefault("skills", {})[name] = path
+            calls.setdefault("descriptions", {})[name] = description
 
     ctx = Ctx()
     module.register(ctx)
@@ -98,6 +100,7 @@ def test_root_loads_as_package_and_dispatches(monkeypatch):
                                "review-standard": ROOT / "prompts" / "review-standard.md"}
     for skill, path in calls["skills"].items():
         assert path.read_text().startswith(f"---\nname: {skill}\ndescription: ")
+        assert calls["descriptions"][skill] == re.search(r"^description: (.+)$", path.read_text(), re.M).group(1)
     monkeypatch.setitem(
         sys.modules, f"{name}.muster.core", types.SimpleNamespace(tick=lambda args: 9)
     )
