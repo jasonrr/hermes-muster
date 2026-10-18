@@ -64,8 +64,9 @@ self-contained git bundle of HEAD and of a commit shaped like `git stash push -u
 on disk, the untracked files git does not ignore) to backups/cleanup/<time>-<name>/, fetches it back into an empty
 repository to check every id, writes a manifest with the one restore command, and reads the checkout again: any
 change keeps it. Files git ignores (.env, build output, dependencies) are never read or kept. Nothing still owns
-the run (owner_free). A conflict in progress, an intent-to-add entry, a repository inside the checkout or
-submodules cannot be preserved faithfully: those, and work that is not finished, keep the worktree.
+the run (owner_free). A conflict in progress, an intent-to-add entry, a file flagged assume-unchanged or
+skip-worktree (git hides its edits), a repository inside the checkout or submodules cannot be preserved faithfully:
+those, and work that is not finished, keep the worktree.
 
 A coding worktree kept that way is never removed. Unless a pull request from its branch is open (work under way),
 once per state, a card on the muster board, subscribed notify+wake and blocked, pings the human and wakes the agent
@@ -338,7 +339,8 @@ def clear(link, clone, copies):
 
 
 def unpreservable(path, rest):
-    """Why preserve() could not keep these `git status --porcelain` lines faithfully, or None."""
+    """Why preserve() could not keep the checkout faithfully, from these `git status --porcelain` lines and the index's
+    flags, or None."""
     for line in rest:
         if line[:2] in UNMERGED:
             return f"cannot preserve: {line[3:]} has a merge conflict"
@@ -348,6 +350,11 @@ def unpreservable(path, rest):
             return f"cannot preserve: {line[3:]} is a repository inside the checkout"
     if rest and os.path.lexists(Path(path, ".gitmodules")):
         return "cannot preserve: the checkout has submodules"
+    # git status and `git add -u` skip a file flagged assume-unchanged (a lowercase tag) or skip-worktree (S), so
+    # neither the status above nor snapshot() sees its edits (issue #49).
+    for line in git(path, "ls-files", "-v", "-z").split("\0"):
+        if line[:1].islower() or line[:1] == "S":
+            return f"cannot preserve: {line[2:]} is marked assume-unchanged or skip-worktree, so git hides its edits"
     return None
 
 
