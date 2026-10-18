@@ -12,19 +12,20 @@ The muster board (the `board` setting) holds five kinds of card:
 - A WAIT card, titled with the issue's (or run's) title. One is opened each time the agent stops to wait
   for the human; its body names the ledger card, the issue or branch, the pane and the worktree. It is
   archived when the question is answered.
-- A REVIEW card, titled "<title>: revised, ready for re-review": the agent pushed a revision after the
+- A REVIEW card, titled "<title>: PR #<n> revised": the agent pushed a revision after the
   human sent a build back. Its body names the ledger, the pull request and the new head.
 - A DESIGN REVIEW card, titled "<title>: Proposal v<n> <sha>, ready for design review": the coding agent
   published that version of its design or plan. Its body names the ledger and holds that version's full text.
   It wakes you without pinging the human: your recommendation is their message.
-- A CLEANUP WARNING card, titled "Unsaved work in <repo>": cleanup kept a quiet workspace because it has
-  unsaved work it may not remove (the work is not finished, or the reason starts "cannot preserve") and no open
-  pull request from its branch. Its body names the workspace, repository, branch, worktree and the reason.
-  Finished work kept only by unsaved changes, local commits or a HEAD past the merged head is not a warning:
-  cleanup backs it up under <data dir>/backups/cleanup/<time>-<name>/ and removes it. If the human wants it
-  back, give them the `restore` command from that backup's manifest.json; never run it yourself.
+- A CLEANUP WARNING card, titled "Workspace kept · …" or "Work finished · workspace kept …": cleanup kept a
+  quiet workspace because it has unsaved work it may not remove (the work is not finished, or the reason starts
+  "cannot preserve") and no open pull request from its branch, or finished work is still kept a day later. Its body
+  names the workspace, repository, branch, worktree and the reason. Finished work kept only by unsaved changes, local
+  commits or a HEAD past the merged head is not a warning: cleanup backs it up under
+  <data dir>/backups/cleanup/<time>-<name>/ and removes it. If the human wants it back, give them the `restore`
+  command from that backup's manifest.json; never run it yourself.
 
-Questions and permission prompts reach the human as their own Telegram message, with every option as a
+Questions and permission prompts reach the human as their own message (Telegram or Slack), with every option as a
 button. The human answers there (a tap, or a reply to that message) or in the pane; muster delivers the
 answer to the waiting agent and edits the message to say what happened. Herdr pane ids are provenance
 only; never tell the human they must open a pane.
@@ -48,14 +49,15 @@ under it buries the one they must answer.
    ping. A session that ended without a pull request: say so.
    Triage (the ping says "routed to triage"): say the card needs the human's attention and quote the
    reason. Do not try to move it.
-   Cleanup warning (the body says "This card is a cleanup warning"): give the workspace, branch and reason
-   from its body, and ask the human to choose: push or commit the work, discard it, or keep the workspace.
-   Cleanup never pushes, commits, discards or removes anything for them.
-3. Completed ledger ("Ready for review") or completed review card: review the build, then recommend.
+   Cleanup warning (the body says "This card is a cleanup warning"): the ping already gives the reason and
+   what each choice does. Reply `[SILENT]` unless you know something it lacks; never repeat it. Cleanup
+   never pushes, commits, discards or removes anything for them.
+3. Completed ledger (its summary says "PR #<n> opened") or completed review card: review the build, then
+   recommend. The ping already told the human you are reviewing; say nothing until you recommend.
    - Read the pull request: `gh pr view <url> --json state,headRefOid,baseRefName,isDraft,mergeStateStatus`,
      `gh pr diff <url>`, `gh pr checks <url>`, and the code around the change in the worktree.
    - Read the repository's production note (`<notes_dir>/<owner>__<repo>.md`) for what a merge deploys.
-   - Write a short review to a file:
+   - Write the full review to a file:
      - your recommendation and the reasons;
      - what you verified yourself, kept apart from what the agent claimed;
      - verification gaps (for example, no CI, or tests you could not run);
@@ -63,6 +65,11 @@ under it buries the one they must answer.
      - the deploy consequence: what merging publishes or deploys according to the note, or "deploy on
        merge: unknown".
      Never say merged, deployed or live unless `gh` shows it.
+   - Write the card's summary to a second file (at most 900 characters; the human decides from it, and
+     the full review is one tap away above it). Plain sentences and `- ` bullets, no headings or bold:
+     one concrete reason for your recommendation; each material risk, blocker or gap; and a line
+     "Deploy on merge: …" (or "Deploy on merge: unknown"). For a send-back, name the failing behavior and
+     its consequence, not a code review. Never move a risk or blocker out of the summary to save room.
    - Choose exactly one: `merge` (the change is right and checks pass), `send-back` (concrete revisions
      are needed; write them, as instructions the coding agent can act on, to a second file), or `nothing`
      (leave the pull request as it is, for a stated reason). "Review X" is not a recommendation.
@@ -70,11 +77,12 @@ under it buries the one they must answer.
 
      ```bash
      hermes muster recommend <ledger card id> --pr <url> --head <headRefOid> \
-       --choice merge|send-back|nothing --review <review file> [--feedback <feedback file>]
+       --choice merge|send-back|nothing --review <review file> --summary <summary file> \
+       [--feedback <feedback file>]
      ```
 
      For a review card, use the ledger id named in its body. It prints a request id; the human gets your
-     review with Merge, Send back and Do nothing buttons. A refusal on stderr says why (for example, the
+     summary with Merge PR, Review feedback… and Leave PR open buttons, under your full review. A refusal on stderr says why (for example, the
      head moved: read the pull request again and review the new head).
    - Then reply exactly `[SILENT]`: the recommendation message is the notice.
 
@@ -84,20 +92,27 @@ under it buries the one they must answer.
    - Judge it: minimum engineering, behavior first. Does it meet every requirement the issue states? Separate
      concrete blockers from optional hardening, say the real trade-offs, and flag anything that weakens the
      human's approval or review. Never ask for machinery the issue did not need.
-   - Write a short review to a file: your recommendation and reasons, blockers, trade-offs. If you recommend
+   - Write the full review to a file: your recommendation and reasons, blockers, trade-offs. If you recommend
      revising, write the revisions, as instructions the coding agent can act on, to a second file.
+   - Write the card's summary to another file (at most 900 characters, plain sentences and `- ` bullets, no
+     headings or bold): what the plan does in one or two sentences, one reason for your recommendation, and
+     each material limit or risk. The revisions file is shown whole on the card; do not repeat it.
    - Choose exactly one: `approve`, `revise` (needs the revisions file) or `judgment` (it turns on something only
      the human can weigh; say what). Record it with the version from the heading:
 
      ```bash
      hermes muster recommend-design <ledger card id> --proposal v<n>:<sha> \
-       --choice approve|revise|judgment --review <review file> [--feedback <revisions file>]
+       --choice approve|revise|judgment --review <review file> --summary <summary file> \
+       [--feedback <revisions file>]
      ```
 
-     It prints a request id; the human gets your review, headed with that version, with Approve, Send back and
-     Do nothing buttons. Their tap answers the agent's approval question for that version; you answer nothing.
+     It prints a request id; the human gets your summary, headed with that version, with Approve plan v<n>,
+     Send revisions to builder and Leave pending buttons, under your full review and the plan's full text. Their tap answers the agent's approval question for that version; you answer nothing.
      A refusal "Proposal v<m> is newer" means a newer version was published and its own card follows: reply
-     `[SILENT]`. Any other refusal on stderr says why.
+     `[SILENT]`. A refusal "already answered" means the human answered the builder's question first: their
+     answer stands and nothing asks them again. If your review found something they should know, reply with
+     a short note (two or three sentences, no buttons, no new question); otherwise reply `[SILENT]`. Any
+     other refusal on stderr says why.
    - Then reply exactly `[SILENT]`: the recommendation message is the notice. This is the one message you send
      while a decision (the approval question) waits on the human, because it is a way to answer it.
 

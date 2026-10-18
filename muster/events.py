@@ -363,9 +363,9 @@ def propose(card, file, **issue):
         with open(runs.run_dir(card) / "lock", "w") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)  # released before the drain, which takes it again
             saved = versions(card)
-            version = saved[-1] if saved else 0
+            version, new = saved[-1] if saved else 0, False
             if not version or (directory / f"v{version}.md").read_text() != text:
-                version += 1
+                version, new = version + 1, True
                 (directory / f"v{version}.md").write_text(text)
             proposal = {"version": version, "sha": sha}
             path = runs.enqueue(card, "proposal", heading(proposal), proposal=proposal, **issue)
@@ -378,6 +378,8 @@ def propose(card, file, **issue):
         if status(card) == "archived":
             raise core.CommandError(f"ledger {card} is archived: not posted")
         core.save_json(directory / "armed", proposal)  # only now: an approval request needs it on the ledger
+        if new:  # a repeat of the same version keeps its review's state
+            progress.touch(card, "proposal", f"v{version}")
     except Exception as caught:  # noqa: BLE001 - the agent reads the reason; nothing may crash it
         line = f"propose card {card}: {' '.join(str(caught).split())}"
         log(line)
@@ -409,7 +411,7 @@ def move(event, git_dir, link, detail, key, ask=None, proposal=None, bridged=Fal
             # One line: the board keeps a completion's first summary line only. The agent reports done
             # right after opening its pull request; nothing here has merged or deployed it.
             core.kanban("complete", card, "--summary",
-                        f"Ready for review: {detail} (open; not merged or deployed); {core.REVIEW_CUE}")
+                        progress.opened(detail))
             expect(card, "done", event)
             progress.touch(card, "review", detail)
         elif now != "done":

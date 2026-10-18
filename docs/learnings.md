@@ -131,3 +131,11 @@
 - `git bundle create` given a bare commit id → it silently leaves that commit out; name it with a ref (deleted right after), and verify by fetching the bundle into an empty repository, never by `bundle verify` alone.
 - `git init` on an existing directory → succeeds and reuses it; a restore command that must not overwrite starts with `mkdir`.
 - A file flagged assume-unchanged or skip-worktree → `git status`, `git add -u` and `git worktree remove`'s dirty check all skip its edits, so a backup built from them verifies yet misses them; read the flags with `git ls-files -v` (lowercase tag or `S`) and keep the checkout (issue #49).
+
+## human collaboration UX (2026-10-18)
+
+- Formatting Slack text by running agent text through Hermes's `adapter.format_message` alone → it escapes only broadcast mentions, so a raw `<@U…>` in agent text would still ping; escape with `shared.slack_text` first, then convert: `format_message` keeps existing entities and still turns `**bold**`, headings and `[x](url)` into mrkdwn.
+- Writing Markdown into a Telegram clarify prompt → muster's clarify path (`send_labelled_clarify`, like Hermes's `send_clarify`) HTML-escapes the text, so `**` shows literally; Telegram cards get plain text (`shared.plain`), and only a separate `adapter.send` message (the full review) gets Hermes's MarkdownV2 conversion.
+- Using a stored outcome string as a state marker ("Sent ✓" picked out delivered send-backs) → rewording it for humans would have silently broken re-review; match outcomes through a constant that also accepts the old string (`decisions.SENT`).
+- Telegram's re-presentation after a restart cleared `partial`, so a human's answer to one question of several was lost on every gateway restart; keep the parts and present only the unanswered questions.
+- Giving an early design tap to the version's question only when one was open at scan time → a question asked and answered in the pane between two scans was never seen, so a later ask for the same version got the old tap; reconcile ended questions first, even when none is open.

@@ -22,6 +22,7 @@ config_schema:
   notify_user_id: {type: str, default: "", description: "Who may answer: one id, or approver ids separated by commas"}
   notify_chat_type: {type: str, default: group}
   notify_topics: {type: bool, default: false, description: "One forum topic (Telegram) or thread (Slack) per run in the notify_chat_id chat; see README"}
+  coordinator_name: {type: str, default: Coordinator, description: "The Hermes agent's name in muster's messages (\"Ella is reviewing\")"}
   gh_config_dir: {type: str, default: "", description: Optional GH_CONFIG_DIR for a bot login used by gh/git in the pane}
   notes_dir: {type: str, default: "", description: Per-repo production notes; empty = plugin-data/muster/repos}
   workflow_prompt_file: {type: str, default: "", description: Overrides prompts/workflow.md in the brief}

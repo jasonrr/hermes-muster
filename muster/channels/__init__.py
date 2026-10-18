@@ -14,7 +14,8 @@ tests/test_channels.py is its test):
 - `async present(req, meta, questions) -> Sent`: post only the question indexes given.
 - `async present_approval(req, meta) -> Sent`. `Sent = {"messages": {str(n): [new ids]}, "failure": str | None}`.
 - `async outcome(req) -> bool`: edit every message of an ended request to `req["outcome"]`.
-- `async edit(chat, mid, text)`: only on a channel without durable prompts, for a superseded message.
+- `async edit(chat, mid, text)`: a message's text in place of its controls (a superseded message, or an approval
+  question a design review stands in for).
 - `release(rid)`, `release_ended(live)`, `track(req)`: the in-process state of a request (no-ops on Slack).
 - `async reply(event) -> dict | None`: pre_gateway_dispatch; {"action": "skip"} when muster took the message.
 - `async steps()`: one lifecycle pass over the conversations (topics, threads).

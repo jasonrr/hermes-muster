@@ -25,13 +25,16 @@ from .shared import log
 name = "slack"
 durable_prompts = True
 CAP = 3000  # characters in a section's text (Slack's limit)
+TEXT_MAX = 40000  # characters of a message's text Slack keeps; a card is split into sections, never cut, below it
+BLOCKS_MAX = 50  # blocks in a message (Slack's limit)
 LABEL_MAX = 75  # characters on a button or a checkbox (Slack's limit)
 CHOICES_MAX = 25  # buttons in an actions block (Slack's limit)
 MULTI_MAX = 10  # options in a checkboxes element (Slack's limit)
 COMMAND_MAX = 2900  # characters of a command shown whole on a card with buttons; a longer one is answered in the pane
 SHOWN_MAX = 500  # characters of a too-long command, and of a card's why, shown
 GONE = ("message_not_found", "channel_not_found", "is_archived", "thread_not_found")  # the parent cannot change
-PARENT = {"running": "⏳ running", "done": "✅ done", "archived": "archived"}
+PARENT = {"running": "Dispatched · waiting for the builder to start", "reopened": "Reopened for a new request",
+          "done": "Finished", "archived": "Archived"}
 ACTIONS = re.compile(r"^muster_(choice_\d+|text|multi|submit|allow|deny|deny_text)$")
 
 
@@ -96,16 +99,46 @@ def plain(text):
     return {"type": "plain_text", "text": text, "emoji": True}
 
 
+def mrkdwn(text):
+    """Agent or human text as Slack mrkdwn: escaped first, so it pings, links and formats nothing it did not mean
+    (shared.slack_text), then Hermes's own Markdown conversion (adapter.format_message: headings, bold, links, code),
+    the one Hermes's own replies get."""
+    # A Markdown link would become <target|label>: "[x](!here)" pings, "[x](@U1)" mentions. Muster's own links are
+    # built apart (headline, the detail link), so agent text gets none: the "](" is broken with a zero-width space.
+    escaped = shared.slack_text(text).replace("](", "]\u200b(")
+    convert = getattr(T.adapter, "format_message", None)
+    return convert(escaped) if callable(convert) else re.sub(r"\*\*(.+?)\*\*", r"*\1*", escaped)  # muster's own bold
+
+
 def section(text):
-    return {"type": "section", "text": {"type": "mrkdwn", "text": shared.slack_text(text)[:CAP]}}
+    return {"type": "section", "text": {"type": "mrkdwn", "text": mrkdwn(text)[:CAP]}}
+
+
+def sections(text):
+    """Text as section blocks of at most CAP characters, split at a paragraph, else a line, else a space: a long card
+    or review is never cut short (Slack's 3,000-character limit is per section)."""
+    out, rest = [], mrkdwn(text)
+    while rest:
+        at = len(rest) if len(rest) <= CAP else next(
+            (i for i in (rest.rfind(sep, 0, CAP) for sep in ("\n\n", "\n", " ")) if i > 0), CAP)
+        out.append({"type": "section", "text": {"type": "mrkdwn", "text": rest[:at]}})
+        rest = rest[at:].lstrip("\n ")
+    return out
 
 
 def body(req, n):
-    """Question n's message without its inputs: what stays once it is answered."""
+    """Question n's message without its inputs: what stays once it is answered. Its text in full, and a link to its
+    detail message (shared.detail) when it has one."""
     q = req["questions"][n]
     tail = ("Tick any, then Submit, or type your own answer below." if q.get("multi")
             else "Pick one, or type your own answer below." if req["choices"][n] else "Type your answer below.")
-    return [section(shared.render(req, n, cap=CAP, label_max=LABEL_MAX, tail=[tail], number_multi=False))]
+    if req["kind"] == "question":
+        tail += " Typing here answers the builder; a thread reply goes to the coordinator."
+    out = sections(shared.render(req, n, cap=TEXT_MAX, label_max=LABEL_MAX, tail=[tail], number_multi=False))
+    url = (req.get("detail") or {}).get("url")
+    if url:  # Slack's own permalink, from chat.getPermalink
+        out.append({"type": "context", "elements": [{"type": "mrkdwn", "text": f"<{url}|{shared.detail_label(req)}>"}]})
+    return out
 
 
 def blocks(req, n):
@@ -116,6 +149,10 @@ def blocks(req, n):
     if len(choices) > (MULTI_MAX if multi else CHOICES_MAX):
         raise ValueError(f"{len(choices)} choices: a Slack message shows at most {MULTI_MAX if multi else CHOICES_MAX}")
     labels = shared.buttons(req, n, label_max=LABEL_MAX, number_multi=False)
+    if shared.reviewing(req, n):  # answering now skips the coordinator's review: an approve button says so
+        who = config.settings.get("coordinator_name") or "Coordinator"
+        labels = [shared.fit(f"{label} without {who}'s review", LABEL_MAX) if label.lower().startswith("approve")
+                  else label for label in labels]
     out = body(req, n)
     if multi:
         out.append({"type": "actions", "block_id": f"mu:{rid}:{n}:multi", "elements": [
@@ -142,15 +179,45 @@ async def post(blocks_, text, meta=None):
     return str(res["ts"])
 
 
+async def post_detail(req, meta):
+    """The request's detail message (shared.detail), posted once, above its card; its permalink goes on the card.
+    Saved before the permalink is asked, so a lost permalink never posts it twice. Returns a failure, or None."""
+    text = shared.detail(req)
+    if not text or (req.get("detail") or {}).get("platform") == name:
+        return None
+    blocks_, ts = sections(text), None
+    try:
+        for i in range(0, len(blocks_), BLOCKS_MAX):  # a review and a plan can pass one message's 50 blocks
+            sent = await post(blocks_[i:i + BLOCKS_MAX], shared.plain(text.split("\n", 1)[0])[:300], meta)
+            ts = ts or sent
+    except Exception as caught:  # noqa: BLE001 - the card still goes out: a missing detail never hides the decision
+        log(f"request {req['id']}: detail message: {error_of(caught)}")
+        if ts is None:
+            return None
+    req["detail"] = {"platform": name, "id": ts}
+    await asyncio.to_thread(decisions.update, req["id"], detail=req["detail"])
+    try:
+        url = (await T.client.chat_getPermalink(channel=chat(), message_ts=ts)).get("permalink")
+    except Exception as caught:  # noqa: BLE001 - the card still says where the detail is
+        log(f"permalink of {ts}: {error_of(caught)}")
+        url = None
+    if url:
+        req["detail"] = {**req["detail"], "url": str(url)}
+        await asyncio.to_thread(decisions.update, req["id"], detail=req["detail"])
+    return None
+
+
 async def present(req, meta, questions):
-    """Each question given as its own message. A failed post keeps what was sent before it."""
+    """Each question given as its own message, after the request's detail message. A failed post keeps what was sent
+    before it."""
     messages = {}
+    await post_detail(req, meta)
     for n in questions:
         q = req["questions"][n]
         if len(req["choices"][n]) > (MULTI_MAX if q.get("multi") else CHOICES_MAX):
             return await too_many(req, n, meta, messages)
         try:
-            messages[str(n)] = [await post(blocks(req, n), f"{shared.title(req)}: {req['questions'][n]['text']}", meta)]
+            messages[str(n)] = [await post(blocks(req, n), shared.fallback(req, n), meta)]
         except Exception as caught:  # noqa: BLE001 - reported as the send's failure, retried with backoff
             return {"messages": messages, "failure": error_of(caught)}
     return {"messages": messages, "failure": None}
@@ -163,12 +230,14 @@ def approval_body(req):
     card = req["card"]
     command = card["command"]
     if len(command) > COMMAND_MAX:
-        head = f"{shared.title(req)} needs a permission in the pane: command too long for Slack ({len(command)} chars)"
-        command = command[:SHOWN_MAX]
+        head = (f"**Permission needed · {shared.title(req)}**\nThe command is too long for Slack ({len(command)} "
+                f"characters): answer it in the pane. Its start:")
+        command, scope = command[:SHOWN_MAX], []
     else:
-        head = f"{shared.title(req)} wants to run this. {str(card.get('why') or '')[:SHOWN_MAX]}"
+        head = f"**Permission needed · {shared.title(req)}**\n{str(card.get('why') or '')[:SHOWN_MAX]}"
+        scope = [section("Allow once lets the builder run this one command, once. Muster can't confirm it ran.")]
     return [section(head), {"type": "rich_text", "elements": [
-        {"type": "rich_text_preformatted", "elements": [{"type": "text", "text": command}]}]}]
+        {"type": "rich_text_preformatted", "elements": [{"type": "text", "text": command}]}]}, *scope]
 
 
 async def present_approval(req, meta):
@@ -177,7 +246,7 @@ async def present_approval(req, meta):
     too long to show whole gets a card with no buttons, and the request goes to the pane (stale): nothing is approved
     unseen, and nothing retries forever."""
     rid, kept = req["id"], approval_body(req)
-    text = f"{shared.title(req)}: permission"
+    text = f"{shared.title(req)}: permission needed"
     oversized = len(req["card"]["command"]) > COMMAND_MAX
     blocks_ = kept if oversized else [*kept, {"type": "actions", "block_id": f"mu:{rid}:approval", "elements": [
         {"type": "button", "action_id": "muster_allow", "text": plain("Allow once"), "style": "primary", "value": rid},
@@ -203,7 +272,7 @@ async def outcome(req):
         return True  # another platform's messages: not ours to edit
     line = req.get("outcome") or req["status"]
     ok = True
-    for n, ids in (presented.get("messages") or {}).items():
+    for n, ids in [*(presented.get("messages") or {}).items(), *(presented.get("redirected") or {}).items()]:
         kept = approval_body(req) if req["kind"] == "permission" else body(req, int(n))
         for ts in ids:
             ok = await update(ts, [*kept, context(line)], line) and ok
@@ -222,6 +291,11 @@ async def too_many(req, n, meta, messages):
     await asyncio.to_thread(decisions.transition, req["id"], ("open",), "stale",
                             outcome="Too many options for Slack: answer it in the pane")
     return {"messages": messages, "failure": None}
+
+
+async def edit(chat_, mid, text):
+    """A message's text in place of its blocks (its buttons and inputs go). True when Slack took it."""
+    return await update(mid, [section(text)], text)
 
 
 def release(rid):
@@ -295,7 +369,8 @@ async def handle(body_, action):
         return await notice(body_, ended(req))
     if result == "duplicate":
         await notice(body_, f"Already answered: {part[0]}")
-    await settled(body_, req, n, body(req, n), f"Answered: {part[0]}")
+    await settled(body_, req, n, body(req, n), f"Answered: {part[0]}" if req["kind"] == "question"
+                  else f"Recorded: {part[0]}")
 
 
 async def choice(body_, action, req, n, block, action_id):
@@ -328,13 +403,14 @@ async def approve(body_, action, req):
     req, ok = await shared.permission(rid, answer)
     if not ok:
         return await notice(body_, ended(req))
-    line = "Answered: Allow once" if answer["decision"] == "allow" else (
-        f"Answered: Deny: {answer['message']}" if answer.get("message") else "Answered: Deny")
+    line = "Allow once recorded · sending to the builder" if answer["decision"] == "allow" else (
+        f"Deny recorded · sending to the builder: {answer['message']}" if answer.get("message")
+        else "Deny recorded · sending to the builder")
     await settled(body_, req, 0, approval_body(req), line)
 
 
 def ended(req):
-    return req.get("outcome") or f"This request is {req['status']}"
+    return req.get("outcome") or "This decision already ended. Nothing was changed."
 
 
 async def notice(body_, text):
@@ -410,7 +486,7 @@ async def destination(req):
                 await shared.retire(ledger)
             return False, None
         ref, ok = await asyncio.to_thread(conversation.swap, ledger, ("closed",), state="open", closed_at=None,
-                                          closed_by=None, parent_text="running")
+                                          closed_by=None, parent_text="reopened")
         if not ok:
             return False, None
         log(f"{ledger}: thread {ref['thread_id']} in use again for request {req['id']}, made after its close")
@@ -421,14 +497,26 @@ async def destination(req):
     return True, {"thread_id": ref["thread_id"]}
 
 
+def headline(ledger, state, name=None):
+    """A run as people scan the channel: its short title in bold, then `state`, then its issue as a native link
+    (mrkdwn). The title and state are escaped (shared.slack_text); the link comes from progress.identity."""
+    title, url, label = progress.identity(ledger, name)
+    tail = f"<{url}|{label}>" if url else shared.slack_text(label) if label != title else ""
+    return f"*{shared.slack_text(title)}*\n{shared.slack_text(state)}" + (f" · {tail}" if tail else "")
+
+
 def parent_line(ref, status, line=None):
-    """The thread parent: the run and its state; while running, the status message's line too (muster.progress), so
-    every parent write keeps it. A final line never shows under "running": a reopened thread is not finished."""
-    text = f"muster · {ref.get('name') or ref['ledger']}   {PARENT[status]}"
-    if status == "running" and line is None:
+    """The thread parent: the run and its state. While running, the status message's line (muster.progress), so every
+    parent write keeps it; a final line never shows under "running" (a reopened thread is not finished). Done shows
+    the final line when it is a finish ("Finished · PR #9 merged")."""
+    if line is None and status in ("running", "done"):
         saved = progress.load(ref["ledger"])
-        line = None if saved.get("final") else saved.get("text")
-    return text + (f"\n{line}" if status == "running" and line else "")
+        text = str(saved.get("text") or "")
+        if status == "running" and not saved.get("final"):
+            line = text or None
+        elif status == "done" and saved.get("final") and text.startswith("Finished"):
+            line = text
+    return headline(ref["ledger"], line or PARENT[status], ref.get("name"))
 
 
 async def show(ledger, line, saved):
@@ -446,13 +534,13 @@ async def show(ledger, line, saved):
         if state == "open" and not ref.get("resolved_at"):
             try:
                 await T.client.chat_update(channel=ref["chat_id"], ts=thread,
-                                           text=shared.slack_text(parent_line(ref, "running", line)))
+                                           text=parent_line(ref, "running", line))
             except Exception as caught:  # noqa: BLE001 - an update is safe to repeat
                 if error_of(caught) not in GONE:  # a parent gone by hand: nothing left to edit
                     log(f"{ledger}: status line on the thread parent: {error_of(caught)}")
                     return False
         return {"mid": thread, "thread": thread}
-    text = shared.slack_text(f"muster · {await asyncio.to_thread(progress.name, ledger, ref)}\n{line}")
+    text = await asyncio.to_thread(headline, ledger, line, ref and ref.get("name"))
     if saved.get("mid") and saved.get("thread") is None:
         try:
             await T.client.chat_update(channel=chat(), ts=saved["mid"], text=text)
@@ -474,7 +562,7 @@ async def parent(ref):
     """Bring the parent's text to `parent_text`; kept for a later step when Slack does not take it."""
     try:
         await T.client.chat_update(channel=ref["chat_id"], ts=ref["thread_id"],
-                                   text=shared.slack_text(parent_line(ref, ref["parent_text"])))
+                                   text=parent_line(ref, ref["parent_text"]))
     except Exception as caught:  # noqa: BLE001
         if error_of(caught) not in GONE:
             log(f"{ref['ledger']}: thread parent: {error_of(caught)}")
@@ -541,7 +629,7 @@ async def create(ref):
         return
     try:
         res = await T.client.chat_postMessage(channel=ref["chat_id"],
-                                              text=shared.slack_text(parent_line(ref, "running")))
+                                              text=parent_line(ref, "running"))
         ts, why = res.get("ts"), "Slack returned no message ts"
     except Exception as caught:  # noqa: BLE001
         ts, why = None, error_of(caught)
@@ -554,18 +642,11 @@ async def create(ref):
 
 
 async def close(ref):
-    """The run's work is resolved: a finish note in the thread (once), then the parent marked done. closed only
-    once Slack took the update, or the parent is gone."""
+    """The run's work is resolved: the parent says Finished (no note in the thread: the parent is what people scan).
+    closed only once Slack took the update, or the parent is gone."""
     ledger, thread = ref["ledger"], ref["thread_id"]
-    if not ref.get("said"):
-        try:
-            await T.client.chat_postMessage(channel=ref["chat_id"], thread_ts=thread, text=(
-                "Work finished: this thread is done. History kept; the worktree is cleaned up separately."))
-        except Exception as caught:  # noqa: BLE001
-            log(f"{ledger}: finish note: {error_of(caught)}")
-        await asyncio.to_thread(conversation.update, ledger, said=True)
     try:
-        await T.client.chat_update(channel=ref["chat_id"], ts=thread, text=shared.slack_text(parent_line(ref, "done")))
+        await T.client.chat_update(channel=ref["chat_id"], ts=thread, text=parent_line(ref, "done"))
     except Exception as caught:  # noqa: BLE001
         if error_of(caught) not in GONE:
             await shared.backoff(ref, f"marking thread {thread} done: {error_of(caught)}")
@@ -583,7 +664,7 @@ async def retire(ref):
     if thread:
         try:
             await T.client.chat_update(channel=ref["chat_id"], ts=thread,
-                                       text=shared.slack_text(parent_line(ref, "archived")))
+                                       text=parent_line(ref, "archived"))
         except Exception as caught:  # noqa: BLE001
             if error_of(caught) not in GONE:
                 await shared.backoff(ref, f"marking thread {thread} archived: {error_of(caught)}")

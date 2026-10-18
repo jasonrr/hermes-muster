@@ -191,7 +191,7 @@ def test_done_completes_with_one_readable_line_and_prints(board, monkeypatch, ca
     complete = next(c for c in board["calls"] if c[4:5] == ["complete"])
     # One line, the PR link, and no claim the work is merged or live. Issue, pane, worktree
     # stay on the card's body and its muster links comment.
-    assert complete[complete.index("--summary") + 1] == f"Ready for review: {PR} (open; not merged or deployed); {core.REVIEW_CUE}"
+    assert complete[complete.index("--summary") + 1] == progress.opened(PR)
     assert "card t_abc123 -> done" in capsys.readouterr().out
 
 
@@ -1009,7 +1009,7 @@ def test_an_issue_run_done_after_a_send_back_makes_one_review_card(board, monkey
     assert len(board["keys"]) == 1 and verbs(board).count("complete") == 1 and verbs(board).count("notify-subscribe") == 1
     create = next(c for c in board["calls"] if c[4:5] == ["create"])
     assert create[create.index("--idempotency-key") + 1] == f"review:t_abc123:{REVISED}"
-    assert create[-1] == "Fix it: revised, ready for re-review"
+    assert create[-1] == "Fix it: PR #12 revised"
     assert answer["calls"][0]["worktree"] == str(tmp_path) and answer["calls"][0]["branch"] == "muster/397"
     assert decisions.load(open_build)["status"] == "stale"
     assert board["comments"]["t_abc123"][0].startswith(core.LINKS_PREFIX) and len(board["comments"]["t_abc123"]) == 1

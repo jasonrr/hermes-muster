@@ -256,16 +256,19 @@ async def outcome(req):
     chat = core.notify_target()["chat_id"]
     newest = [ids[-1] for ids in (presented.get("messages") or {}).values() if ids]
     newest += [mid for ids in (presented.get("replies") or {}).values() for mid in ids]
+    newest += [ids[-1] for ids in (presented.get("redirected") or {}).values() if ids]
     return all([await edit(chat, mid, req.get("outcome") or req["status"]) for mid in newest])
 
 
 # -- presenting -----------------------------------------------------------------------------------
 
 def render(req, n):
+    """Plain text: Hermes's clarify prompt HTML-escapes it, so muster's `**` markers would show (shared.plain)."""
     q = req["questions"][n]
-    return shared.render(req, n, cap=CAP, label_max=LABEL_MAX, tail=[
+    detail = ["Full text: the message above."] if (req.get("detail") or {}).get("platform") == name else []
+    return shared.plain(shared.render(req, n, cap=CAP, label_max=LABEL_MAX, tail=[
         "Several: tap Other and type the numbers, e.g. 1,3" if q.get("multi")
-        else "Your own words: tap Other, or reply to this message."])
+        else "Your own words: tap Other, or reply to this message.", *detail]))
 
 
 def buttons(req, n):
@@ -279,12 +282,19 @@ async def present(req, meta, questions):
     from tools import clarify_gateway
 
     chat = core.notify_target()["chat_id"]
-    await asyncio.to_thread(decisions.update, rid, partial={})  # this boot's prompts start over; the old ones are dead
+    text = shared.detail(req)
+    if text and (req.get("detail") or {}).get("platform") != name:  # once, above the card; Hermes formats and splits it
+        res = await T.adapter.send(chat, text, metadata=meta)
+        if res.success:
+            req["detail"] = {"platform": name, "id": str(res.message_id)}
+            await asyncio.to_thread(decisions.update, rid, detail=req["detail"])
+        else:  # the card still goes out: a missing detail never hides the decision
+            log(f"request {rid}: detail message: {res.error}")
     for n in questions:
         q = req["questions"][n]
         cid, choices = f"mu{rid}q{n}", req["choices"][n]
         clarify_gateway.register(cid, session(rid, n), q["text"], choices, bool(q.get("multi")))
-        T.shown[rid] = n + 1
+        T.shown[rid] = max(T.shown.get(rid, 0), n + 1)
         threading.Thread(target=waiter, args=(rid, n, cid, loop), daemon=True).start()
         try:
             res = await hermes_private.send_labelled_clarify(T.adapter, chat, render(req, n), buttons(req, n),
@@ -306,7 +316,8 @@ async def present_approval(req, meta):
     rid, card = req["id"], req["card"]
     chat, loop = core.notify_target()["chat_id"], asyncio.get_running_loop()
     sent = loop.create_future()
-    why = f"{shared.title(req)}: {card['why']}. To deny with a message to the agent, reply to this message."
+    why = (f"Permission needed · {shared.title(req)}: {card['why']}. Allow once lets the builder run this one "
+           "command, once; Muster can't confirm it ran. To deny with a message to the builder, reply to this message.")
 
     def notify(_data):  # runs in the wait thread, after Hermes queued the request
         future = asyncio.run_coroutine_threadsafe(T.adapter.send_exec_approval(
@@ -414,7 +425,7 @@ async def show(ledger, line, saved):
         return None
     thread = (await asyncio.to_thread(conversation.target, ledger))["thread_id"]
     chat = core.notify_target()["chat_id"]
-    text = f"muster · {await asyncio.to_thread(progress.name, ledger, ref)}\n{line}"
+    text = f"{await asyncio.to_thread(progress.name, ledger, ref)}\n{line}"
     if saved.get("mid") and saved.get("thread") == thread:
         return {"mid": saved["mid"], "thread": thread} if await edit(chat, saved["mid"], text) else False
     if state in ("closing", "closed"):
@@ -555,8 +566,7 @@ async def topic_step(ref):
     elif state == "closing" and shared.now() >= ref.get("retry_at", 0):
         if not ref.get("said"):  # once
             try:
-                await T.adapter.send(chat, "Work finished: this topic is closed. History kept; the worktree is "
-                                           "cleaned up separately.",
+                await T.adapter.send(chat, "Finished. This topic is now closed.",
                                      metadata={"thread_id": ref["thread_id"]})
             except Exception as caught:  # noqa: BLE001
                 log(f"{ledger}: finish note: {caught}")
@@ -692,8 +702,8 @@ async def close_duplicate(ref, thread):
 
 
 async def topic_created(update, context):
-    """Telegram's forum_topic_created notice of a topic the bot itself made in the notify chat. Its name carries the
-    run's ledger id (conversation.name), so it names exactly one run: the thread of that run's create whose reply was
+    """Telegram's forum_topic_created notice of a topic the bot itself made in the notify chat. Its name is unique
+    among live runs (conversation.unique), so it names exactly one run: the thread of that run's create whose reply was
     lost is adopted; any other topic for the run is closed as unused. A name that matches no run, or several, is
     left alone."""
     try:
