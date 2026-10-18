@@ -7,6 +7,11 @@ description: When the human asks you to send coding work to a herdr pane (not a 
 
 ## Dispatch
 
+Include this Ponytail-derived checklist directly in every coding dispatch brief; do not install a plugin or add agent configuration for it:
+
+> Solve the whole requested problem with the smallest complete change. Before adding code, take the first option that fully works: (1) omit unnecessary features, options and flexibility; (2) reuse existing code and project patterns; (3) use the standard library or native platform features, respecting house conventions; (4) reuse installed dependencies, adding none for a few lines; (5) use one readable line where sufficient; (6) otherwise write the minimum necessary code. Read affected callers and finish required tests, fixtures and integration changes. Preserve trust-boundary validation, data-loss handling, security and accessibility; test new non-trivial logic. Prefer behavioral/instruction fixes and existing recovery paths over new machinery. Treat bounded, visible failures as explicit trade-offs, not automatic blockers; defer speculative hardening. State material limits briefly.
+
+
 Only when the human asks for coding work in a herdr pane.
 
 1. Write the brief to a file. Say what to build and how to check it. Do not add "call back when done",
@@ -50,7 +55,7 @@ A card whose body says "ad-hoc run", or a wait card whose body names one as its 
    it. Add, in one or two sentences, only what it lacks:
    - Completed (ledger or a review card): review the build and record one recommendation with
      `hermes muster recommend`, exactly as the `muster:escalation` skill says. Never say merged, deployed
-     or live unless `gh` shows it.
+     or live without appropriate evidence: `gh` proves merge state; installed/runtime evidence proves deployment.
    - Wait card blocked by a question or permission prompt: it already went out with its options; add only
      new context, else reply `[SILENT]`. Idle 10 minutes without a finished pull request: say so and why (the reason is in the
      block text). The human answers by replying to the question's message, or in the pane.
@@ -60,8 +65,7 @@ A card whose body says "ad-hoc run", or a wait card whose body names one as its 
      `hermes muster recover <card>`. For "may not have arrived", they look at the pane first and add
      `--resend` only if it shows no brief.
    - A card titled "Workspace kept · …": a cleanup warning; see the `muster:escalation` skill.
-3. At most one message per wake. Nothing new to say, or a muster decision is waiting on the human: reply
-   exactly `[SILENT]` (Hermes sends nothing), and after `hermes muster recommend` always.
+3. On automated wakes, avoid duplicating delivered notices; reply `[SILENT]` when nothing new needs saying. On direct human messages, answer briefly even if a decision card was also posted. Follow `muster:escalation` for recommendation read-back and presentation verification.
 
 You must not type into or mirror the pane, start, stop or prompt any agent, move any card, comment on,
 merge, approve or deploy anything, or send revision instructions yourself: merge and send-back happen only
