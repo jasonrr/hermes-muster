@@ -230,9 +230,29 @@ def files(tmp_path, review="Looks good.", feedback=None):
     return str(tmp_path / "review.md"), (str(tmp_path / "fb.md") if feedback is not None else None)
 
 
-def rec_args(tmp_path, choice="merge", head=HEAD, pr=URL, review="Looks good.", feedback=None):
+def rec_args(tmp_path, choice="merge", head=HEAD, pr=URL, review="Looks good.", feedback=None, summary=None):
     r, f = files(tmp_path, review, feedback)
-    return argparse.Namespace(ledger="t_1", pr=pr, head=head, choice=choice, review=r, feedback=f)
+    if summary is not None:
+        (tmp_path / "summary.md").write_text(summary)
+    return argparse.Namespace(ledger="t_1", pr=pr, head=head, choice=choice, review=r, feedback=f,
+                              summary=str(tmp_path / "summary.md") if summary is not None else None)
+
+
+def test_a_summary_is_the_card_and_the_review_stays_whole(world, tmp_path, capsys):
+    long = "Detail. " * 1000
+    assert decisions.recommend(rec_args(tmp_path, review=long, summary="Right and tested.\nDeploy on merge: none.")) == 0
+    req = decisions.load(capsys.readouterr().out.strip())
+    assert req["review"] == long.strip() and req["summary"] == "Right and tested.\nDeploy on merge: none."
+    assert req["questions"][0]["text"] == ("**PR #9 · T**\n**Coordinator recommends: merge**\n\nRight and tested.\n"
+                                           "Deploy on merge: none.\n\nMerge squashes PR #9 into main. Muster does not "
+                                           "deploy.")
+
+
+@pytest.mark.parametrize("summary, why", [("x deploy " * 200, "over 900"), ("Right and tested.", "deploy consequence")])
+def test_a_summary_too_long_or_without_the_deploy_consequence_is_refused_not_cut(world, tmp_path, capsys, summary,
+                                                                                 why):
+    assert decisions.recommend(rec_args(tmp_path, summary=summary)) == 1
+    assert why in capsys.readouterr().err and decisions.for_ledger("t_1") == []
 
 
 def test_recommend_creates_the_build_request(world, tmp_path, capsys):
@@ -240,16 +260,18 @@ def test_recommend_creates_the_build_request(world, tmp_path, capsys):
     rid = capsys.readouterr().out.strip()
     req = decisions.load(rid)
     assert req["kind"] == "build" and req["status"] == "open" and req["ledger"] == "t_1"
-    assert req["choices"] == [["Send back (recommended)", "Merge (squash)", "Do nothing"]]
+    assert req["choices"] == [["Review feedback… (recommended)", "Merge PR", "Leave PR open"]]
     assert req["actions"] == ["send-back", "merge", "nothing"]
-    assert req["questions"] == [{"text": "Looks good.", "header": "Build", "multi": False, "options": [
+    assert req["questions"] == [{"text": "**PR #9 · T**\n**Coordinator recommends: send back**\n\nLooks good.\n\n"
+                                         "Merge squashes PR #9 into main. Muster does not deploy.",
+                                 "header": "Build", "multi": False, "options": [
         {"label": label, "description": ""} for label in req["choices"][0]]}]
     assert (req["head"], req["base"], req["pr"], req["cycle"]) == (HEAD, "main", URL, 1)
     assert req["review"] == "Looks good." and req["feedback"] == "Fix the null case."
     assert req["run"]["pane"] == "p_1" and req["run"]["repo"] == "acme/app"
 
 
-@pytest.mark.parametrize("choice, first", [("merge", "Merge (squash) (recommended)"), ("nothing", "Do nothing (recommended)")])
+@pytest.mark.parametrize("choice, first", [("merge", "Merge PR (recommended)"), ("nothing", "Leave PR open (recommended)")])
 def test_recommended_choice_goes_first(world, tmp_path, capsys, choice, first):
     decisions.recommend(rec_args(tmp_path, choice))
     req = decisions.load(capsys.readouterr().out.strip())
@@ -349,7 +371,7 @@ def state(rid):
 def test_do_nothing_touches_nothing(world):
     rid = build(world, {"action": "nothing"})
     decisions.execute(rid)
-    assert state(rid) == ("done", "No action. PR open, not merged.") and world.calls == []
+    assert state(rid) == ("done", "Left open. Not merged.") and world.calls == []
 
 
 def test_merge_revalidates_then_squash_merges_pinned_to_the_head_with_the_humans_gh(world, monkeypatch):
@@ -359,7 +381,7 @@ def test_merge_revalidates_then_squash_merges_pinned_to_the_head_with_the_humans
     monkeypatch.setenv("KEEP_ME", "1")
     rid = build(world, {"action": "merge"})
     decisions.execute(rid, "boot1")
-    assert state(rid) == ("done", "Merged ccccccc (squash). Not deployed by muster.")
+    assert state(rid) == ("done", "✓ Merged ccccccc (squash). Not deployed by Muster.")
     kinds = [a[2] for a, _ in world.calls]
     assert kinds == ["view", "merge", "view"]
     assert world.merge_calls() == [["gh", "pr", "merge", URL, "--squash", "--match-head-commit", HEAD]]
@@ -445,7 +467,7 @@ def test_a_queued_merge_is_reported_as_queued(world, monkeypatch):
     monkeypatch.setattr(core, "run", queue)
     rid = build(world, {"action": "merge"})
     decisions.execute(rid)
-    assert state(rid) == ("done", "Merge queued; not merged yet")
+    assert state(rid) == ("done", "Merge queued · not merged yet")
 
 
 def test_two_answer_deliveries_make_one_merge_call(world):
@@ -485,16 +507,18 @@ def test_send_back_makes_a_feedback_request(world):
     assert state(rid)[0] == "done"
     fb = feedback_of(rid)
     assert fb["status"] == "open" and fb["feedback"] == "Fix the null case." and fb["cycle"] == 1
-    assert fb["choices"] == [["Send as written", "Don't send"]] and fb["actions"] == ["send", "cancel"]
+    assert fb["choices"] == [["Send feedback to builder", "Don't send"]] and fb["actions"] == ["send", "cancel"]
     q = fb["questions"][0]
-    assert q["text"] == "Fix the null case." and [o["label"] for o in q["options"]] == fb["choices"][0]
+    assert q["text"] == ("**Send this to the builder? · PR #9 · T**\n\nFix the null case.\n\n"  # whole, verbatim
+                         "Typed words are added to it; start with replace: to send only yours.")
+    assert [o["label"] for o in q["options"]] == fb["choices"][0]
     assert fb["run"] == world.run_dict and fb["pr"] == URL and fb["head"] == HEAD and world.prompts == []
 
 
 def test_build_free_text_is_a_send_back_with_the_humans_words(world):
     rid = build(world, {"text": "also add a test"})
     decisions.execute(rid)
-    assert state(rid) == ("done", "Sending back; confirm the feedback")
+    assert state(rid) == ("done", "Feedback ready below: confirm it to send it")
     assert feedback_of(rid)["feedback"] == "Fix the null case.\n\nAdditional instructions from the human:\nalso add a test"
 
 
@@ -515,7 +539,7 @@ def test_send_back_executing_twice_makes_one_feedback_request(world):
 
 def feedback(world, answer, text="Fix the null case.", **fields):
     req = decisions.create("feedback", "t_1", run=world.run_dict, head=HEAD, base="main", pr=URL, cycle=2,
-                           feedback=text, actions=["send", "cancel"], choices=[["Send as written", "Don't send"]],
+                           feedback=text, actions=["send", "cancel"], choices=[["Send feedback to builder", "Don't send"]],
                            questions=[{"text": text, "header": "Feedback", "multi": False, "options": []}], **fields)
     return decisions.transition(req["id"], ("open",), "answered", answer=answer)[0]["id"]
 
@@ -535,7 +559,7 @@ def sha(text):
 def test_dont_send_is_a_clean_end(world):
     rid = feedback(world, {"action": "cancel"})
     decisions.execute(rid)
-    assert state(rid) == ("done", "Not sent") and world.prompts == []
+    assert state(rid) == ("done", "Not sent. Nothing reached the builder.") and world.prompts == []
 
 
 def test_send_delivers_and_confirms_by_the_prompt_hook(world):
@@ -623,7 +647,7 @@ def test_a_prompt_that_never_shows_up_is_failed_with_a_retry(world):
     retry = [r for r in decisions.for_ledger("t_1", "feedback") if r["id"] != rid]
     assert len(retry) == 1 and retry[0]["status"] == "open" and retry[0]["retry_of"] == rid
     assert retry[0]["feedback"] == "Fix the null case.\n\nAdditional instructions from the human:\nextra"
-    assert retry[0]["cycle"] == 2 and retry[0]["questions"][0]["text"] == retry[0]["feedback"]
+    assert retry[0]["cycle"] == 2 and f"\n\n{retry[0]['feedback']}\n\n" in retry[0]["questions"][0]["text"]
 
 
 def test_a_herdr_error_that_did_deliver_is_still_sent(world):
@@ -700,7 +724,7 @@ def test_recover_a_merge_that_landed(world):
     world.pr.update(state="MERGED", mergeCommit={"oid": "c" * 40})
     req = executing(world, "merge")
     decisions.recover(req)
-    assert state(req["id"]) == ("done", "Merged ccccccc (squash). Not deployed by muster.") and world.merge_calls() == []
+    assert state(req["id"]) == ("done", "✓ Merged ccccccc (squash). Not deployed by Muster.") and world.merge_calls() == []
 
 
 def test_recover_a_merge_that_did_not_fails_and_offers_a_fresh_build_request(world):
@@ -815,10 +839,11 @@ def test_recommend_design_creates_a_request_bound_to_the_version(world, tmp_path
     req = decisions.load(capsys.readouterr().out.strip())
     assert req["kind"] == "design" and req["status"] == "open" and req["proposal"] == {"version": 2, "sha": s2}
     assert req["actions"] == ["send-back", "approve", "nothing"]
-    assert req["choices"] == [["Send back (recommended)", "Approve", "Do nothing"]]
-    # what Send back sends is on the message, ahead of the review, so the human sees it before tapping
-    assert req["questions"][0]["text"] == (f"Design review of Proposal v2 {s2}\n\nSend back sends the agent:\n"
-                                           "Drop the cache.\n\nSmall and right.")
+    assert req["choices"] == [["Send revisions to builder (recommended)", "Approve plan v2", "Leave pending"]]
+    # what Send revisions sends is on the message, whole, so the human sees it before tapping
+    assert req["questions"][0]["text"] == ("**Plan v2 · T**\n**Coordinator recommends: send revisions**\n\n"
+                                           "Small and right.\n\nSend revisions sends the builder:\nDrop the cache.\n\n"
+                                           "Approve lets the builder implement plan v2. Nothing is merged or deployed.")
     assert req["feedback"] == "Drop the cache." and req["run"]["repo"] == "acme/app"
     assert decisions.recommend_design(design_args(tmp_path, f"v2:{s2}")) == 0  # the same version again
     assert capsys.readouterr().out.strip() == req["id"] and len(decisions.for_ledger("t_1", "design")) == 1

@@ -231,7 +231,9 @@ def rereview(ledger, run=None):
 
 # -- recommend: the coordinator's review of a finished build becomes a `build` request ------------------
 
-LABELS = {"merge": "Merge (squash)", "send-back": "Send back", "nothing": "Do nothing"}
+LABELS = {"merge": "Merge PR", "send-back": "Review feedback…", "nothing": "Leave PR open"}  # "…": a second step
+VERBS = {"merge": "merge", "send-back": "send back", "nothing": "leave the PR open"}
+SUMMARY_MAX = 900  # characters: the card shows this summary whole; the full review is its own message above the card
 MERGEABLE = ("CLEAN", "HAS_HOOKS", "UNSTABLE")  # GitHub's mergeStateStatus; it stays the authority on checks
 
 
@@ -283,6 +285,30 @@ def read_text(path, what):
     return text
 
 
+def who():
+    return config.settings.get("coordinator_name") or "Coordinator"
+
+
+def short(run):
+    from . import conversation
+
+    return conversation.short(run.get("title") or "", run.get("repo") or "") or run.get("branch") or run.get("card")
+
+
+def summary_of(args, kind):
+    """The coordinator's card summary (`--summary`), or None: the card then shows the whole review. Refused, never cut,
+    when it is too long; a build's must state the deploy consequence, which no card may hide."""
+    if not getattr(args, "summary", None):
+        return None
+    text = read_text(args.summary, "summary")
+    if len(text) > SUMMARY_MAX:
+        raise ValueError(f"the summary is {len(text)} characters, over {SUMMARY_MAX}: the card shows it whole, so "
+                         f"shorten it (the full review stays in --review)")
+    if kind == "build" and "deploy" not in text.lower():
+        raise ValueError("the summary must state the deploy consequence (\"Deploy on merge: …\" or \"unknown\")")
+    return text
+
+
 def recommend(args):
     """`hermes muster recommend`: print the id of the open `build` request, or the refusal on stderr and 1."""
     core.prepare_env()
@@ -292,6 +318,7 @@ def recommend(args):
             raise ValueError("--choice send-back needs --feedback FILE")
         review = read_text(args.review, "review")
         feedback = read_text(args.feedback, "feedback") if args.feedback else None
+        summary = summary_of(args, "build")
         for req in for_ledger(args.ledger, "build"):
             if req["status"] == "open" and req.get("head") == args.head:
                 print("an open build request already exists for this head; the new text was ignored", file=sys.stderr)
@@ -308,10 +335,13 @@ def recommend(args):
     order = [args.choice] + [a for a in LABELS if a != args.choice]
     labels = [LABELS[a] + (" (recommended)" if a == args.choice else "") for a in order]
     sent = sum(1 for r in for_ledger(args.ledger, "feedback") if r["status"] == "done" and r.get("outcome") in SENT)
+    pr = progress.pr_name(args.pr)
+    text = "\n\n".join([f"**{pr} · {short(run)}**\n**{who()} recommends: {VERBS[args.choice]}**", summary or review,
+                         f"Merge squashes {pr} into {run['base']}. Muster does not deploy."])
     req = create("build", args.ledger, run=run, head=args.head, base=run["base"], pr=args.pr, review=review,
-                 feedback=feedback, cycle=1 + sent, proposal=None, wait=None, actions=order, choices=[labels],
-                 recommended=args.choice,
-                 questions=[{"text": review, "header": "Build", "multi": False,
+                 summary=summary, feedback=feedback, cycle=1 + sent, proposal=None, wait=None, actions=order,
+                 choices=[labels], recommended=args.choice,
+                 questions=[{"text": text, "header": "Build", "multi": False,
                              "options": [{"label": label, "description": ""} for label in labels]}])
     stale_others(args.ledger, ("build",), req["id"], "superseded by a newer recommendation")
     progress.touch(args.ledger, "recommended")
@@ -321,7 +351,8 @@ def recommend(args):
 
 # -- recommend-design: the coordinator's review of one proposal version becomes a `design` request ----------
 
-DESIGN_LABELS = {"approve": "Approve", "send-back": "Send back", "nothing": "Do nothing"}
+DESIGN_LABELS = {"approve": "Approve plan v{n}", "send-back": "Send revisions to builder", "nothing": "Leave pending"}
+DESIGN_VERBS = {"approve": "approve", "revise": "send revisions", "judgment": None}
 DESIGN_CHOICE = {"approve": "approve", "revise": "send-back", "judgment": None}
 PIN = re.compile(r"v(\d+):([0-9a-f]{12})")
 FEEDBACK_MAX = 1500  # characters: Send back's text leads the message, so the human sees all of it before a tap
@@ -350,6 +381,7 @@ def recommend_design(args):
             raise ValueError(f"Proposal v{pin['version']} does not have hash {pin['sha']}")
         review = read_text(args.review, "review")
         feedback = read_text(args.feedback, "feedback") if args.feedback else None
+        summary = summary_of(args, "design")
         if feedback and len(feedback) > FEEDBACK_MAX:
             raise ValueError(f"the revisions are {len(feedback)} characters, over {FEEDBACK_MAX}: the human must "
                              f"see all of them on the message, so shorten them")
@@ -363,13 +395,16 @@ def recommend_design(args):
     except (ValueError, OSError, core.CommandError) as caught:
         print(f"recommend-design: {caught}", file=sys.stderr)
         return 1
-    chosen = DESIGN_CHOICE[args.choice]
+    chosen, n = DESIGN_CHOICE[args.choice], pin["version"]
     order = [chosen] + [a for a in DESIGN_LABELS if a != chosen] if chosen else list(DESIGN_LABELS)
-    labels = [DESIGN_LABELS[a] + (" (recommended)" if a == chosen else "") for a in order]
-    sends = f"Send back sends the agent:\n{feedback}\n\n" if feedback else ""  # before the review: never cut
-    text = f"Design review of {events.heading(pin)}\n\n{sends}{review}"
-    req = create("design", args.ledger, run=run, proposal=pin, review=review, feedback=feedback, wait=None,
-                 actions=order, choices=[labels], recommended=chosen,
+    labels = [DESIGN_LABELS[a].format(n=n) + (" (recommended)" if a == chosen else "") for a in order]
+    verb = DESIGN_VERBS[args.choice]
+    lead = f"**{who()} recommends: {verb}**" if verb else f"**{who()}: this one is your call**"
+    sends = [f"Send revisions sends the builder:\n{feedback}"] if feedback else []  # whole: FEEDBACK_MAX
+    text = "\n\n".join([f"**Plan v{n} · {short(run)}**\n{lead}", summary or review, *sends,
+                         f"Approve lets the builder implement plan v{n}. Nothing is merged or deployed."])
+    req = create("design", args.ledger, run=run, proposal=pin, review=review, summary=summary, feedback=feedback,
+                 wait=None, actions=order, choices=[labels], recommended=chosen,
                  questions=[{"text": text, "header": "Design", "multi": False,
                              "options": [{"label": label, "description": ""} for label in labels]}])
     stale_others(args.ledger, ("design",), req["id"], "superseded by a newer design review")
@@ -386,7 +421,7 @@ SEEN_WAIT = 10  # s to wait for the UserPromptSubmit hook to report a sent promp
 SEEN_POLL = 0.5
 HUMAN_GH_DROP = ("GH_TOKEN", "GITHUB_TOKEN", "GH_CONFIG_DIR")
 EXTRA = "Additional instructions from the human:"
-SEND, DONT = "Send as written", "Don't send"
+SEND, DONT = "Send feedback to builder", "Don't send"
 
 
 def human_gh_env():
@@ -431,10 +466,13 @@ def amend(base, text):
 
 
 def make_feedback(req, text, **extra):
+    """The confirmation of a send-back: the whole text it authorizes, shown once, word for word."""
+    shown = (f"**Send this to the builder? · {progress.pr_name(req['pr'])} · {short(req['run'])}**\n\n{text}\n\n"
+             "Typed words are added to it; start with replace: to send only yours.")
     return create("feedback", req["ledger"], run=req["run"], head=req["head"], base=req["base"], pr=req["pr"],
                   review=req.get("review"), cycle=req["cycle"], feedback=text, wait=req.get("wait"), proposal=None,
                   actions=["send", "cancel"], choices=[[SEND, DONT]],
-                  questions=[{"text": text, "header": "Feedback", "multi": False,
+                  questions=[{"text": shown, "header": "Feedback", "multi": False,
                               "options": [{"label": SEND, "description": ""}, {"label": DONT, "description": ""}]}],
                   **extra)
 
@@ -449,7 +487,7 @@ def _execute(rid, boot):
         _design(req, boot)
     elif req["kind"] == "build":
         if text is None and action == "nothing":
-            transition(rid, ("answered",), "done", outcome="No action. PR open, not merged.")
+            transition(rid, ("answered",), "done", outcome="Left open. Not merged.")
         elif text is not None or action == "send-back":
             req, ok = transition(rid, ("answered",), "executing", executing_boot=boot,
                                  intent={"action": "send-back", "head": req["head"]})
@@ -460,7 +498,7 @@ def _execute(rid, boot):
         else:
             fail(rid, f"unknown action {action!r}")
     elif text is None and action == "cancel":
-        transition(rid, ("answered",), "done", outcome="Not sent")
+        transition(rid, ("answered",), "done", outcome="Not sent. Nothing reached the builder.")
     else:
         _send(req, boot)
 
@@ -538,7 +576,7 @@ def _feedback_from_build(req):
         return
     if not [r for r in for_ledger(req["ledger"], "feedback") if r.get("source") == req["id"]]:
         make_feedback(req, text, source=req["id"])
-    transition(req["id"], ("executing",), "done", outcome="Sending back; confirm the feedback")
+    transition(req["id"], ("executing",), "done", outcome="Feedback ready below: confirm it to send it")
 
 
 def _merge(req, boot):
@@ -571,14 +609,15 @@ def _merge(req, boot):
             continue
         if state.get("state") == "MERGED":
             sha7 = ((state.get("mergeCommit") or {}).get("oid") or head)[:7]
-            transition(rid, ("executing",), "done", outcome=f"Merged {sha7} (squash). Not deployed by muster.")
+            transition(rid, ("executing",), "done", outcome=f"✓ Merged {sha7} (squash). Not deployed by Muster.")
             return
     if error:
         fail(rid, error)
     elif state.get("state") == "OPEN" and state.get("autoMergeRequest"):
-        transition(rid, ("executing",), "done", outcome="Merge queued; not merged yet")
+        transition(rid, ("executing",), "done", outcome="Merge queued · not merged yet")
     else:
-        fail(rid, f"merge not confirmed (the pull request reads {state.get('state') or 'unknown'}); check GitHub")
+        fail(rid, f"Merge not confirmed: GitHub reads {state.get('state') or 'unknown'}. Check the PR before tapping "
+                  "again.")
 
 
 def wire_text(req, run, text):
@@ -665,7 +704,7 @@ def _recover(req):
             return
         if pr.get("state") == "MERGED" and pr.get("headRefOid") == req["head"]:
             sha7 = ((pr.get("mergeCommit") or {}).get("oid") or req["head"])[:7]
-            transition(rid, ("executing",), "done", outcome=f"Merged {sha7} (squash). Not deployed by muster.")
+            transition(rid, ("executing",), "done", outcome=f"✓ Merged {sha7} (squash). Not deployed by Muster.")
             return
         if pr.get("state") == "OPEN" and pr.get("headRefOid") == req["head"]:  # unchanged: the human may click again
             create("build", req["ledger"], **{k: req.get(k) for k in (

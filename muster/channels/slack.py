@@ -25,6 +25,8 @@ from .shared import log
 name = "slack"
 durable_prompts = True
 CAP = 3000  # characters in a section's text (Slack's limit)
+TEXT_MAX = 40000  # characters of a message's text Slack keeps; a card is split into sections, never cut, below it
+BLOCKS_MAX = 50  # blocks in a message (Slack's limit)
 LABEL_MAX = 75  # characters on a button or a checkbox (Slack's limit)
 CHOICES_MAX = 25  # buttons in an actions block (Slack's limit)
 MULTI_MAX = 10  # options in a checkboxes element (Slack's limit)
@@ -97,16 +99,44 @@ def plain(text):
     return {"type": "plain_text", "text": text, "emoji": True}
 
 
+def mrkdwn(text):
+    """Agent or human text as Slack mrkdwn: escaped first, so it pings, links and formats nothing it did not mean
+    (shared.slack_text), then Hermes's own Markdown conversion (adapter.format_message: headings, bold, links, code),
+    the one Hermes's own replies get."""
+    escaped = shared.slack_text(text)
+    convert = getattr(T.adapter, "format_message", None)
+    return convert(escaped) if callable(convert) else re.sub(r"\*\*(.+?)\*\*", r"*\1*", escaped)  # muster's own bold
+
+
 def section(text):
-    return {"type": "section", "text": {"type": "mrkdwn", "text": shared.slack_text(text)[:CAP]}}
+    return {"type": "section", "text": {"type": "mrkdwn", "text": mrkdwn(text)[:CAP]}}
+
+
+def sections(text):
+    """Text as section blocks of at most CAP characters, split at a paragraph, else a line, else a space: a long card
+    or review is never cut short (Slack's 3,000-character limit is per section)."""
+    out, rest = [], mrkdwn(text)
+    while rest:
+        at = len(rest) if len(rest) <= CAP else next(
+            (i for i in (rest.rfind(sep, 0, CAP) for sep in ("\n\n", "\n", " ")) if i > 0), CAP)
+        out.append({"type": "section", "text": {"type": "mrkdwn", "text": rest[:at]}})
+        rest = rest[at:].lstrip("\n ")
+    return out
 
 
 def body(req, n):
-    """Question n's message without its inputs: what stays once it is answered."""
+    """Question n's message without its inputs: what stays once it is answered. Its text in full, and a link to its
+    detail message (shared.detail) when it has one."""
     q = req["questions"][n]
     tail = ("Tick any, then Submit, or type your own answer below." if q.get("multi")
             else "Pick one, or type your own answer below." if req["choices"][n] else "Type your answer below.")
-    return [section(shared.render(req, n, cap=CAP, label_max=LABEL_MAX, tail=[tail], number_multi=False))]
+    if req["kind"] == "question":
+        tail += " Typing here answers the builder; a thread reply goes to the coordinator."
+    out = sections(shared.render(req, n, cap=TEXT_MAX, label_max=LABEL_MAX, tail=[tail], number_multi=False))
+    url = (req.get("detail") or {}).get("url")
+    if url:  # Slack's own permalink, from chat.getPermalink
+        out.append({"type": "context", "elements": [{"type": "mrkdwn", "text": f"<{url}|{shared.detail_label(req)}>"}]})
+    return out
 
 
 def blocks(req, n):
@@ -117,6 +147,10 @@ def blocks(req, n):
     if len(choices) > (MULTI_MAX if multi else CHOICES_MAX):
         raise ValueError(f"{len(choices)} choices: a Slack message shows at most {MULTI_MAX if multi else CHOICES_MAX}")
     labels = shared.buttons(req, n, label_max=LABEL_MAX, number_multi=False)
+    if shared.reviewing(req, n):  # answering now skips the coordinator's review: an approve button says so
+        who = config.settings.get("coordinator_name") or "Coordinator"
+        labels = [shared.fit(f"{label} without {who}'s review", LABEL_MAX) if label.lower().startswith("approve")
+                  else label for label in labels]
     out = body(req, n)
     if multi:
         out.append({"type": "actions", "block_id": f"mu:{rid}:{n}:multi", "elements": [
@@ -143,15 +177,42 @@ async def post(blocks_, text, meta=None):
     return str(res["ts"])
 
 
+async def post_detail(req, meta):
+    """The request's detail message (shared.detail), posted once, above its card; its permalink goes on the card.
+    Saved before the permalink is asked, so a lost permalink never posts it twice. Returns a failure, or None."""
+    text = shared.detail(req)
+    if not text or (req.get("detail") or {}).get("platform") == name:
+        return None
+    try:
+        ts = await post(sections(text)[:BLOCKS_MAX], shared.plain(text.split("\n", 1)[0])[:300], meta)
+    except Exception as caught:  # noqa: BLE001 - retried with backoff, as the card is
+        return error_of(caught)
+    req["detail"] = {"platform": name, "id": ts}
+    await asyncio.to_thread(decisions.update, req["id"], detail=req["detail"])
+    try:
+        url = (await T.client.chat_getPermalink(channel=chat(), message_ts=ts)).get("permalink")
+    except Exception as caught:  # noqa: BLE001 - the card still says where the detail is
+        log(f"permalink of {ts}: {error_of(caught)}")
+        url = None
+    if url:
+        req["detail"] = {**req["detail"], "url": str(url)}
+        await asyncio.to_thread(decisions.update, req["id"], detail=req["detail"])
+    return None
+
+
 async def present(req, meta, questions):
-    """Each question given as its own message. A failed post keeps what was sent before it."""
+    """Each question given as its own message, after the request's detail message. A failed post keeps what was sent
+    before it."""
     messages = {}
+    failure = await post_detail(req, meta)
+    if failure:
+        return {"messages": messages, "failure": failure}
     for n in questions:
         q = req["questions"][n]
         if len(req["choices"][n]) > (MULTI_MAX if q.get("multi") else CHOICES_MAX):
             return await too_many(req, n, meta, messages)
         try:
-            messages[str(n)] = [await post(blocks(req, n), f"{shared.title(req)}: {req['questions'][n]['text']}", meta)]
+            messages[str(n)] = [await post(blocks(req, n), shared.fallback(req, n), meta)]
         except Exception as caught:  # noqa: BLE001 - reported as the send's failure, retried with backoff
             return {"messages": messages, "failure": error_of(caught)}
     return {"messages": messages, "failure": None}

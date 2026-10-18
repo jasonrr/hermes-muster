@@ -262,10 +262,12 @@ async def outcome(req):
 # -- presenting -----------------------------------------------------------------------------------
 
 def render(req, n):
+    """Plain text: Hermes's clarify prompt HTML-escapes it, so muster's `**` markers would show (shared.plain)."""
     q = req["questions"][n]
-    return shared.render(req, n, cap=CAP, label_max=LABEL_MAX, tail=[
+    detail = ["Full text: the message above."] if (req.get("detail") or {}).get("platform") == name else []
+    return shared.plain(shared.render(req, n, cap=CAP, label_max=LABEL_MAX, tail=[
         "Several: tap Other and type the numbers, e.g. 1,3" if q.get("multi")
-        else "Your own words: tap Other, or reply to this message."])
+        else "Your own words: tap Other, or reply to this message.", *detail]))
 
 
 def buttons(req, n):
@@ -280,6 +282,13 @@ async def present(req, meta, questions):
 
     chat = core.notify_target()["chat_id"]
     await asyncio.to_thread(decisions.update, rid, partial={})  # this boot's prompts start over; the old ones are dead
+    text = shared.detail(req)
+    if text and (req.get("detail") or {}).get("platform") != name:  # once, above the card; Hermes formats and splits it
+        res = await T.adapter.send(chat, text, metadata=meta)
+        if not res.success:
+            return {"messages": messages, "failure": res.error or "detail send failed"}
+        req["detail"] = {"platform": name, "id": str(res.message_id)}
+        await asyncio.to_thread(decisions.update, rid, detail=req["detail"])
     for n in questions:
         q = req["questions"][n]
         cid, choices = f"mu{rid}q{n}", req["choices"][n]

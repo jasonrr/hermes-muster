@@ -137,10 +137,10 @@ def test_an_open_request_is_presented_once(hermes):
     assert (msg["chat"], msg["cid"], msg["session"], msg["parse_mode"]) == (DM, cid, f"muster:{req['id']}:0", "HTML")
     assert msg["buttons"] == [("Alpha", f"cl:{cid}:0"), ("Beta", f"cl:{cid}:1"), (fh.OTHER, f"cl:{cid}:other")]
     assert telegram.T.adapter._clarify_state == {cid: f"muster:{req['id']}:0"}  # Hermes's tap handler needs it
-    for part in ("❓ o/r #7", "Which?", "• Alpha: about Alpha", "Proposal v2 abcdef12", "full text on ledger led1",
-                 "reply to this message"):
+    for part in ("❓ Issue #7\n\nWhich?", "• Alpha: about Alpha", "reply to this message"):
         assert part in msg["text"]
     assert "1. Alpha" not in msg["text"] and "pane" not in msg["text"]  # the buttons carry the labels
+    assert "**" not in msg["text"] and "led1" not in msg["text"]  # no literal markers, no card id
     assert decisions.load(req["id"])["presented"] == {"boot": gateway.BOOT, "messages": {"0": [msg["mid"]]},
                                                       "platform": "telegram"}
     assert hermes.get_pending_for_session(f"muster:{req['id']}:0", include_choice_prompts=True)
@@ -209,7 +209,7 @@ def test_oversize_text_is_capped_and_points_to_the_wait_card():
     run(gateway.scan())
     text = sent()[0]["text"]
     assert len(text) <= telegram.CAP + len("❓ ")
-    assert "Full options on wait card w1" in text and "pane" not in text
+    assert "Some option details did not fit in this message." in text and "pane" not in text and "w1" not in text
 
 
 def test_a_description_that_repeats_its_label_is_not_shown():
@@ -224,11 +224,11 @@ def test_long_descriptions_are_cut_first():
         {"label": "A", "description": "d" * 2000}, {"label": "B", "description": "e" * 2000}]}])
     run(gateway.scan())
     text = sent()[0]["text"]
-    assert len(text) <= telegram.CAP + len("❓ ") and "d" * 100 not in text and "wait card w1" in text
+    assert len(text) <= telegram.CAP + len("❓ ") and "d" * 100 not in text and "did not fit" in text
 
 
 def test_a_build_review_shows_its_actions_on_the_buttons():
-    labels = ["Merge (squash) (recommended)", "Send back", "Do nothing"]
+    labels = ["Merge PR (recommended)", "Send back", "Do nothing"]
     q = {"text": "Review: fine", "header": "Build", "multi": False,
          "options": [{"label": label, "description": ""} for label in labels]}
     decisions.create("build", "led1", run={"repo": "o/r", "issue": 7, "pane": "p1"}, actions=["merge", "send-back", "nothing"],
@@ -937,7 +937,7 @@ def test_a_tap_on_a_build_request_runs_the_action_and_settles_it(hermes):
         await until(lambda: decisions.load(req["id"])["status"] == "done")
 
     run(go())
-    assert decisions.load(req["id"])["outcome"] == "No action. PR open, not merged."
+    assert decisions.load(req["id"])["outcome"] == "Left open. Not merged."
 
 
 def test_build_free_text_becomes_a_feedback_request_that_the_next_scan_presents(hermes):
@@ -954,8 +954,8 @@ def test_build_free_text_becomes_a_feedback_request_that_the_next_scan_presents(
     run(go())
     (fb,) = decisions.for_ledger("led1", "feedback")
     assert fb["feedback"] == "Fix it.\n\nAdditional instructions from the human:\nplease also add docs"
-    assert fb["choices"] == [["Send as written", "Don't send"]]
-    assert [[b for b, _ in m["buttons"]] for m in sent()] == [["Send as written", "Don't send", fh.OTHER]]
+    assert fb["choices"] == [["Send feedback to builder", "Don't send"]]
+    assert [[b for b, _ in m["buttons"]] for m in sent()] == [["Send feedback to builder", "Don't send", fh.OTHER]]
 
 
 def test_a_scan_retires_an_open_retry_whose_send_arrived_late_and_presents_nothing(tmp_path):
@@ -1274,8 +1274,8 @@ def test_every_kind_of_request_follows_the_runs_topic(forum):
                                                 choices=[["Merge", "Send back", "Do nothing"]]),
                                          "questions": [question("Review", ("Merge", "Send back", "Do nothing"))],
                                          "run": {"repo": "o/r", "issue": 7}})
-    decisions.create("feedback", "led1", actions=["send", "cancel"], choices=[["Send as written", "Don't send"]],
-                     questions=[question("Fix X", ("Send as written", "Don't send"))], run={"repo": "o/r", "issue": 7})
+    decisions.create("feedback", "led1", actions=["send", "cancel"], choices=[["Send feedback to builder", "Don't send"]],
+                     questions=[question("Fix X", ("Send feedback to builder", "Don't send"))], run={"repo": "o/r", "issue": 7})
 
     async def go():
         await gateway.scan()
@@ -2138,3 +2138,23 @@ def test_a_remade_topic_gets_one_new_status_message(forum, monkeypatch):
     run(gateway.scan())
     assert [where for _, _, where in statuses(forum.adapter)][-2:] != [new, new]
     assert [where for _, _, where in statuses(forum.adapter)].count(new) == 1
+
+
+def test_telegram_posts_a_reviews_whole_text_once_above_a_plain_text_card(hermes, monkeypatch):
+    review = "Paragraph. " * 800  # longer than one Telegram message: Hermes's send splits it
+    labels = ["Merge PR (recommended)", "Leave PR open"]
+    req = decisions.create("build", "led1", run={"repo": "o/r", "issue": 7, "branch": "b", "title": "Fix it"},
+                           pr="https://github.com/o/r/pull/9", review=review.strip(),
+                           summary="Right.\nDeploy on merge: unknown.", actions=["merge", "nothing"], choices=[labels],
+                           questions=[{"text": "**PR #9 · Fix it**\n**Coordinator recommends: merge**\n\nRight.\n"
+                                               "Deploy on merge: unknown.", "header": "Build", "multi": False,
+                                       "options": [{"label": x, "description": ""} for x in labels]}])
+    run(gateway.scan())
+    [(_, detail, _)] = telegram.T.adapter.notes
+    assert detail.startswith("**Coordinator's full review · PR #9 · Fix it**") and review.strip() in detail
+    (msg,) = sent()
+    assert "**" not in msg["text"] and "Deploy on merge: unknown." in msg["text"]
+    assert "Full text: the message above." in msg["text"]
+    monkeypatch.setattr(gateway, "S", gateway.State())  # a restart presents the card again, never the detail
+    run(gateway.scan())
+    assert len(telegram.T.adapter.notes) == 1 and decisions.load(req["id"])["detail"]["platform"] == "telegram"

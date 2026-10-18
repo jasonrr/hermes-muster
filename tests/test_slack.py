@@ -105,7 +105,7 @@ def test_choice_blocks():
     req = ask([question(labels=("Redis", "SQLite", "x" * 100))])
     rid = req["id"]
     section, actions, text = slack.blocks(req, 0)
-    assert section["type"] == "section" and section["text"]["text"].startswith("o/r #7")
+    assert section["type"] == "section" and section["text"]["text"].startswith("*Issue #7*")
     assert "tap Other" not in section["text"]["text"] and "Pick one" in section["text"]["text"]
     assert actions["block_id"] == f"mu:{rid}:0:choices"
     assert [e["action_id"] for e in actions["elements"]] == ["muster_choice_0", "muster_choice_1", "muster_choice_2"]
@@ -705,7 +705,7 @@ def test_a_telegram_runs_ref_is_never_stepped_and_its_requests_go_top_level(thre
     tick(threads, 31)
     assert conversation.load("led1")["state"] == "open" and threads.client.updates == []
     (post,) = threads.client.posts
-    assert "thread_ts" not in post and post["blocks"][0]["text"]["text"].startswith("o/r #7")
+    assert "thread_ts" not in post and post["blocks"][0]["text"]["text"].startswith("*Issue #7*")
     assert decisions.load(req["id"])["presented"]
 
 
@@ -838,3 +838,81 @@ def test_a_parent_headline_is_the_short_title_the_state_and_a_native_issue_link(
     assert "t_h" not in text and "muster" not in text
     core.save_json(config.data_dir() / "runs" / "t_a" / "run.json", {"repo": "o/r", "branch": "muster/bump", "title": ""})
     assert slack.headline("t_a", "Working") == "*muster/bump*\nWorking"  # the branch is the name: not repeated
+
+
+# -- decision cards: summary, whole text, native formatting ---------------------------------------------------------
+
+def kit_ok(blocks, text):
+    """Slack's documented limits (Block Kit reference: message ≤50 blocks, section text ≤3,000 characters, button
+    text ≤75, context ≤10 elements; chat.postMessage keeps a top-level `text` as the notification fallback)."""
+    assert text and len(blocks) <= 50
+    for b in blocks:
+        if b["type"] == "section":
+            assert b["text"]["type"] == "mrkdwn" and 0 < len(b["text"]["text"]) <= 3000
+        if b["type"] == "context":
+            assert len(b["elements"]) <= 10
+        for e in b.get("elements", []):
+            if e.get("type") == "button":
+                assert len(e["text"]["text"]) <= 75
+
+
+def build_request(review, summary=None, feedback=None):
+    text = (f"**PR #9 · Fix it**\n**Coordinator recommends: merge**\n\n{summary or review}\n\n"
+            "Merge squashes PR #9 into main. Muster does not deploy.")
+    labels = ["Merge PR (recommended)", "Review feedback…", "Leave PR open"]
+    return decisions.create("build", "led1", run={"repo": "o/r", "issue": 7, "branch": "muster/7", "title": "Fix it"},
+                            pr="https://github.com/o/r/pull/9", head="a" * 40, base="main", review=review,
+                            summary=summary, feedback=feedback, cycle=1, actions=["merge", "send-back", "nothing"],
+                            choices=[labels], questions=[{"text": text, "header": "Build", "multi": False, "options": [
+                                {"label": label, "description": ""} for label in labels]}])
+
+
+def test_a_long_review_is_its_own_message_whole_and_the_card_keeps_its_deploy_caveat(channel):
+    review = "\n\n".join(f"Paragraph {i}: " + "evidence " * 60 for i in range(40))  # ~20k characters
+    req = build_request(review, summary="Right and tested.\nDeploy on merge: publishes the docs site.")
+    asyncio.run(gateway.scan())
+    detail, card = channel.client.posts
+    kit_ok(detail["blocks"], detail["text"])
+    kit_ok(card["blocks"], card["text"])
+    whole = "\n\n".join(b["text"]["text"] for b in detail["blocks"])
+    for i in range(40):
+        assert f"Paragraph {i}: " in whole  # nothing cut at a section limit
+    assert len(detail["blocks"]) > 1 and detail["text"].startswith("Coordinator's full review · PR #9 · Fix it")
+    shown = "\n".join(b["text"]["text"] for b in card["blocks"] if b["type"] == "section")
+    assert "Deploy on merge: publishes the docs site." in shown and "evidence evidence" not in shown
+    assert shown.startswith("*PR #9 · Fix it*\n*Coordinator recommends: merge*")  # native bold, no ** left
+    assert "**" not in shown and "**" not in whole
+    link = next(b for b in card["blocks"] if b["type"] == "context")["elements"][0]["text"]
+    assert link == f"<https://example.slack.com/archives/{CHAN}/p{detail_ts(req)}|Full review>"
+    assert card["text"] == "PR #9 · Fix it\nCoordinator recommends: merge"  # notification text: the lead, not the review
+    asyncio.run(gateway.scan())
+    assert len(channel.client.posts) == 2  # the detail is posted once
+
+
+def detail_ts(req):
+    return decisions.load(req["id"])["detail"]["id"]
+
+
+def test_a_card_longer_than_a_section_is_split_never_cut(channel):
+    feedback = "\n".join(f"{i}. step " + "x" * 80 for i in range(80))  # ~7k characters the human authorizes
+    req = decisions.create("feedback", "led1", run={"repo": "o/r", "issue": 7, "branch": "muster/7"}, feedback=feedback,
+                           pr="https://github.com/o/r/pull/9", actions=["send", "cancel"],
+                           choices=[["Send feedback to builder", "Don't send"]],
+                           questions=[{"text": f"**Send this to the builder?**\n\n{feedback}", "header": "Feedback",
+                                       "multi": False, "options": [{"label": "Send feedback to builder", "description": ""},
+                                                                   {"label": "Don't send", "description": ""}]}])
+    asyncio.run(gateway.scan())
+    card = channel.client.posts[-1]
+    kit_ok(card["blocks"], card["text"])
+    shown = "\n".join(b["text"]["text"] for b in card["blocks"] if b["type"] == "section")
+    assert all(f"{i}. step " in shown for i in range(80)) and "…" not in shown
+    assert decisions.load(req["id"])["detail"]["platform"] == "slack"  # also whole above, for Telegram parity
+
+
+def test_agent_text_is_escaped_before_hermes_formats_it(channel):
+    seen = []
+    slack.T.adapter = types.SimpleNamespace(format_message=lambda text: seen.append(text) or text.upper())
+    assert slack.mrkdwn("<!channel> **bold** & <@U1>") == "&LT;!CHANNEL&GT; **BOLD** &AMP; &LT;@U1&GT;"
+    assert seen == ["&lt;!channel&gt; **bold** &amp; &lt;@U1&gt;"]  # escaped first: no ping survives
+    slack.T.adapter = None
+    assert slack.mrkdwn("**Plan v2** <b>") == "*Plan v2* &lt;b&gt;"  # without Hermes's converter, muster's own bold
