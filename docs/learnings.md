@@ -143,3 +143,8 @@
 ## clarify-code-organization (2026-10-19)
 
 - Moving functions between modules keyed by bare name → `launch`, `recover`, `relaunch`, `note` and `log` exist in both core and runs, so a name-keyed map rewrites intake's own `launch()` calls to `adhoc.launch`; key every move by (source module, name), and qualify only references that resolve to a module global (symtable), never locals that share the name (`run`, `plan`).
+
+## clear-decision-messages (2026-10-19)
+
+- Making a tap act at once (one-tap send-back) → requests already on screen were created under the old rules (their card never showed the feedback), so the new fast path would have sent text the human never saw; gate the new behavior on a field only new requests carry (`hints`) and keep the old confirmation for the rest.
+- A gateway test whose tap now reaches `decisions.run_of` or `obsolete` → it runs the real `hermes kanban` / `gh` CLI, which is slow enough to time out a 2 s wait; stub both in any test that drives a send-back through the gateway.

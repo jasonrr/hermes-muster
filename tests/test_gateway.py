@@ -951,10 +951,11 @@ def test_build_free_text_is_sent_back_with_the_humans_words_and_no_second_confir
         raise core.CommandError(f"no run found for card {ledger}")
 
     monkeypatch.setattr(decisions, "run_of", no_run)
+    monkeypatch.setattr(decisions, "obsolete", lambda req: None)  # no gh here
     q = {"text": "R", "header": "Build", "multi": False, "options": [{"label": "Do nothing", "description": ""}]}
     req = decisions.create("build", "led1", run={"repo": "o/r", "branch": "b", "pane": "p1"}, actions=["nothing"],
                            choices=[["Do nothing"]], questions=[q], head="h" * 40, base="main", pr="u", cycle=1,
-                           feedback="Fix it.")
+                           feedback="Fix it.", hints=[])
 
     async def go():
         await gateway.answered(req["id"], 0, "please also add docs")

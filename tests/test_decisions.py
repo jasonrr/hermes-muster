@@ -359,8 +359,9 @@ def test_the_same_head_again_returns_the_open_request_and_ignores_the_new_text(w
 # -- execute (task 6) -----------------------------------------------------------------------------
 
 def build(world, answer, **fields):
-    """An `answered` build request, as the gateway leaves it after a tap."""
+    """An `answered` build request, as the gateway leaves it after a tap (`hints`: a card that showed its feedback)."""
     labels = ["Merge (squash)", "Send back", "Do nothing"]
+    fields = {"hints": [], **fields}
     req = decisions.create("build", "t_1", run=world.run_dict, head=HEAD, base="main", pr=URL, review="R", cycle=1,
                            feedback="Fix the null case.", actions=["merge", "send-back", "nothing"], choices=[labels],
                            questions=[{"text": "R", "header": "Build", "multi": False,
@@ -542,6 +543,27 @@ def test_a_late_receipt_retires_the_retry_of_a_one_tap_send_back(world):
     launcher.prompt_seen(world.evidence, {"prompt": pasted(world.prompts[0])})  # the hook reports it after all
     assert decisions.reconcile(retry) is True
     assert state(retry["id"]) == ("done", decisions.DELIVERED)
+
+
+def test_a_card_from_before_the_feedback_was_shown_still_asks_to_confirm_it(world):
+    rid = build(world, {"action": "send-back"})
+    req = decisions.load(rid)
+    del req["hints"]
+    decisions.save(req)
+    decisions.execute(rid)
+    fb = feedback_of(rid)
+    assert fb["status"] == "open" and fb["choices"] == [["Send feedback to builder", "Don't send"]]
+    assert state(rid) == ("done", "Feedback ready below: confirm it to send it") and world.prompts == []
+
+
+@pytest.mark.parametrize("change, why", [({"headRefOid": "b" * 40}, "moved to bbbbbbb"), ({"state": "MERGED"}, "MERGED")])
+def test_a_send_back_on_a_pull_request_that_moved_or_closed_sends_nothing(world, change, why):
+    world.pr.update(change)
+    rid = build(world, {"action": "send-back"})
+    decisions.execute(rid)
+    status, outcome = state(rid)
+    assert status == "failed" and why in outcome and "Nothing was sent" in outcome
+    assert world.prompts == [] and decisions.for_ledger("t_1", "feedback") == []
 
 
 def test_build_free_text_is_a_send_back_with_the_humans_words(world):

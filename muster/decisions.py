@@ -715,7 +715,15 @@ def _feedback_from_build(req, boot=""):
         fail(req["id"], "no feedback was proposed; reply to the message with your instructions")
         return
     made = [r for r in for_ledger(req["ledger"], "feedback") if r.get("source") == req["id"]]
+    if not made and "hints" not in req:  # a card from before #58 never showed its feedback: confirm it first
+        make_feedback(req, text, source=req["id"])
+        transition(req["id"], ("executing",), "done", outcome="Feedback ready below: confirm it to send it")
+        return
     if not made:
+        why = obsolete(req)  # as a merge: only the pull request reviewed, still open at the reviewed head
+        if why:
+            fail(req["id"], f"{why}. Nothing was sent")
+            return
         fb = make_feedback(req, text, source=req["id"], status="answered", answer={"action": "send"})
         execute(fb["id"], boot)  # never raises: anything that goes wrong ends the feedback request failed
         made = [load(fb["id"])]

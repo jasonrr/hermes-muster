@@ -119,13 +119,13 @@ def test_decision_cards(cards):
 
 
 def test_settled_cards(cards):
-    world = cards.world
+    pane = cards.world
     cards.settled("pr-sent-back", tap(cards.build("send-back", FEEDBACK), "send-back"))
-    world.delivers = False
+    pane.delivers = False
     cards.settled("pr-not-confirmed", tap(cards.build("send-back", FEEDBACK), "send-back"))
-    world.delivers, world.agent = True, {"agent_status": "working"}
+    pane.delivers, pane.agent = True, {"agent_status": "working"}
     cards.settled("pr-not-sent-busy", tap(cards.build("send-back", FEEDBACK), "send-back"))
-    world.agent = {"agent_status": "idle"}
+    pane.agent = {"agent_status": "idle"}
     cards.settled("pr-left-open", tap(cards.build("nothing", summary=MERGE), "nothing"))
     cards.settled("pr-merged", tap(cards.build("merge", summary=MERGE), "merge"))  # last: the PR is merged after it
     for name, outcome in [("design-approved", "approve"), ("design-revisions-sent", "revise")]:
