@@ -5,9 +5,9 @@ from . import config
 
 AGENT_RUN = ("done", "propose", "duplicate")  # hook events the pane agent runs from its shell
 SUBCOMMANDS = {  # name → (sibling module, function); resolved relative to this package
-    "tick": ("core", "tick"),
-    "recover": ("core", "recover"),
-    "launch": ("runs", "launch"),
+    "tick": ("intake", "tick"),
+    "recover": ("intake", "recover"),
+    "launch": ("adhoc", "launch"),
     "flush": ("runs", "flush"),
     "hook": ("events", "hook"),
     "cleanup": ("cleanup", "cleanup"),

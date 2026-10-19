@@ -10,7 +10,7 @@ DEFAULTS = {
     "bug_label": "bug",  # issues with it are briefed as bugs
     "approver_login": "",  # REQUIRED: GitHub login whose label event authorizes work (compared case-insensitively)
     "approver_id": 0,  # REQUIRED: that account's numeric id (login can be renamed; id cannot)
-    "auto_approvers": [],  # [{login, id, label?, repos}]: bots whose own label starts work (core.automatic)
+    "auto_approvers": [],  # [{login, id, label?, repos}]: bots whose own label starts work (intake.automatic)
     "repos": [],  # REQUIRED: ["owner/name", "owner/name=/abs/clone/path", ...]
     "clone_root": "~/Code",  # clone = clone_root/<name> when no =path given
     "board": "muster",  # hermes kanban board slug; give muster its own board (idempotency keys are per board)
@@ -81,7 +81,7 @@ def require():
     for slug, (clone, _, base) in repos().items():  # repos() raises on a malformed slug
         if base and subprocess.run(["git", "check-ref-format", "--branch", base], capture_output=True).returncode:
             raise ConfigError(f"muster: repos entry {slug}: @{base} is not a valid base branch name")
-        # herdr lays worktrees out by the clone's directory name (core.worktree_path); lower: APFS ignores case.
+        # herdr lays worktrees out by the clone's directory name (launcher.worktree_path); lower: APFS ignores case.
         other = names.setdefault(clone.name.lower(), slug)
         if other != slug:
             raise ConfigError(f"repos {other} and {slug} share the clone directory name {clone.name}; "

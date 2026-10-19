@@ -1,17 +1,17 @@
 """progress: what a run's one status message says (issue #46). Evidence only; nothing here acts on the run.
 
 Writers touch one file per kind in <data dir>/runs/<ledger>/activity/; its mtime is when it was observed:
-  launched  core.ensure, once the brief is sent (JSON: the launch dir and the brief's sha256)
+  launched  launcher.ensure, once the brief is sent (JSON: the launch dir and the brief's sha256)
   prompt    UserPromptSubmit: the brief, a send-back, a typed reply. Never shown as tool activity
   tool      PostToolUse / PostToolUseFailure, the main agent's or a subagent's
   stop      Stop: the agent ended its turn
   end       SessionEnd (not /clear)
-  review    a verified pull request (text: its url): events.move done, runs.complete, decisions.rereview
+  review    a verified pull request (text: its url): events.move done, adhoc.complete, decisions.rereview
   proposal  a saved design version (text: "v2"): events.propose
   recommended  the coordinator's recommendation was recorded: decisions.recommend, recommend_design
   revision  the human's feedback or plan revisions reached the builder (delivery evidence): decisions
 Only `launched` makes the directory, so a run from before this feature, or one cleanup removed, gets nothing.
-Brief receipt is the prompt hook's own evidence (core.seen_at), and "needs your decision" is the open requests the
+Brief receipt is the prompt hook's own evidence (launcher.seen_at), and "needs your decision" is the open requests the
 human must answer (muster.decisions), which only their own paths end. herdr's screen state is never read.
 
 <data dir>/runs/<ledger>/progress.json is the message record the gateway keeps: {mid, thread, key, text, edited_at,
@@ -24,7 +24,7 @@ import json
 import re
 import time
 
-from . import config, conversation, core
+from . import config, conversation, core, launcher
 
 QUIET = 15 * 60  # s without a tool before the message says no new activity was observed
 REFRESH = 5 * 60  # s between edits that only age the same state's times
@@ -209,7 +209,7 @@ def state(ledger, now, waits, ref, archived):
         return "finished", f"Finished · {pr_name(read('review'))} merged", True
     try:
         launch = json.loads((activity(ledger) / "launched").read_text())
-        seen = core.seen_at(launch["dir"], launch["sha256"])
+        seen = launcher.seen_at(launch["dir"], launch["sha256"])
     except (OSError, ValueError, KeyError, TypeError):
         seen = None
     tool, prompt, stop = m.get("tool"), m.get("prompt", 0), m.get("stop", 0)

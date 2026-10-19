@@ -6,7 +6,7 @@ import threading
 
 import pytest
 
-from muster import config, core, decisions, events, progress, runs
+from muster import config, core, decisions, events, launcher, progress, runs
 
 
 def test_create_and_load():
@@ -196,7 +196,7 @@ class World:
         if argv[:3] == ["herdr", "agent", "prompt"]:
             self.prompts.append(argv[4])
             if self.delivers:
-                core.prompt_seen(self.evidence, {"prompt": pasted(argv[4])})
+                launcher.prompt_seen(self.evidence, {"prompt": pasted(argv[4])})
             if self.prompt_error:
                 raise core.CommandError(self.prompt_error)
             return json.dumps({"result": {}})
@@ -570,7 +570,7 @@ def test_send_delivers_and_confirms_by_the_prompt_hook(world):
     req = decisions.load(rid)
     assert req["intent"] == {"action": "send-back", "head": HEAD, "prompt_sha": sha(wire_of(rid))}
     assert req["executing_boot"] == "b1"
-    assert core.seen(world.evidence, sha(wire_of(rid)))
+    assert launcher.seen(world.evidence, sha(wire_of(rid)))
 
 
 def test_the_herdr_prompt_call_is_the_documented_one(world, monkeypatch):
@@ -662,7 +662,7 @@ def test_a_retry_never_double_sends_when_the_first_send_was_in_fact_seen(world):
     first = feedback(world, {"action": "send"})
     decisions.execute(first)
     (retry,) = [r["id"] for r in decisions.for_ledger("t_1", "feedback") if r["id"] != first]
-    core.prompt_seen(world.evidence, {"prompt": pasted(world.prompts[0])})  # the hook fired late
+    launcher.prompt_seen(world.evidence, {"prompt": pasted(world.prompts[0])})  # the hook fired late
     decisions.transition(retry, ("open",), "answered", answer={"action": "send"})
     decisions.execute(retry)
     assert state(retry) == ("done", decisions.DELIVERED) and len(world.prompts) == 1
@@ -673,7 +673,7 @@ def test_a_second_confirmation_while_the_agent_works_on_the_first_is_sent_withou
     first = feedback(world, {"action": "send"})
     decisions.execute(first)
     (retry,) = [r["id"] for r in decisions.for_ledger("t_1", "feedback") if r["id"] != first]
-    core.prompt_seen(world.evidence, {"prompt": pasted(world.prompts[0])})  # the hook fired late
+    launcher.prompt_seen(world.evidence, {"prompt": pasted(world.prompts[0])})  # the hook fired late
     world.agent = {"agent_status": "working"}  # on the first send's instructions
     decisions.transition(retry, ("open",), "answered", answer={"action": "send"})
     decisions.execute(retry)
@@ -687,7 +687,7 @@ def test_a_retry_still_open_when_the_late_evidence_arrives_is_retired_as_sent(wo
     decisions.execute(first)
     (retry,) = [r for r in decisions.for_ledger("t_1", "feedback") if r["id"] != first]
     assert retry["prompt_sha"] == sha(wire_of(first)) and not decisions.reconcile(retry)
-    core.prompt_seen(world.evidence, {"prompt": pasted(world.prompts[0])})  # the hook fired late
+    launcher.prompt_seen(world.evidence, {"prompt": pasted(world.prompts[0])})  # the hook fired late
     assert decisions.reconcile(decisions.load(retry["id"])) and state(retry["id"]) == ("done", decisions.DELIVERED)
     assert not decisions.reconcile(decisions.load(retry["id"]))
     assert decisions.transition(retry["id"], ("open",), "answered", answer={"action": "send"})[1] is False
@@ -758,7 +758,7 @@ def executing_send(world, seen):
     decisions.transition(rid, ("answered",), "executing", executing_boot="old", resolved="Fix the null case.",
                          intent={"action": "send-back", "head": HEAD, "prompt_sha": sha(text)})
     if seen:
-        core.prompt_seen(world.evidence, {"prompt": pasted(text)})
+        launcher.prompt_seen(world.evidence, {"prompt": pasted(text)})
     return decisions.load(rid)
 
 

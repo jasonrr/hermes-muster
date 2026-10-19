@@ -1,4 +1,4 @@
-"""The shared launch (core.ensure): two-phase start, a record saved before every side effect, and
+"""The shared launch (launcher.ensure): two-phase start, a record saved before every side effect, and
 recovery that resumes, adopts or refuses without ever sending the brief twice on a guess."""
 
 import copy
@@ -7,10 +7,12 @@ import shutil
 
 import pytest
 
+import muster.adhoc as adhoc
 import muster.config as config
 import muster.core as core
+import muster.intake as intake
+import muster.launcher as launcher
 import muster.progress as progress
-import muster.runs as runs
 from tests.fake_herdr import World
 
 DESTRUCTIVE = ("reset", "clean", "stash", "checkout", "branch", "worktree remove", "push")
@@ -29,13 +31,13 @@ def world(tmp_path, monkeypatch):
     w.clone = tmp_path / "clone"
     w.clone.mkdir()
     w.dir = tmp_path / "launch"
-    w.on_submit = lambda text: core.prompt_seen(w.dir, {"prompt": text, "session_id": "s1"})
+    w.on_submit = lambda text: launcher.prompt_seen(w.dir, {"prompt": text, "session_id": "s1"})
     w.saved = []
     return w
 
 
 def new_rec(w, **change):
-    rec = core.plan("t_card", "o/r", w.clone, "fix/x", "main", "label", "run-x", "opus",
+    rec = launcher.plan("t_card", "o/r", w.clone, "fix/x", "main", "label", "run-x", "opus",
                          w.dir / "settings.json", "run", ["GH_TOKEN="])
     rec.update(change)
     return rec
@@ -47,7 +49,7 @@ def ensure(w, rec, brief="Do the thing.\n", known=None):
         w.calls.append({"saved": copy.deepcopy(r)})
     save(rec)  # as both callers do: the record exists before ensure runs
     try:
-        return core.ensure(rec, save, w.dir, lambda r, g: brief, known)
+        return launcher.ensure(rec, save, w.dir, lambda r, g: brief, known)
     except Exception:
         save(rec)  # as both callers do on a failure; a crash (KeyboardInterrupt) saves nothing
         raise
@@ -86,7 +88,7 @@ def test_start_without_a_task_waits_for_idle_then_submits_the_brief_and_sees_it_
     assert last(world)["prompt"]["state"] == "working" and last(world)["step"] == "done"
     launched = json.loads((progress.activity("t_card") / "launched").read_text())
     assert launched == {"dir": str(world.dir), "sha256": rec["sha256"]}
-    assert core.seen_at(world.dir, rec["sha256"])  # the brief's own receipt, which the message shows
+    assert launcher.seen_at(world.dir, rec["sha256"])  # the brief's own receipt, which the message shows
 
 
 def test_every_side_effect_is_preceded_by_a_saved_record_of_it(world):
@@ -118,19 +120,19 @@ def test_a_start_that_times_out_with_claude_idle_still_proceeds_once(world):
 
 def test_a_start_with_no_agent_is_a_readiness_failure(world):
     world.start = "none"
-    with pytest.raises(core.LaunchFailure, match="Claude did not start") as caught:
+    with pytest.raises(launcher.LaunchFailure, match="Claude did not start") as caught:
         ensure(world, new_rec(world))
     assert caught.value.kind == "start" and world.submitted == []
-    assert "did not start" in core.trouble("agent", caught.value)
+    assert "did not start" in launcher.trouble("agent", caught.value)
 
 
 def test_a_dialog_at_startup_is_not_called_did_not_start_and_resumes_after_it_is_answered(world):
     world.start = "blocked"
-    with pytest.raises(core.LaunchFailure, match="shows a dialog") as caught:
+    with pytest.raises(launcher.LaunchFailure, match="shows a dialog") as caught:
         ensure(world, new_rec(world))
     assert caught.value.kind == "readiness"
-    assert "did not start" not in core.trouble("agent", caught.value)
-    assert "did not become ready" in core.trouble("agent", caught.value)
+    assert "did not start" not in launcher.trouble("agent", caught.value)
+    assert "did not become ready" in launcher.trouble("agent", caught.value)
     world.agents[last(world)["pane"]]["agent_status"] = "idle"  # the human answered it in the pane
     assert ensure(world, last(world)) == "working"
     assert len(herdr_calls(world, "agent", "start")) == 1 and len(world.submitted) == 1
@@ -163,12 +165,12 @@ def test_a_timeout_with_the_hook_evidence_is_delivered(world):
 
 def test_an_unconfirmed_prompt_is_unknown_never_resent_without_a_person(world):
     world.prompt = "lost"  # no hook, no state change: herdr cannot say whether it arrived
-    with pytest.raises(core.LaunchFailure, match="could not confirm the brief") as caught:
+    with pytest.raises(launcher.LaunchFailure, match="could not confirm the brief") as caught:
         ensure(world, new_rec(world))
     assert caught.value.kind == "delivery-unknown"
-    assert "did not start" not in core.trouble("prompt", caught.value)
+    assert "did not start" not in launcher.trouble("prompt", caught.value)
     for _ in range(2):
-        with pytest.raises(core.LaunchFailure, match="may or may not"):
+        with pytest.raises(launcher.LaunchFailure, match="may or may not"):
             ensure(world, last(world))
     assert len(world.submitted) == 1
     world.prompt = "working"
@@ -178,7 +180,7 @@ def test_an_unconfirmed_prompt_is_unknown_never_resent_without_a_person(world):
 
 def test_a_prompt_refused_by_a_dialog_was_not_sent_and_is_sent_once_it_is_answered(world):
     world.prompt = "agent_blocked"
-    with pytest.raises(core.LaunchFailure, match="was not sent") as caught:
+    with pytest.raises(launcher.LaunchFailure, match="was not sent") as caught:
         ensure(world, new_rec(world))
     assert caught.value.kind == "readiness" and last(world)["prompt"]["state"] == "not-sent"
     world.prompt = "working"
@@ -214,7 +216,7 @@ def test_a_crash_at_each_boundary_resumes_to_one_worktree_one_agent_one_brief(wo
     if verb == ("agent", "prompt") and not after:
         # Killed after the record said "sending": nothing shows whether the brief went out, so a person
         # decides. (Had it gone out, the hook's sha256 or Claude's state would show it.)
-        with pytest.raises(core.LaunchFailure) as caught:
+        with pytest.raises(launcher.LaunchFailure) as caught:
             ensure(world, last(world))
         assert caught.value.kind == "delivery-unknown" and world.submitted == []
         last(world)["resend"] = True
@@ -233,18 +235,18 @@ def test_a_crash_after_sending_with_no_evidence_waits_for_a_person(world):
     with pytest.raises(KeyboardInterrupt):
         ensure(world, new_rec(world))
     world.agents[last(world)["pane"]]["agent_status"] = "idle"  # and no hook, no completion: no evidence
-    with pytest.raises(core.LaunchFailure) as caught:
+    with pytest.raises(launcher.LaunchFailure) as caught:
         ensure(world, last(world))
     assert caught.value.kind == "delivery-unknown" and len(world.submitted) == 1
 
 
 def test_a_concurrent_retry_is_refused_not_queued(world):
-    with core.launch_lock(world.dir):
-        with pytest.raises(core.LaunchFailure, match="another launch") as caught:
-            with core.launch_lock(world.dir):
+    with launcher.launch_lock(world.dir):
+        with pytest.raises(launcher.LaunchFailure, match="another launch") as caught:
+            with launcher.launch_lock(world.dir):
                 pass
     assert caught.value.kind == "busy"
-    with core.launch_lock(world.dir):  # released: the next one runs
+    with launcher.launch_lock(world.dir):  # released: the next one runs
         pass
 
 
@@ -260,13 +262,13 @@ def test_an_owned_clean_worktree_is_reused_not_recreated(world):
 def test_dirty_files_and_local_commits_of_an_adopted_checkout_are_kept_and_named(world):
     path, git_dir = world.worktree(world.clone, "fix/x", owner="t_old")
     world.dirty[path], world.ahead["fix/x"] = ["notes.md", "src/a.py"], 3
-    with pytest.raises(core.LaunchFailure, match="belongs to launch t_old") as caught:
+    with pytest.raises(launcher.LaunchFailure, match="belongs to launch t_old") as caught:
         ensure(world, new_rec(world))
     assert caught.value.kind == "refused" and herdr_calls(world, "tab", "create") == []
     assert ensure(world, {**last(world), "adopt": True}) == "working"
     brief = json.loads(world.submitted[0].split("Task brief (JSON): ", 1)[1])
     assert "3 commits not on origin and 2 uncommitted or untracked files" in brief and "never reset" in brief
-    assert json.loads((git_dir / core.OWNER_FILE).read_text())["previous"]["owner"] == "t_old"
+    assert json.loads((git_dir / launcher.OWNER_FILE).read_text())["previous"]["owner"] == "t_old"
     assert not any(isinstance(c, list) and c[0] == "git" and any(d in " ".join(c) for d in DESTRUCTIVE)
                    for c in world.calls)
     assert not any(isinstance(c, list) and "remove" in c for c in world.calls)
@@ -274,7 +276,7 @@ def test_dirty_files_and_local_commits_of_an_adopted_checkout_are_kept_and_named
 
 def test_an_unrecorded_checkout_is_refused_unless_the_caller_knows_its_owner(world):
     path, _ = world.worktree(world.clone, "fix/x", path=world.tmp / "elsewhere" / "x")
-    with pytest.raises(core.LaunchFailure, match="no launcher record"):
+    with pytest.raises(launcher.LaunchFailure, match="no launcher record"):
         ensure(world, new_rec(world))
     assert herdr_calls(world, "agent", "start") == []
     assert ensure(world, last(world), known=lambda git_dir: "muster card t_old") == "working"
@@ -285,7 +287,7 @@ def test_a_checkout_with_a_live_agent_is_not_reused(world):
     path, _ = world.worktree(world.clone, "fix/x")
     workspace = world.worktrees[path]["workspace"]
     world.live_agent(f"{workspace}:p9", workspace, "someone", path, "working")
-    with pytest.raises(core.LaunchFailure, match="live agent in pane"):
+    with pytest.raises(launcher.LaunchFailure, match="live agent in pane"):
         ensure(world, new_rec(world, adopt=True))
     assert world.submitted == []
 
@@ -304,14 +306,14 @@ def test_a_busy_live_agent_that_never_got_the_brief_is_not_prompted(world):
     path, _ = world.worktree(world.clone, "fix/x", owner="t_card")
     workspace = world.worktrees[path]["workspace"]
     world.live_agent(f"{workspace}:p1", workspace, "run-x", path, "working")
-    with pytest.raises(core.LaunchFailure, match="not ready") as caught:
+    with pytest.raises(launcher.LaunchFailure, match="not ready") as caught:
         ensure(world, new_rec(world))
     assert caught.value.kind == "busy" and world.submitted == []
 
 
 def test_an_agent_name_already_live_elsewhere_is_refused(world):
     world.live_agent("w99:p1", "w99", "run-x", "/somewhere")
-    with pytest.raises(core.LaunchFailure, match="already runs in pane w99:p1"):
+    with pytest.raises(launcher.LaunchFailure, match="already runs in pane w99:p1"):
         ensure(world, new_rec(world))
     assert herdr_calls(world, "tab", "create") == [] and world.submitted == []
 
@@ -326,7 +328,7 @@ def test_a_left_over_branch_without_commits_is_fast_forwarded_and_reused(world):
 def test_a_left_over_branch_with_commits_needs_adopt_and_is_kept(world):
     world.branches[(str(world.clone), "fix/x")] = "sha_work"
     world.ahead["fix/x"] = 2
-    with pytest.raises(core.LaunchFailure, match="2 commits not on origin/main"):
+    with pytest.raises(launcher.LaunchFailure, match="2 commits not on origin/main"):
         ensure(world, new_rec(world))
     assert herdr_calls(world, "worktree", "create") == []
     assert ensure(world, {**last(world), "adopt": True}) == "working"
@@ -340,7 +342,7 @@ def test_a_stray_directory_at_the_planned_path_is_refused_not_deleted(world):
     stray = world.tmp / "worktrees" / "clone" / "fix-x"
     stray.mkdir(parents=True)
     (stray / "keep.txt").write_text("mine")
-    with pytest.raises(core.LaunchFailure, match="is not a worktree"):
+    with pytest.raises(launcher.LaunchFailure, match="is not a worktree"):
         ensure(world, rec)
     assert (stray / "keep.txt").read_text() == "mine"
 
@@ -349,26 +351,26 @@ def test_a_stray_directory_at_the_planned_path_is_refused_not_deleted(world):
 
 
 def test_agent_names_fit_herdr_and_stay_deterministic_and_distinct():
-    long_a = core.agent_name("run", "a-very-long-branch-name-that-goes-on-and-on-one")
-    long_b = core.agent_name("run", "a-very-long-branch-name-that-goes-on-and-on-two")
-    dotted = core.agent_name("run", "v1.2_Fix.UP")
-    for name in (long_a, long_b, dotted, core.agent_name("rc", "website-123456")):
-        assert core.AGENT_NAME.fullmatch(name), name
-    assert long_a != long_b and long_a == core.agent_name("run", "a-very-long-branch-name-that-goes-on-and-on-one")
-    assert core.agent_name("muster", "rcai-397") == "muster-rcai-397"
+    long_a = launcher.agent_name("run", "a-very-long-branch-name-that-goes-on-and-on-one")
+    long_b = launcher.agent_name("run", "a-very-long-branch-name-that-goes-on-and-on-two")
+    dotted = launcher.agent_name("run", "v1.2_Fix.UP")
+    for name in (long_a, long_b, dotted, launcher.agent_name("rc", "website-123456")):
+        assert launcher.AGENT_NAME.fullmatch(name), name
+    assert long_a != long_b and long_a == launcher.agent_name("run", "a-very-long-branch-name-that-goes-on-and-on-one")
+    assert launcher.agent_name("muster", "rcai-397") == "muster-rcai-397"
 
 
 @pytest.mark.parametrize("branch", ["fix/a..b", "fix/x.lock", "fix/ x", "fix/x~1"])
 def test_a_branch_git_would_refuse_is_refused_before_any_side_effect(world, branch):
-    with pytest.raises(core.LaunchFailure, match="not a valid branch name"):
-        core.plan("t", "o/r", world.clone, branch, "main", "l", "run-x", "opus", "/s", "run")
+    with pytest.raises(launcher.LaunchFailure, match="not a valid branch name"):
+        launcher.plan("t", "o/r", world.clone, branch, "main", "l", "run-x", "opus", "/s", "run")
     assert world.calls == []
 
 
 @pytest.mark.parametrize("base", ["-x", "a b", "a..b"])
 def test_a_base_git_would_refuse_is_refused_before_any_side_effect(world, base):
-    with pytest.raises(core.LaunchFailure, match="not a valid base branch"):
-        core.plan("t", "o/r", world.clone, "fix/x", base, "l", "run-x", "opus", "/s", "run")
+    with pytest.raises(launcher.LaunchFailure, match="not a valid base branch"):
+        launcher.plan("t", "o/r", world.clone, "fix/x", base, "l", "run-x", "opus", "/s", "run")
 
 
 @pytest.mark.parametrize("missing", ["issue-dispatch", "ad-hoc-run", "builder-workflow", "launch-envelope"])
@@ -381,5 +383,5 @@ def test_a_missing_prompt_file_fails_the_launch_before_any_agent_starts(world, m
     rec = new_rec(world)
     save = world.saved.append
     with pytest.raises(FileNotFoundError):
-        core.ensure(rec, save, world.dir, lambda r, g: core.brief("o/r", 1, False) + runs.footer(run))
+        launcher.ensure(rec, save, world.dir, lambda r, g: intake.brief("o/r", 1, False) + adhoc.footer(run))
     assert not herdr_calls(world, "agent", "start") and not herdr_calls(world, "agent", "prompt")

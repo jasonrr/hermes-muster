@@ -349,10 +349,13 @@ python3 -m pytest -q
 hermes plugins validate .
 ```
 
+For how the code is organized, which process runs what, and where state lives, read [`docs/architecture.md`](docs/architecture.md).
+
 The tests are fully mocked: `tests/fake_herdr.py` stands in for `herdr`, `gh` and `hermes`. Code that touches private Hermes names lives only in `muster/hermes_private.py`; see [`AGENTS.md`](AGENTS.md).
 
 ## Repository docs
 
+- [`docs/architecture.md`](docs/architecture.md): the module map, the three processes, where state lives, and how to trace a launch or a hook.
 - [`docs/learnings.md`](docs/learnings.md): pattern → consequence lessons from past work. Builders read it before planning.
 - [`docs/review-lenses.md`](docs/review-lenses.md): the review lenses the builder's sub-agent reviewers use in this repository.
 

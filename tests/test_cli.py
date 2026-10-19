@@ -41,19 +41,19 @@ def test_parser_accepts(argv):
 
 
 @pytest.fixture
-def stub_core(monkeypatch):
+def stub_intake(monkeypatch):
     stub = types.SimpleNamespace(tick=lambda args: 7)
-    monkeypatch.setitem(sys.modules, "muster.core", stub)
+    monkeypatch.setitem(sys.modules, "muster.intake", stub)
     return stub
 
 
-def test_main_returns_stub_exit_code(stub_core):
+def test_main_returns_stub_exit_code(stub_intake):
     assert cli.main(parse(["tick"]), StubCtx()) == 7
 
 
 @pytest.mark.parametrize(
     "argv, module, expected",
-    [(["hook", "stop"], "events", 0), (["hook", "done"], "events", 1), (["tick"], "core", 2)],
+    [(["hook", "stop"], "events", 0), (["hook", "done"], "events", 1), (["tick"], "intake", 2)],
 )
 def test_main_config_error(monkeypatch, argv, module, expected):
     def boom(args):
@@ -102,7 +102,7 @@ def test_root_loads_as_package_and_dispatches(monkeypatch):
         assert path.read_text().startswith(f"---\nname: {skill}\ndescription: ")
         assert calls["descriptions"][skill] == re.search(r"^description: (.+)$", path.read_text(), re.M).group(1)
     monkeypatch.setitem(
-        sys.modules, f"{name}.muster.core", types.SimpleNamespace(tick=lambda args: 9)
+        sys.modules, f"{name}.muster.intake", types.SimpleNamespace(tick=lambda args: 9)
     )
     try:
         assert calls["handler_fn"](parse(["tick"])) == 9

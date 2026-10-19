@@ -12,7 +12,7 @@ judgment goes to run X's agent, which evaluates it and answers `hermes muster ho
               (its issue closed, or the card was archived by hand)
 
 Every write to held.json happens under the card's launch lock and every step reads state before acting, so a
-crash between any two steps repeats nothing. The delivery's evidence is the run's own prompt hook (core.seen), as
+crash between any two steps repeats nothing. The delivery's evidence is the run's own prompt hook (launcher.seen), as
 for a send-back. Notices are bounded: the block, then at most one more card (agent unreachable, or no answer in 24 h).
 """
 
@@ -22,7 +22,7 @@ import json
 import time
 from pathlib import Path
 
-from . import config, conversation, core, events
+from . import config, conversation, core, events, intake, launcher
 
 TASK = "muster_dedupe"
 LIVE = 10  # newest live runs a new issue is compared with
@@ -93,7 +93,7 @@ def run_of(card):
 
 def ours(launch):
     """The run's own agent in its pane, None when it is gone. Raises when herdr fails (try again later)."""
-    agent = core.agent_at(launch["pane"])
+    agent = launcher.agent_at(launch["pane"])
     return agent if agent and core.adapter().is_ours(agent, launch["name"], Path(launch["path"])) else None
 
 
@@ -177,7 +177,7 @@ def hold(repo, issue, card, event, auto, cand, reason):
            "reminder": None, "resolution": None, "finished": False}
     text = wire(rec)  # fixed at hold time: the evidence must match what is sent, whatever changes later
     rec["delivery"].update(text=text, sha=hashlib.sha256(text.encode()).hexdigest())
-    with core.launch_lock(core.intake_dir() / card):
+    with launcher.launch_lock(core.intake_dir() / card):
         save(rec)
         setup(rec)
 
@@ -236,7 +236,7 @@ def deliver(rec):
     delivery, cand = rec["delivery"], rec["candidates"][0]
     if delivery["delivered"]:
         return
-    if core.seen(core.intake_dir() / cand["card"], delivery["sha"]):
+    if launcher.seen(core.intake_dir() / cand["card"], delivery["sha"]):
         delivery["delivered"] = True
         save(rec)
         return
@@ -248,7 +248,7 @@ def deliver(rec):
         return
     if clock() - rec["held_at"] >= REMIND_AFTER:
         remind(rec, f"the agent of {rec['repo']}#{cand['issue']} could not be reached for 24 h")
-    if (agent.get("agent_status") not in core.READY or delivery["sends"] >= SENDS
+    if (agent.get("agent_status") not in launcher.READY or delivery["sends"] >= SENDS
             or delivery["sent_at"] and clock() - delivery["sent_at"] < RESEND_AFTER):
         return
     git_dir = Path(core.run(["git", "-C", run["launch"]["path"], "rev-parse", "--absolute-git-dir"]).strip())
@@ -258,7 +258,7 @@ def deliver(rec):
     delivery["sent_at"], delivery["sends"] = clock(), delivery["sends"] + 1
     save(rec)  # before the send: a crash after it counts as a send
     try:
-        core.herdr_result("agent", "prompt", run["launch"]["pane"], delivery["text"], "--wait", "--until", "working",
+        launcher.herdr_result("agent", "prompt", run["launch"]["pane"], delivery["text"], "--wait", "--until", "working",
                           "--until", "blocked", "--timeout", "30000")
     except core.CommandError as error:  # not proof it did not arrive: the hook's evidence decides
         core.log("hold", f"{rec['card']}: herdr prompt: {error}")
@@ -271,7 +271,7 @@ def resolve(rec, state, reason):
 
 def sweep_one(card, dry):
     """One held card's tick. Returns "release" when the agent said different and the card should launch."""
-    with core.launch_lock(core.intake_dir() / card):
+    with launcher.launch_lock(core.intake_dir() / card):
         rec = load(card)
         if rec.get("finished"):
             return None
@@ -328,7 +328,7 @@ def sweep(repo, dry=False):
             if sweep_one(card, dry) == "release":  # release takes the launch lock itself
                 if release(card, "the agent said different") != 0:
                     failed = True
-        except core.LaunchFailure as error:
+        except launcher.LaunchFailure as error:
             if error.kind != "busy":
                 print(f"{repo} hold {card}: {error}")
                 failed = True
@@ -352,7 +352,7 @@ def record_verdict(link, number, verdict):
     if not mine:
         raise ValueError(f"no held report {link['repo']}#{number} was sent to this run (card {link['card']})")
     card = max(mine, key=lambda r: r["held_at"])["card"]
-    with core.launch_lock(core.intake_dir() / card):
+    with launcher.launch_lock(core.intake_dir() / card):
         rec = load(card)
         if not rec["delivery"]["sent_at"]:
             raise ValueError(f"{link['repo']}#{number} was not sent to this run yet")
@@ -365,10 +365,10 @@ def record_verdict(link, number, verdict):
 
 def launch(issue, rec):
     """Launch a released hold; then its card's pings follow the run's topic only."""
-    launched = core.launch(rec["repo"], issue, rec["card"], {"id": rec["event"]}, rec["auto"])
+    launched = intake.launch(rec["repo"], issue, rec["card"], {"id": rec["event"]}, rec["auto"])
     if launched is None:
         return None
-    with core.launch_lock(core.intake_dir() / rec["card"]):
+    with launcher.launch_lock(core.intake_dir() / rec["card"]):
         rec = load(rec["card"])
         rec["finished"] = True
         save(rec)
@@ -382,7 +382,7 @@ def launch(issue, rec):
 
 def release(card, why="recover"):
     """Launch a held card: `recover`, or the agent's `different`. Re-checks the approval. 0 once launched."""
-    with core.launch_lock(core.intake_dir() / card):
+    with launcher.launch_lock(core.intake_dir() / card):
         rec = load(card)
         state = (rec.get("resolution") or {}).get("state")
         refused, issue, auto = None, None, None
@@ -394,7 +394,7 @@ def release(card, why="recover"):
             refused = f"card is {status}; only a blocked or ready held card is released"
         if not refused:
             issue = json.loads(core.run(["gh", "api", f"repos/{repo}/issues/{number}"]))
-            current, auto = core.approve(repo, issue, core.timeline(repo, number))
+            current, auto = intake.approve(repo, issue, intake.timeline(repo, number))
             if issue.get("state") != "open" or not any(lb.get("name") == label for lb in issue.get("labels", [])):
                 refused = f"{repo}#{number} is {issue.get('state')} or no longer labeled {label}"
             elif current is None or current.get("id") != rec["event"]:

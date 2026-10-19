@@ -9,11 +9,13 @@ import time
 
 import pytest
 
+import muster.adhoc as adhoc
 import muster.bridge as bridge
 import muster.config as config
 import muster.core as core
 import muster.decisions as decisions
 import muster.events as events
+import muster.intake as intake
 import muster.progress as progress
 import muster.runs as runs
 
@@ -484,14 +486,14 @@ def test_core_and_events_agree_on_card_file(board, tmp_path):
     """The marker core writes at launch is the one events reads."""
     record = {"card": "t_abc123", "repo": "acme/app", "issue": 397, "title": "T"}
     rec = {"pane": "p_agent", "workspace": "w_1", "path": "/wt", "base": "main", "branch": "muster/397"}
-    (board["git_dir"] / core.CARD_FILE).write_text(json.dumps(core.links(record, rec)))
+    (board["git_dir"] / core.CARD_FILE).write_text(json.dumps(intake.links(record, rec)))
     git_dir, link = events.context("/wt")
     assert git_dir == board["git_dir"] and link["card"] == "t_abc123" and link["branch"] == "muster/397"
 
 
 def test_hook_with_card_delegates_to_runs(monkeypatch):
     seen = []
-    monkeypatch.setattr(runs, "hook", lambda args: seen.append(args.card) or 0)
+    monkeypatch.setattr(adhoc, "hook", lambda args: seen.append(args.card) or 0)
     assert events.hook(argparse.Namespace(event="stop", url=None, card="t_run1")) == 0
     assert seen == ["t_run1"]
 
@@ -983,7 +985,7 @@ REVIEWED, REVISED = "a" * 40, "b" * 40
 
 
 def verified(monkeypatch, tmp_path, board, pr=None, why=None):
-    """An issue run that is `done`, sent back once at REVIEWED; runs.verify answers from `answer`."""
+    """An issue run that is `done`, sent back once at REVIEWED; adhoc.verify answers from `answer`."""
     board["cards"]["t_abc123"] = "done"
     board["comments"]["t_abc123"] = [core.LINKS_PREFIX + json.dumps({
         "repo": "acme/app", "issue": 397, "branch": "muster/397", "base": "main", "worktree": str(tmp_path),
@@ -995,7 +997,7 @@ def verified(monkeypatch, tmp_path, board, pr=None, why=None):
     def verify(run):
         answer["calls"].append(run)
         return (None, answer["why"]) if answer["why"] else (answer["pr"], None)
-    monkeypatch.setattr(runs, "verify", verify)
+    monkeypatch.setattr(adhoc, "verify", verify)
     return answer
 
 

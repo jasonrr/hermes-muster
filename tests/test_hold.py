@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 import muster.core as core
-from muster import config, events, hold
+from muster import config, events, hold, intake, launcher
 from tests.fake_herdr import World
 
 REPO = "Radical-Candor-LLC/radicalcandorai"
@@ -19,7 +19,7 @@ CREATED = {493: "2026-10-15T23:34:11Z", 494: "2026-10-15T23:34:13Z", 495: "2026-
 
 
 def tick(dry_run=False):
-    return core.tick(argparse.Namespace(dry_run=dry_run))
+    return intake.tick(argparse.Namespace(dry_run=dry_run))
 
 
 class Model:
@@ -62,7 +62,7 @@ class Fake:
     def evidence(self, text):
         """Claude's UserPromptSubmit hook in every run's pane: the prompt's sha beside each launch record."""
         for record in core.intake_dir().glob("*/launch.json"):
-            core.prompt_seen(record.parent, {"prompt": text})
+            launcher.prompt_seen(record.parent, {"prompt": text})
 
     def kanban(self, argv):
         verb, rest = argv[4], argv[5:]
@@ -337,12 +337,12 @@ def test_a_held_card_archived_by_hand_is_closed_not_recreated(fake):
 
 def test_recover_releases_a_held_card_and_refuses_a_closed_one(fake, capsys):
     tick()
-    assert core.recover(argparse.Namespace(card=fake.card_of(494), resend=False, adopt=False)) == 0
+    assert intake.recover(argparse.Namespace(card=fake.card_of(494), resend=False, adopt=False)) == 0
     assert fake.launched() == ["muster/493", "muster/494"]
     assert "released (recover" in capsys.readouterr().out
     fake.issues[495].update(state="closed", state_reason="not_planned")
     tick()
-    assert core.recover(argparse.Namespace(card=fake.card_of(495), resend=False, adopt=False)) == 1
+    assert intake.recover(argparse.Namespace(card=fake.card_of(495), resend=False, adopt=False)) == 1
     assert fake.launched() == ["muster/493", "muster/494"]
 
 

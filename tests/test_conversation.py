@@ -4,7 +4,7 @@ import types
 
 import pytest
 
-from muster import config, conversation, core, decisions
+from muster import config, conversation, core, decisions, launcher
 
 from tests import fake_hermes as fh
 
@@ -157,8 +157,8 @@ def test_a_fallback_is_said_once_on_the_ledger(monkeypatch):
     subs = fh.Subs()
     monkeypatch.setattr(core, "kanban", subs)
     monkeypatch.setattr(decisions, "gateway_up", lambda: False)
-    core.topic("led1", "o/app", "Fix", issue=3)
-    core.topic("led1", "o/app", "Fix", issue=3)
+    launcher.topic("led1", "o/app", "Fix", issue=3)
+    launcher.topic("led1", "o/app", "Fix", issue=3)
     comments = [argv for argv in subs.calls if argv[0] == "comment"]
     assert comments == [("comment", "led1", "topic: not created: the Hermes gateway is not running; this run stays "
                                             "in the main chat")]

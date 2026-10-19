@@ -13,6 +13,8 @@ from pathlib import Path
 import pytest
 
 import muster.core as core
+import muster.intake as intake
+import muster.launcher as launcher
 from muster import config
 from tests.fake_herdr import World
 
@@ -22,11 +24,11 @@ OTHER = {"login": "someone", "id": 1}
 
 
 def tick(dry_run=False):
-    return core.tick(argparse.Namespace(dry_run=dry_run))
+    return intake.tick(argparse.Namespace(dry_run=dry_run))
 
 
 def recover(card, resend=False, adopt=False):
-    return core.recover(argparse.Namespace(card=card, resend=resend, adopt=adopt))
+    return intake.recover(argparse.Namespace(card=card, resend=resend, adopt=adopt))
 
 
 def labeled(actor, event_id, at, name="agent-ready"):
@@ -34,11 +36,11 @@ def labeled(actor, event_id, at, name="agent-ready"):
 
 
 def test_approval_is_the_newest_agent_ready_label_event_by_the_approver():
-    assert core.approval([labeled(JASON, 10, "2026-09-16T10:00:00Z")])["id"] == 10
+    assert intake.approval([labeled(JASON, 10, "2026-09-16T10:00:00Z")])["id"] == 10
 
 
 def test_a_label_by_anyone_else_is_refused():
-    assert core.approval([labeled(OTHER, 11, "2026-09-16T10:00:00Z")]) is None
+    assert intake.approval([labeled(OTHER, 11, "2026-09-16T10:00:00Z")]) is None
 
 
 def test_a_relabel_by_someone_else_after_the_approver_is_refused():
@@ -48,21 +50,21 @@ def test_a_relabel_by_someone_else_after_the_approver_is_refused():
          "created_at": "2026-09-16T11:00:00Z"},
         labeled(OTHER, 13, "2026-09-16T12:00:00Z"),
     ]
-    assert core.approval(events) is None
+    assert intake.approval(events) is None
 
 
 def test_another_label_name_or_no_label_event_is_refused():
-    assert core.approval([labeled(JASON, 14, "2026-09-16T10:00:00Z", name="bug")]) is None
-    assert core.approval([]) is None
+    assert intake.approval([labeled(JASON, 14, "2026-09-16T10:00:00Z", name="bug")]) is None
+    assert intake.approval([]) is None
 
 
 def test_matching_login_with_a_different_id_is_refused():
-    assert core.approval([labeled({"login": "jasonrr", "id": 2}, 15, "2026-09-16T10:00:00Z")]) is None
+    assert intake.approval([labeled({"login": "jasonrr", "id": 2}, 15, "2026-09-16T10:00:00Z")]) is None
 
 
 def test_approver_login_case_insensitive():
-    assert core.approval([labeled({"login": "JasonRR", "id": 108170}, 16, "2026-09-16T10:00:00Z")])["id"] == 16
-    assert core.approval([labeled({"login": "JASONRR", "id": 2}, 17, "2026-09-16T10:00:00Z")]) is None
+    assert intake.approval([labeled({"login": "JasonRR", "id": 108170}, 16, "2026-09-16T10:00:00Z")])["id"] == 16
+    assert intake.approval([labeled({"login": "JASONRR", "id": 2}, 17, "2026-09-16T10:00:00Z")]) is None
 
 
 SENTRY = {"login": "sentry[bot]", "id": 39604003}
@@ -85,7 +87,7 @@ def sentry_rule(monkeypatch):
 
 
 def test_a_bot_opened_issue_with_both_labels_is_approved_by_its_main_label_event(sentry_rule):
-    event, who = core.automatic(REPO, bot_issue(), bot_events())
+    event, who = intake.automatic(REPO, bot_issue(), bot_events())
     assert event["id"] == 407 and who == WHO  # the main label's event, which recover checks the card against
 
 
@@ -105,31 +107,31 @@ def test_an_automatic_approval_is_refused(sentry_rule, monkeypatch, case):
         issue, events = bot_issue(user={**SENTRY, "id": 1}), bot_events({**SENTRY, "id": 1}, {**SENTRY, "id": 1})
     else:
         events.append(labeled(OTHER, 409, "2026-09-17T10:00:00Z"))
-    assert core.automatic(repo, issue, events) is None
-    assert core.approve(repo, issue, events) == (None, None)
+    assert intake.automatic(repo, issue, events) is None
+    assert intake.approve(repo, issue, events) == (None, None)
 
 
 def test_the_second_entry_that_matches_is_the_approver(monkeypatch):
     other = {"login": "other[bot]", "id": 5, "repos": [REPO]}
     monkeypatch.setitem(config.settings, "auto_approvers", [other, {**SENTRY, "label": "Sentry-OK", "repos": [REPO]}])
     events = bot_events()[:1] + [labeled(SENTRY, 408, "2026-09-16T10:00:01Z", name="sentry-ok")]
-    assert core.automatic(REPO, bot_issue(labels=("agent-ready", "sentry-ok")), events)[1] == {**SENTRY, "label": "Sentry-OK"}
+    assert intake.automatic(REPO, bot_issue(labels=("agent-ready", "sentry-ok")), events)[1] == {**SENTRY, "label": "Sentry-OK"}
 
 
 def test_a_bot_relabel_after_the_human_is_an_automatic_approval(sentry_rule):
     events = [labeled(JASON, 300, "2026-09-15T10:00:00Z")] + bot_events()
-    assert core.approve(REPO, bot_issue(), events) == (events[1], WHO)
+    assert intake.approve(REPO, bot_issue(), events) == (events[1], WHO)
 
 
 def test_no_auto_approvers_leaves_the_human_rule_alone():
     assert config.settings["auto_approvers"] == []
-    assert core.approve(REPO, bot_issue(), bot_events()) == (None, None)
+    assert intake.approve(REPO, bot_issue(), bot_events()) == (None, None)
     human = [labeled(JASON, 10, "2026-09-16T10:00:00Z")]
-    assert core.approve(REPO, {"number": 1, "labels": []}, human) == (human[0], None)
+    assert intake.approve(REPO, {"number": 1, "labels": []}, human) == (human[0], None)
 
 
 def test_card_argv_is_an_unassigned_card_on_the_board_keyed_by_the_label_event():
-    argv = core.card_argv(REPO, {"number": 397, "title": "-Add a unit test"}, {"id": 10})
+    argv = intake.card_argv(REPO, {"number": 397, "title": "-Add a unit test"}, {"id": 10})
     assert argv[:5] == ["hermes", "kanban", "--board", "muster", "create"]
     assert argv[-2:] == ["--", "-Add a unit test"]
     assert argv[argv.index("--idempotency-key") + 1] == f"{REPO}#397@10"
@@ -143,8 +145,8 @@ def test_card_argv_is_an_unassigned_card_on_the_board_keyed_by_the_label_event()
 
 
 def test_the_brief_names_bug_or_feature_and_never_carries_issue_text():
-    bug = core.brief(REPO, 402, True)
-    other = core.brief(REPO, 403, False)
+    bug = intake.brief(REPO, 402, True)
+    other = intake.brief(REPO, 403, False)
     assert "This issue is a bug." in bug and "This issue is a feature." in other
     assert f'gh issue comment 402 -R {REPO} --body "Picked up by muster."' in bug
     assert f"gh issue view 402 -R {REPO} --json title,body,comments" in bug
@@ -159,28 +161,28 @@ def test_the_brief_names_bug_or_feature_and_never_carries_issue_text():
 
 def test_the_brief_without_a_bot_names_no_login(monkeypatch):
     monkeypatch.setitem(config.settings, "gh_config_dir", "")
-    assert "act as the login" not in core.brief(REPO, 1, False)
+    assert "act as the login" not in intake.brief(REPO, 1, False)
 
 
 def test_brief_has_workflow_and_no_tally():
-    text = core.brief(REPO, 1, False)
+    text = intake.brief(REPO, 1, False)
     rule = next(line for line in config.workflow_path().read_text().splitlines() if line.startswith("1. "))
     assert "## How to work" in text and rule[3:] in text
     assert "tally" not in text.lower()
 
 
 def test_brief_keeps_forbidden_list():
-    text = core.brief(REPO, 7, False)
+    text = intake.brief(REPO, 7, False)
     for needle in (".github/", "lockfiles", "force-push", "attribution trailer", "Closes #7"):
         assert needle in text
 
 
 def test_the_brief_carries_the_production_note_or_says_there_is_none(tmp_path, monkeypatch):
     monkeypatch.setitem(config.settings, "notes_dir", str(tmp_path / "repos"))
-    assert "No production note for this repository" in core.brief(REPO, 1, False)
+    assert "No production note for this repository" in intake.brief(REPO, 1, False)
     (tmp_path / "repos").mkdir()
     (tmp_path / "repos" / "Radical-Candor-LLC__radicalcandorai.md").write_text("# note\nCloud Run, us-west1\n")
-    assert "# note\nCloud Run, us-west1" in core.brief(REPO, 1, False)
+    assert "# note\nCloud Run, us-west1" in intake.brief(REPO, 1, False)
 
 
 def fake_world(tmp_path, calls, failing_repo=None, card_age=0, fail_on=None, branches=(),
@@ -661,7 +663,7 @@ class Recovery:
                 return json.dumps(self.issue) + "\n"
             return base(argv)
         monkeypatch.setattr(core, "run", run)
-        monkeypatch.setattr(core, "block_kind", lambda card: self.kinds.get(card))
+        monkeypatch.setattr(launcher, "block_kind", lambda card: self.kinds.get(card))
         assert tick() == 1
         assert self.cards["t_abc123"] == "blocked" and self.kinds["t_abc123"] == "capability"
         self.world.start = "ready"
@@ -724,7 +726,7 @@ def test_recover_refuses_a_session_that_ended_after_its_launch(failed, capsys):
 
 
 def test_recover_waits_behind_a_concurrent_one_and_sends_nothing_twice(failed, capsys):
-    with core.launch_lock(core.intake_dir() / "t_abc123"):
+    with launcher.launch_lock(core.intake_dir() / "t_abc123"):
         assert recover("t_abc123") == 1
     assert "another launch or recover" in capsys.readouterr().err
     assert not failed.since("herdr") and not failed.comments()
@@ -756,7 +758,7 @@ def test_a_new_label_reuses_the_checkout_an_earlier_card_of_the_issue_left(tmp_p
     assert not [c for c in calls if c[:3] == ["herdr", "worktree", "create"]]
     brief = json.loads(world.submitted[0].split("(JSON): ", 1)[1])
     assert "1 commits not on origin and 1 uncommitted or untracked files" in brief
-    owner = json.loads((git_dir / core.OWNER_FILE).read_text())
+    owner = json.loads((git_dir / launcher.OWNER_FILE).read_text())
     assert owner["owner"] == "t_abc123" and owner["previous"] == "muster card t_old"
     assert json.loads((git_dir / core.CARD_FILE).read_text())["card"] == "t_abc123"
 
@@ -772,13 +774,13 @@ def test_a_left_over_branch_with_no_commits_relaunches_from_current_main(tmp_pat
 def test_pane_env_expands_a_tilde_gh_config_dir(monkeypatch):
     monkeypatch.setitem(config.settings, "gh_config_dir", "~/.config/gh-bot")
     expected = str(Path("~/.config/gh-bot").expanduser())
-    assert f"GH_CONFIG_DIR={expected}" in core.pane_env()
-    assert f"`{expected}`" in core.brief(REPO, 1, False)
+    assert f"GH_CONFIG_DIR={expected}" in launcher.pane_env()
+    assert f"`{expected}`" in intake.brief(REPO, 1, False)
 
 
 def test_pane_env_carries_a_kanban_home_that_differs(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_KANBAN_HOME", str(tmp_path / "kanban"))
-    assert core.pane_env()[:2] == [f"HERMES_HOME={tmp_path / 'hermes'}", f"HERMES_KANBAN_HOME={tmp_path / 'kanban'}"]
+    assert launcher.pane_env()[:2] == [f"HERMES_HOME={tmp_path / 'hermes'}", f"HERMES_KANBAN_HOME={tmp_path / 'kanban'}"]
 
 
 def test_notify_target_stringifies_ids_yaml_parsed_as_ints(monkeypatch):
@@ -833,14 +835,14 @@ def test_board_db_asks_hermes_when_it_runs_inside_hermes(monkeypatch):
 
 
 def test_approval_label_name_is_case_insensitive():
-    assert core.approval([labeled(JASON, 18, "2026-09-16T10:00:00Z", name="Agent-Ready")])["id"] == 18
+    assert intake.approval([labeled(JASON, 18, "2026-09-16T10:00:00Z", name="Agent-Ready")])["id"] == 18
 
 
 def test_the_issue_query_url_encodes_the_label(tmp_path, monkeypatch):
     monkeypatch.setitem(config.settings, "label", "ready & go")
     calls = []
     monkeypatch.setattr(core, "run", lambda argv: calls.append(argv) or "")
-    core.intake(REPO)
+    intake.intake(REPO)
     assert "labels=ready%20%26%20go&" in calls[0][-1]
 
 
@@ -856,14 +858,14 @@ def test_a_command_error_never_carries_a_token():
 
 
 def test_an_automatic_brief_and_card_say_the_bot_approved_it():
-    text = core.brief(REPO, 397, True, auto=WHO)
+    text = intake.brief(REPO, 397, True, auto=WHO)
     assert (f"Issue {REPO}#397 was approved automatically. sentry[bot] (id 39604003) opened it with labels "
             f"`agent-ready` and `automatic-approval`, under jasonrr's standing rule. jasonrr did not label it.") in text
     assert "jasonrr approved" not in text and "This issue is a bug." in text
-    body = core.card_argv(REPO, {"number": 397, "title": "t"}, {"id": 10}, WHO)
+    body = intake.card_argv(REPO, {"number": 397, "title": "t"}, {"id": 10}, WHO)
     body = body[body.index("--body") + 1]
     assert "approved automatically" in body and "Label event 10." in body and body.endswith(core.PROVENANCE)
-    plain = core.card_argv(REPO, {"number": 397, "title": "t"}, {"id": 10})
+    plain = intake.card_argv(REPO, {"number": 397, "title": "t"}, {"id": 10})
     assert "approved automatically" not in plain[plain.index("--body") + 1]
 
 
@@ -1019,7 +1021,7 @@ def test_an_issue_past_the_300_item_cap_is_not_called_absent(tmp_path, monkeypat
 def test_an_issue_launch_asks_for_its_topic_before_subscribing_in_it(tmp_path, monkeypatch):
     calls, order = [], []
     monkeypatch.setattr(core, "run", fake_world(tmp_path, calls)[0])
-    monkeypatch.setattr(core, "topic", lambda card, repo, title, issue=None, branch=None:
+    monkeypatch.setattr(launcher, "topic", lambda card, repo, title, issue=None, branch=None:
                         order.append(("topic", card, repo, issue)))
     real = core.subscribe
     monkeypatch.setattr(core, "subscribe", lambda card, ledger=None: (order.append(("subscribe", card, ledger)),

@@ -89,7 +89,7 @@ import tomllib
 from datetime import datetime
 from pathlib import Path
 
-from . import config, conversation, core, decisions, events, runs
+from . import config, conversation, core, decisions, events, launcher, runs
 
 
 def state_path():
@@ -232,7 +232,7 @@ def quiet(workspace):
             raise NotReady(f"pane {pid} runs in the background: {busy[0][:80]}")
         if pane.get("agent"):
             agent = herdr("agent", "get", pid)["agent"]
-            if agent.get("agent_status") not in core.READY:
+            if agent.get("agent_status") not in launcher.READY:
                 raise NotReady(f"pane {pid}: {agent.get('agent')} is {agent.get('agent_status')}")
             state = [agent.get("agent"), agent.get("agent_status"), agent.get("state_change_seq")]
         else:
@@ -682,7 +682,7 @@ def step(target, state, dry):
             return False
         try:
             retire(ledger, reason, comment)
-        except core.LaunchFailure:
+        except launcher.LaunchFailure:
             say(f"{name}: kept, a launch or recover holds the run")
             return False
         except FAILURES as error:
@@ -696,7 +696,7 @@ def step(target, state, dry):
     try:
         with ledger_lock(ledger) if ledger else contextlib.nullcontext():
             return remove(target, fingerprint, (now, since), new, dry)
-    except core.LaunchFailure:
+    except launcher.LaunchFailure:
         say(f"{name}: kept, a launch or recover holds the run")
         return False
 
@@ -808,7 +808,7 @@ def ledger_lock(ledger):
     A no-op when the run has neither (nothing could be launching it)."""
     for directory in (runs.run_dir(ledger), core.intake_dir() / ledger):
         if directory.is_dir() and (directory != runs.run_dir(ledger) or (directory / "run.json").is_file()):
-            return core.launch_lock(directory)
+            return launcher.launch_lock(directory)
     return contextlib.nullcontext()
 
 
@@ -892,7 +892,7 @@ def settle(dry):
             say(f"{ledger}: ledger retired: worktree {link['worktree']} already gone")
         except NotReady as why:
             say(f"{ledger}: kept, {why}")
-        except core.LaunchFailure:
+        except launcher.LaunchFailure:
             say(f"{ledger}: kept, a launch or recover holds the run")
         except FAILURES as error:
             say(f"{ledger}: kept, check failed: {error}")

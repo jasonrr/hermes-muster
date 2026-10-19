@@ -15,6 +15,7 @@ import muster.cleanup as cleanup
 import muster.config as config
 import muster.core as core
 import muster.decisions as decisions
+import muster.launcher as launcher
 import muster.runs as runs
 
 REPO = "o/r"
@@ -1085,7 +1086,7 @@ def test_an_archived_run_held_by_a_launch_or_recover_is_kept_and_its_quiet_clock
     closed_unmerged(world, "archived")
     (core.intake_dir() / "t_1").mkdir(parents=True)
     window(world, runs=5)
-    with core.launch_lock(core.intake_dir() / "t_1"):
+    with launcher.launch_lock(core.intake_dir() / "t_1"):
         tick(world, 5)
     assert removes(world) == [] and "a launch or recover holds the run" in capsys.readouterr().out
     tick(world, 5)
@@ -1250,7 +1251,7 @@ def test_a_vanished_run_is_kept_on_any_owner_or_unknown_evidence(world, case):
     elif case in ("fallback", "deleted"):
         conversation.update("t_1", state=case)
     if case == "locked":
-        with core.launch_lock(core.intake_dir() / "t_1"):
+        with launcher.launch_lock(core.intake_dir() / "t_1"):
             code = main([])
     else:
         code = main([])

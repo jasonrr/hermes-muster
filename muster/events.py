@@ -1,6 +1,6 @@
 """events: agent hooks in a muster pane turn waits and endings into kanban events.
 
-Registered only by the pane's own --settings file (core.agent_settings); a no-op in any checkout
+Registered only by the pane's own --settings file (intake.agent_settings); a no-op in any checkout
 without <git dir>/muster-card.json. The gateway notifier turns each block or completion into a
 Telegram ping for the human and a queued agent turn.
 
@@ -47,7 +47,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import bridge, claude, config, core, decisions, progress
+from . import bridge, claude, config, core, decisions, launcher, progress
 
 STALE_CLAIM = 120  # s: an empty wait marker this old is from a hook killed at its 30 s timeout
 PR_URL = re.compile(r"https://github\.com/([\w.-]+/[\w.-]+)/pull/\d+")
@@ -475,8 +475,8 @@ def hook(args):
         if args.event == "duplicate":
             print("hook duplicate: run it from the issue run's worktree, without --card", file=sys.stderr)
             return 1
-        from . import runs  # lazy: runs imports events at module level
-        return runs.hook(args)
+        from . import adhoc  # lazy: adhoc imports events at module level
+        return adhoc.hook(args)
     event = args.event
     payload = {}
     if event not in AGENT_RUN:  # run by the agent from its shell: stdin is no hook payload
@@ -525,7 +525,7 @@ def hook(args):
             log(f"settle card {link['card']}: {' '.join(str(caught).split())}")
     if event == "prompt" and link.get("launch_dir"):
         with contextlib.suppress(OSError, ValueError):  # the launch's evidence that its brief arrived
-            core.prompt_seen(link["launch_dir"], payload)
+            launcher.prompt_seen(link["launch_dir"], payload)
     if event == "done":
         match = PR_URL.fullmatch(args.url or "")
         if not match or match.group(1).lower() != link["repo"].lower():

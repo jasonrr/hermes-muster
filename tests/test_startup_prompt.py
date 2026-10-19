@@ -6,7 +6,7 @@ import shutil
 import subprocess
 
 import pytest
-import muster.core as core
+import muster.launcher as launcher
 
 
 @pytest.mark.parametrize("text", [
@@ -16,7 +16,7 @@ import muster.core as core
     "".join(chr(i) for i in range(128)),
 ])
 def test_startup_prompt_round_trips_without_literal_control_characters(text):
-    prompt = core.startup_prompt(text)
+    prompt = launcher.startup_prompt(text)
     assert prompt.startswith("Execute the authorized task")
     assert not any(ord(c) < 32 or ord(c) == 127 for c in prompt)
     assert json.loads(prompt.split("Task brief (JSON): ", 1)[1]) == text
@@ -37,5 +37,5 @@ def test_real_herdr_accepts_the_two_phase_calls_and_still_rejects_a_raw_brief_as
     start = ["agent", "start", "repro-encoding", "--kind", "claude", "--pane", "nonexistent-encoding-probe", "--"]
     assert code(*start, text) == "invalid_agent_argument"
     assert code(*start, "--model", "opus", "--permission-mode", "auto") == "agent_pane_not_found"
-    assert code("agent", "prompt", "nonexistent-encoding-probe", core.startup_prompt(text),
+    assert code("agent", "prompt", "nonexistent-encoding-probe", launcher.startup_prompt(text),
                 "--wait", "--until", "working", "--until", "blocked", "--timeout", "5000") == "agent_not_found"

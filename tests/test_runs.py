@@ -9,9 +9,12 @@ import time
 
 import pytest
 
+import muster.adhoc as adhoc
 import muster.claude as claude
 import muster.config as config
 import muster.core as core
+import muster.intake as intake
+import muster.launcher as launcher
 import muster.progress as progress
 import muster.runs as runs
 from tests.fake_herdr import World
@@ -30,7 +33,7 @@ def board(tmp_path, monkeypatch):
              "seq": 0, "cursor": 0, "head": "abc", "dirty": "", "prs": [], "gh_fail": 0, "agent": "working", "agent_seq": 1,
              "created_at": {}, "kinds": {}, "comments": {}, "bodies": {}}
     monkeypatch.setattr(runs, "last_event", lambda card: state["events"].get(card, 0))
-    monkeypatch.setattr(core, "block_kind", lambda card: state["kinds"].get(card))
+    monkeypatch.setattr(launcher, "block_kind", lambda card: state["kinds"].get(card))
 
     def fake_run(argv):
         state["calls"].append(argv)
@@ -114,11 +117,11 @@ def run1(board):
 
 def fire(monkeypatch, event, raw=None, card=CARD, **payload):
     monkeypatch.setattr("sys.stdin", io.StringIO(raw if raw is not None else json.dumps(payload)))
-    return runs.hook(argparse.Namespace(card=card, event=event, url=None))
+    return adhoc.hook(argparse.Namespace(card=card, event=event, url=None))
 
 
 def recover(card, resend=False, adopt=False):
-    return runs.recover(card, resend, adopt)
+    return adhoc.recover(card, resend, adopt)
 
 
 def calls(state, verb):
@@ -421,7 +424,7 @@ def clone(board, tmp_path, monkeypatch):
 
 
 def launch(clone, branch="fix/x"):
-    return runs.launch_run(clone["path"], branch, "Fix the thing", clone["brief"])
+    return adhoc.launch_run(clone["path"], branch, "Fix the thing", clone["brief"])
 
 
 def test_launch_registers_and_subscribes_before_any_herdr_call(board, clone):
@@ -434,7 +437,7 @@ def test_launch_registers_and_subscribes_before_any_herdr_call(board, clone):
     assert create[create.index("--idempotency-key") + 1] == "run:o/r:fix/x" and create[-1] == "Fix the thing"
     assert core.PROVENANCE in create[create.index("--body") + 1]
     saved = json.loads((runs.run_dir(card) / "run.json").read_text())
-    worktree = str(core.worktree_path(clone["path"].resolve(), "fix/x"))
+    worktree = str(launcher.worktree_path(clone["path"].resolve(), "fix/x"))
     assert saved == run and {k: v for k, v in run.items() if k != "launch"} == {
         "card": card, "repo": "o/r", "clone": str(clone["path"].resolve()), "branch": "fix/x", "base": "main",
         "title": "Fix the thing", "workspace": "w1", "worktree": worktree, "pane": "w1:p2", "launched": True,
@@ -451,7 +454,7 @@ def test_launch_without_base_uses_origin_head_and_base_wins_when_given(board, cl
     assert run["base"] == run["launch"]["base"] == "master"
     create = next(c for c in board["calls"] if c[:3] == ["herdr", "worktree", "create"])
     assert create[create.index("--base") + 1] == "origin/master"
-    other = runs.launch_run(clone["path"], "fix/y", "Fix another", clone["brief"], base="develop")
+    other = adhoc.launch_run(clone["path"], "fix/y", "Fix another", clone["brief"], base="develop")
     assert other["base"] == "develop"
 
 
@@ -527,7 +530,7 @@ def test_a_bad_branch_is_refused_before_any_card(board, clone, branch):
 def test_the_launch_entry_exits_one_on_a_refused_launch(board, clone, monkeypatch, capsys):
     monkeypatch.setattr(config, "require", lambda: None)
     args = argparse.Namespace(cwd="/c", branch="main", title="t", brief="/b", base="main", model=None)
-    assert runs.launch(args) == 1
+    assert adhoc.launch(args) == 1
     assert "is not <feat" in capsys.readouterr().err
 
 
@@ -536,12 +539,12 @@ def test_the_launch_entry_prints_the_run_and_defaults_the_model(board, clone, mo
     monkeypatch.setitem(config.settings, "agent_model", "sonnet")
     args = argparse.Namespace(cwd=str(clone["path"]), branch="fix/x", title="T", brief=str(clone["brief"]),
                               base="main", model=None)
-    assert runs.launch(args) == 0
+    assert adhoc.launch(args) == 0
     assert json.loads(capsys.readouterr().out)["launch"]["model"] == "sonnet"
 
 
 def test_a_done_hook_on_a_run_is_refused_without_reading_stdin_or_queueing(board, run1, capsys):
-    assert runs.hook(argparse.Namespace(card=CARD, event="done", url=None)) == 1
+    assert adhoc.hook(argparse.Namespace(card=CARD, event="done", url=None)) == 1
     assert "pull request" in capsys.readouterr().err and not (run1 / "outbox").exists()
 
 
@@ -549,8 +552,8 @@ def test_launch_carries_the_pane_env_and_recover_refreshes_it(board, clone, monk
     board["world"].start = "none"
     with pytest.raises(core.LaunchError):
         launch(clone)
-    assert runs.load("t_wait1")["launch"]["env"] == core.pane_env()
-    assert any(e.startswith("GH_CONFIG_DIR=") for e in core.pane_env())
+    assert runs.load("t_wait1")["launch"]["env"] == launcher.pane_env()
+    assert any(e.startswith("GH_CONFIG_DIR=") for e in launcher.pane_env())
     monkeypatch.setenv("HERMES_KANBAN_HOME", str(tmp_path / "moved"))
     board["world"].start = "ready"
     assert recover("t_wait1") == 0
@@ -677,7 +680,7 @@ def test_recover_refuses_while_another_recover_holds_the_run(board, clone, capsy
     with pytest.raises(core.LaunchError):
         launch(clone)
     before = len(board["calls"])
-    with core.launch_lock(runs.run_dir("t_wait1")):
+    with launcher.launch_lock(runs.run_dir("t_wait1")):
         assert recover("t_wait1") == 1
     assert "another launch or recover" in capsys.readouterr().err
     assert board["calls"][before:] == []
@@ -710,19 +713,19 @@ def test_a_run_from_before_launch_records_needs_adopt_and_reuses_its_worktree(bo
 def test_the_same_branch_in_two_repos_launches_two_agents(board, clone):
     first = launch(clone, "feat/docs")
     board["origin"] = "o/s"
-    second = runs.launch_run(clone["path"].parent / "other", "feat/docs", "Docs too", clone["brief"])
+    second = adhoc.launch_run(clone["path"].parent / "other", "feat/docs", "Docs too", clone["brief"])
     assert (first["launch"]["name"], second["launch"]["name"]) == ("run-r-docs", "run-s-docs")
     assert second["state"] == "working"
 
 
 def test_a_long_or_dotted_branch_gets_a_valid_agent_name(board, clone):
     run = launch(clone, "fix/v1.2-a-really-long-branch-name-for-the-agent")
-    assert core.AGENT_NAME.fullmatch(run["launch"]["name"])
+    assert launcher.AGENT_NAME.fullmatch(run["launch"]["name"])
 
 
 def test_the_run_hook_records_the_submitted_prompt_for_the_launcher(board, run1, monkeypatch):
     fire(monkeypatch, "prompt", prompt="the brief", session_id="s1")
-    assert core.seen(run1, __import__("hashlib").sha256(b"the brief").hexdigest())
+    assert launcher.seen(run1, __import__("hashlib").sha256(b"the brief").hexdigest())
     assert board["calls"] == []  # nothing open, nothing queued: still no kanban call
 
 
@@ -730,11 +733,11 @@ def test_core_recover_dispatches_to_runs(board, run1, monkeypatch):
     monkeypatch.setattr(config, "require", lambda: None)
     monkeypatch.setattr(core, "board_exists", lambda: None)
     seen = []
-    monkeypatch.setattr(runs, "recover", lambda card, resend, adopt: seen.append((card, resend, adopt)) or 0)
-    monkeypatch.setattr(core, "recover_card", lambda card, resend, adopt: seen.append(("core", card)) or 0)
-    assert core.recover(argparse.Namespace(card=CARD, resend=True, adopt=False)) == 0
+    monkeypatch.setattr(adhoc, "recover", lambda card, resend, adopt: seen.append((card, resend, adopt)) or 0)
+    monkeypatch.setattr(intake, "recover_card", lambda card, resend, adopt: seen.append(("core", card)) or 0)
+    assert intake.recover(argparse.Namespace(card=CARD, resend=True, adopt=False)) == 0
     (runs.run_dir("t_issue") / "outbox").mkdir(parents=True)  # an issue card's hook outbox is not a run
-    assert core.recover(argparse.Namespace(card="t_issue", resend=False, adopt=False)) == 0
+    assert intake.recover(argparse.Namespace(card="t_issue", resend=False, adopt=False)) == 0
     assert seen == [(CARD, True, False), ("core", "t_issue")]
 
 
@@ -769,10 +772,10 @@ def test_an_unreadable_idle_file_restarts_the_idle_clock(board, run1, raw):
 def test_a_torn_prompt_seen_line_neither_hides_nor_swallows_evidence(run1):
     sha = __import__("hashlib").sha256(b"the brief").hexdigest()
     (run1 / "prompt-seen.jsonl").write_text('{"sha256": "x", "at"')  # a crash mid-append
-    core.prompt_seen(run1, {"prompt": "the brief"})
-    assert core.seen(run1, sha)
+    launcher.prompt_seen(run1, {"prompt": "the brief"})
+    assert launcher.seen(run1, sha)
     (run1 / "prompt-seen.jsonl").write_text(json.dumps({"sha256": sha}) + "\n" + '[1]\n{"sha2')
-    assert core.seen(run1, sha)
+    assert launcher.seen(run1, sha)
 
 
 def pasted(text, open_id="ef30", close_id="ef30"):
@@ -783,17 +786,17 @@ def pasted(text, open_id="ef30", close_id="ef30"):
 def test_a_prompt_claude_wrapped_as_a_paste_is_seen_as_the_exact_text_sent(run1):
     sha = lambda text: __import__("hashlib").sha256(text.encode()).hexdigest()  # noqa: E731
     brief = "the brief\nwith a second line"
-    core.prompt_seen(run1, {"prompt": pasted(brief)})
-    assert core.seen(run1, sha(brief)) and core.seen(run1, sha(pasted(brief)))
-    assert not core.seen(run1, sha(brief + " "))
-    assert not core.seen(run1, None) and not core.seen(run1, "")
+    launcher.prompt_seen(run1, {"prompt": pasted(brief)})
+    assert launcher.seen(run1, sha(brief)) and launcher.seen(run1, sha(pasted(brief)))
+    assert not launcher.seen(run1, sha(brief + " "))
+    assert not launcher.seen(run1, None) and not launcher.seen(run1, "")
 
 
 @pytest.mark.parametrize("prompt", [pasted("the brief", close_id="ab12"), "note " + pasted("the brief"),
                                     pasted("the brief") + "more", pasted("the brief")[2:]])
 def test_anything_but_the_exact_paste_wrapper_is_not_the_text_inside_it(run1, prompt):
-    core.prompt_seen(run1, {"prompt": prompt})
-    assert not core.seen(run1, __import__("hashlib").sha256(b"the brief").hexdigest())
+    launcher.prompt_seen(run1, {"prompt": prompt})
+    assert not launcher.seen(run1, __import__("hashlib").sha256(b"the brief").hexdigest())
 
 
 def test_save_json_syncs_before_it_replaces(tmp_path, monkeypatch):
@@ -808,7 +811,7 @@ def test_flush_marks_a_run_closed_only_under_its_launch_lock(board, run1):
     board.update(agent="idle", prs=[PR])
     runs.flush()
     board["cursor"] = board["seq"]
-    with core.launch_lock(run1):
+    with launcher.launch_lock(run1):
         runs.flush()
     assert json.loads((run1 / "run.json").read_text()).get("closed") is None
     assert "another launch or recover" in runs.log_path().read_text()
@@ -820,7 +823,7 @@ def test_an_ad_hoc_proposal_is_a_ledger_comment_and_the_next_ask_carries_it(boar
     design = tmp_path / "design.md"
     design.write_text("## Approach\nOne propose hook.")
     monkeypatch.setattr("sys.stdin", io.StringIO(""))  # the agent's shell: no hook payload
-    assert runs.hook(argparse.Namespace(card=CARD, event="propose", url=str(design))) == 0
+    assert adhoc.hook(argparse.Namespace(card=CARD, event="propose", url=str(design))) == 0
     head = f"Proposal v1 {hashlib.sha256(design.read_bytes()).hexdigest()[:12]}"
     assert capsys.readouterr().out == f"proposal: {head} on ledger {CARD}\n"
     assert board["comments"][CARD] == [f"{head}\n\n## Approach\nOne propose hook."]
@@ -837,7 +840,7 @@ def test_an_ad_hoc_proposal_is_a_ledger_comment_and_the_next_ask_carries_it(boar
 def test_an_ad_hoc_propose_without_a_run_fails_loudly(board, tmp_path, capsys):
     design = tmp_path / "design.md"
     design.write_text("plan")
-    assert runs.hook(argparse.Namespace(card="t_nope", event="propose", url=str(design))) == 1
+    assert adhoc.hook(argparse.Namespace(card="t_nope", event="propose", url=str(design))) == 1
     assert "no run t_nope" in capsys.readouterr().err and not runs.run_dir("t_nope").exists()
 
 
@@ -853,7 +856,7 @@ def test_an_ad_hoc_approval_requests_posttooluse_closes_its_wait(board, run1, mo
     design = tmp_path / "design.md"
     design.write_text("plan")
     monkeypatch.setattr("sys.stdin", io.StringIO(""))
-    runs.hook(argparse.Namespace(card=CARD, event="propose", url=str(design)))
+    adhoc.hook(argparse.Namespace(card=CARD, event="propose", url=str(design)))
     ask = {"tool_name": "AskUserQuestion", "tool_input": {"questions": [{"question": "Approve?", "header": "Approval"}]}}
     fire(monkeypatch, "notification", message="", **ask)
     capsys.readouterr()
@@ -865,7 +868,7 @@ def test_an_ad_hoc_approval_request_whose_outbox_save_fails_is_denied_and_keeps_
     design = tmp_path / "design.md"
     design.write_text("plan")
     monkeypatch.setattr("sys.stdin", io.StringIO(""))
-    runs.hook(argparse.Namespace(card=CARD, event="propose", url=str(design)))
+    adhoc.hook(argparse.Namespace(card=CARD, event="propose", url=str(design)))
     capsys.readouterr()
     real = runs.enqueue
 
@@ -1009,7 +1012,7 @@ def test_a_stale_build_request_cannot_merge(revised, monkeypatch):
 
 def test_launch_asks_for_the_runs_topic_before_subscribing_in_it(board, clone, monkeypatch):
     order = []
-    monkeypatch.setattr(core, "topic", lambda card, repo, title, issue=None, branch=None:
+    monkeypatch.setattr(launcher, "topic", lambda card, repo, title, issue=None, branch=None:
                         order.append(("topic", card, repo, title, branch)))
     real = core.subscribe
     monkeypatch.setattr(core, "subscribe", lambda card, ledger=None: (order.append(("subscribe", card, ledger)),
@@ -1032,7 +1035,7 @@ def test_hooks_and_a_verified_pr_leave_observations_for_the_status_message(board
     fire(monkeypatch, "stop", hook_event_name="Stop")  # no pull request yet: not review-ready
     assert sorted(p.name for p in progress.activity(CARD).iterdir()) == ["launched", "prompt", "stop", "tool"]
     board["prs"] = [PR]
-    fire(monkeypatch, "stop", hook_event_name="Stop")  # runs.complete: the ad-hoc run's verified completion
+    fire(monkeypatch, "stop", hook_event_name="Stop")  # adhoc.complete: the ad-hoc run's verified completion
     assert board["cards"][CARD] == "done"
     assert (progress.activity(CARD) / "review").read_text() == PR["url"]
 

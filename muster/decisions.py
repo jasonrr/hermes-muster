@@ -18,10 +18,10 @@ import sys
 import time
 from pathlib import Path
 
-from . import config, core, events, progress
+from . import config, core, events, launcher, progress
 
 OPEN = ("open", "answered", "executing")
-DELIVERED = "✓ Feedback delivered · revision pending"  # a feedback request the prompt hook saw arrive (core.seen)
+DELIVERED = "✓ Feedback delivered · revision pending"  # a feedback request the prompt hook saw arrive (launcher.seen)
 SENT = (DELIVERED, "Sent ✓")  # its outcome now, and before #48
 ANSWER_SENT = "Answer sent to the builder"  # a question the pane's hook answered (bridge.deliver)
 TERMINAL = ("done", "failed", "stale")
@@ -197,7 +197,7 @@ def rereview(ledger, run=None):
     The ledger stays `done`. The cheap local check comes first: no delivered send-back, no git or gh call.
     The review card's idempotency key holds the head, so a repeated call, retry or replay finds it.
     """
-    from . import runs  # runs imports events, which imports core
+    from . import adhoc  # adhoc imports events, which imports decisions
 
     sent = next((r for r in for_ledger(ledger, "feedback") if r["status"] == "done" and r.get("outcome") in SENT),
                 None)
@@ -207,7 +207,7 @@ def rereview(ledger, run=None):
     if not Path(run.get("worktree") or "/nonexistent").is_dir():
         core.log("decisions", f"rereview {ledger}: worktree gone")
         return None, "worktree gone"
-    pr, why = runs.verify(run)
+    pr, why = adhoc.verify(run)
     if why:
         return None, why
     head = pr["headRefOid"]
@@ -740,7 +740,7 @@ def reconcile(req):
     sha, evidence = req.get("prompt_sha"), (req.get("run") or {}).get("evidence_dir")
     if req.get("kind") != "feedback" or req.get("status") != "open" or not sha or not evidence:
         return False
-    return core.seen(evidence, sha) and delivered(transition(req["id"], ("open",), "done", outcome=DELIVERED))
+    return launcher.seen(evidence, sha) and delivered(transition(req["id"], ("open",), "done", outcome=DELIVERED))
 
 
 def delivered(moved):
@@ -766,8 +766,8 @@ def _send(req, boot):
     if not evidence:
         fail(rid, "this run predates delivery evidence; send it in the pane")
         return
-    if not core.seen(evidence, sha):
-        agent = core.agent_at(run["pane"]) if run.get("pane") else None
+    if not launcher.seen(evidence, sha):
+        agent = launcher.agent_at(run["pane"]) if run.get("pane") else None
         if agent is None:
             _retry(req, "the agent is gone")
             return
@@ -775,12 +775,12 @@ def _send(req, boot):
             _retry(req, "the agent is busy; nothing sent")
             return
         try:
-            core.herdr_result("agent", "prompt", run["pane"], wire, "--wait", "--until", "working", "--until",
+            launcher.herdr_result("agent", "prompt", run["pane"], wire, "--wait", "--until", "working", "--until",
                               "blocked", "--timeout", "30000")
         except core.CommandError as caught:  # not proof the prompt did not arrive: the hook's evidence decides
             core.log("decisions", f"{rid}: herdr prompt: {caught}")
     end = time.monotonic() + SEEN_WAIT
-    while not core.seen(evidence, sha):
+    while not launcher.seen(evidence, sha):
         if time.monotonic() >= end:
             _retry(req, "not confirmed delivered")
             return
@@ -814,7 +814,7 @@ def _recover(req):
         evidence = run_of(req["ledger"]).get("evidence_dir")
         if not sha or not evidence:
             fail(rid, "interrupted; cannot confirm delivery")
-        elif core.seen(evidence, sha):
+        elif launcher.seen(evidence, sha):
             delivered(transition(rid, ("executing",), "done", outcome=DELIVERED))
         else:
             _retry(req, "interrupted; not confirmed delivered")

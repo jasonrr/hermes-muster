@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from muster import cleanup, config, core, decisions, hold, runs
+from muster import adhoc, cleanup, config, core, decisions, hold, intake, launcher
 
 GOLDEN = Path(__file__).parent / "golden"
 ROOT = Path(__file__).resolve().parent.parent
@@ -34,13 +34,13 @@ def render(monkeypatch):
     out = {}
     repo, other = "Radical-Candor-LLC/radicalcandorai", "Radical-Candor-LLC/RC-Data-Tools"
     auto = {"login": "bot{x}`$z`", "id": 7, "label": 'auto"q"'}
-    out["issue-bug-human-bot"] = core.brief(repo, 12, True, base="main")
-    out["issue-feature-auto-nonote"] = core.brief(other, 3, False, base="dev{x}", auto=auto)
+    out["issue-bug-human-bot"] = intake.brief(repo, 12, True, base="main")
+    out["issue-feature-auto-nonote"] = intake.brief(other, 3, False, base="dev{x}", auto=auto)
     monkeypatch.setitem(config.settings, "gh_config_dir", "")
-    out["issue-feature-human-nobot"] = core.brief(repo, 4, False)
-    out["launch-envelope"] = core.startup_prompt(NASTY + core.reuse_note({"commits": 2, "uncommitted": "3{x}"}))
+    out["issue-feature-human-nobot"] = intake.brief(repo, 4, False)
+    out["launch-envelope"] = launcher.startup_prompt(NASTY + launcher.reuse_note({"commits": 2, "uncommitted": "3{x}"}))
     run = {"card": "t_{c}$d", "repo": "o/r`x`", "branch": "feat/a{b}", "base": "ma$in"}
-    out["ad-hoc-footer"] = runs.footer(run)
+    out["ad-hoc-footer"] = adhoc.footer(run)
     req = {"origin": None, "id": "r{1}$q", "cycle": 2, "pr": "https://github.com/o/r/pull/1?$a={b}"}
     out["revision-issue"] = decisions.wire_text(req, {"kind": "issue"}, NASTY)
     out["revision-ad-hoc"] = decisions.wire_text({**req, "origin": "o`r`"}, {"kind": "adhoc"}, NASTY)
@@ -93,10 +93,10 @@ def test_the_workflow_override_replaces_the_bundled_workflow_in_the_brief(tmp_pa
     custom = tmp_path / "w.md"
     custom.write_text("\n  My own ${rules} {here}\n")
     monkeypatch.setitem(config.settings, "workflow_prompt_file", str(custom))
-    text = core.brief("o/r", 1, False)
+    text = intake.brief("o/r", 1, False)
     assert "## How to work\n\nMy own ${rules} {here}\n\n## Production" in text
     assert (config.PROMPTS / "builder-workflow.md").read_text().splitlines()[0] not in text
-    footer = runs.footer({"card": "t_1", "repo": "o/r", "branch": "feat/a", "base": "main"})
+    footer = adhoc.footer({"card": "t_1", "repo": "o/r", "branch": "feat/a", "base": "main"})
     assert footer.endswith("## How to work\n\nMy own ${rules} {here}\n")
 
 
