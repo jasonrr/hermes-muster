@@ -1,3 +1,5 @@
+> **Historical record (2026-10-17).** Not operating instructions: later work may have changed what this describes. Current behavior is in the [README](../../README.md).
+
 # Run progress: confirmed start and observed activity (issue #46) — design v2
 
 ## Problem

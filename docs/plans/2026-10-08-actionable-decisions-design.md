@@ -1,3 +1,5 @@
+> **Historical record (2026-10-08).** Not operating instructions: later work may have changed what this describes. Current behavior is in the [README](../../README.md).
+
 # Design v2: actionable channel decisions (issue #17)
 
 ## Problem

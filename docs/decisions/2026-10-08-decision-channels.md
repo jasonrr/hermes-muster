@@ -1,3 +1,5 @@
+> **Historical record (2026-10-08).** Not operating instructions: later work may have changed what this describes. Current behavior is in the [README](../../README.md).
+
 # Decision channels: the transport-neutral core and the adapter contract (issue #17, 2026-10-08)
 
 Telegram is the first decision surface. Slack is the second (design `docs/plans/2026-10-17-channels-design.md`).

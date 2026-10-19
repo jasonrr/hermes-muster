@@ -1,3 +1,5 @@
+> **Historical record (2026-10-07).** Not operating instructions: later work may have changed what this describes. Current behavior is in the [README](../../README.md).
+
 # Plan: hardening batch (issue #7)
 
 Approved design: the ten items of issue #7. Item 5 keeps herdr's native layout. `config.require()`

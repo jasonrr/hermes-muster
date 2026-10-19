@@ -1,3 +1,5 @@
+> **Historical record (2026-10-18).** Not operating instructions: later work may have changed what this describes. Current behavior is in the [README](../../README.md).
+
 <!-- Versioned copy of Jason's approved UX audit (source: ~/muster-human-collaboration-ux.md, copied 2026-10-18). Sections marked "Verified"/"Confirmed" describe Muster as installed at 3703f29; "Proposed" sections and message examples are design, not shipped behavior. PR #47 (activity status) merged to main after this audit as 07c7422; it is not deployed. -->
 
 # Muster: collaborate with a human

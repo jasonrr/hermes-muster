@@ -1,3 +1,5 @@
+> **Historical record (2026-10-08).** Not operating instructions: later work may have changed what this describes. Current behavior is in the [README](../../README.md).
+
 # Plan: Project status on launch (issue #3)
 
 Approved design: four settings (`project_owner`, `project_number`, `project_status_field`,

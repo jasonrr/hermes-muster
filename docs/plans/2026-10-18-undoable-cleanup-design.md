@@ -1,3 +1,5 @@
+> **Historical record (2026-10-18).** Not operating instructions: later work may have changed what this describes. Current behavior is in the [README](../../README.md).
+
 # Design and plan: undoable worktree cleanup (card t_b8907f9d)
 
 Status: Proposal v1 01f6de62ee5f approved 2026-10-18 (D1a, D2a, D3a), and implementation on this branch approved. Built as

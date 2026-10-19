@@ -1,6 +1,6 @@
 name: muster
 version: "0.1.0"
-description: One named human labels a GitHub issue; muster opens a herdr worktree pane, starts your coding agent with a brief, and reports blocked/done to a Hermes kanban card. Disclosure — shells out to gh, git, herdr and hermes; starts interactive agent panes on this machine; uses your gh login (or a GH_CONFIG_DIR you name); writes worktrees under ~/.herdr/worktrees; registers Telegram callback guards or Slack action handlers, for the selected platform only, and a pre_gateway_dispatch hook in the gateway; presents decisions with Hermes's own clarify prompts and approval cards on Telegram, and its own Block Kit messages on Slack; with notify_topics, keeps one Telegram forum topic or Slack thread per run; merges a pull request only on an approver's tap.
+description: Brings human-directed coding agents into your workflow. An approved GitHub issue or an ad-hoc request becomes a Claude Code run in a herdr worktree pane, tracked on a Hermes kanban card; questions, design approvals, build reviews and merges are decided in Telegram or Slack, and finished workspaces are cleaned up. Disclosure — shells out to gh, git, herdr and hermes; starts interactive agent panes on this machine; uses your gh login (or a GH_CONFIG_DIR you name); writes worktrees under ~/.herdr/worktrees and removes finished ones after backing up unsaved work; registers Telegram callback guards or Slack action handlers, for the selected platform only, and a pre_gateway_dispatch hook in the gateway; presents decisions with Hermes's own clarify prompts and approval cards on Telegram, and its own Block Kit messages on Slack; with notify_topics, keeps one Telegram forum topic or Slack thread per run; merges a pull request only on an approver's tap.
 manifest_version: 2
 provides_hooks: [pre_gateway_dispatch]
 license: MIT
@@ -25,7 +25,7 @@ config_schema:
   coordinator_name: {type: str, default: Coordinator, description: "The Hermes agent's name in muster's messages (\"Ella is reviewing\")"}
   gh_config_dir: {type: str, default: "", description: Optional GH_CONFIG_DIR for a bot login used by gh/git in the pane}
   notes_dir: {type: str, default: "", description: Per-repo production notes; empty = plugin-data/muster/repos}
-  workflow_prompt_file: {type: str, default: "", description: Overrides prompts/workflow.md in the brief}
+  workflow_prompt_file: {type: str, default: "", description: Replaces prompts/builder-workflow.md in every brief}
   worktrees: {type: str, default: "~/.herdr/worktrees"}
   project_owner: {type: str, default: "", description: "Optional GitHub Project (v2) owner; with project_number, its status moves on launch. Empty = off"}
   project_number: {type: int, default: 0, description: "That Project's number (gh project view <number> --owner <owner>); set both or neither"}

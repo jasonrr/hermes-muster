@@ -1,3 +1,5 @@
+> **Historical record (2026-10-17).** Not operating instructions: later work may have changed what this describes. Current behavior is in the [README](../../README.md).
+
 # Run progress — implementation plan (issue #46)
 
 Design: `docs/plans/2026-10-17-run-progress-design.md` (approved v2, Proposal v2 11cdee175c5f).

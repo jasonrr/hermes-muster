@@ -1,3 +1,5 @@
+> **Historical record (2026-10-08).** Not operating instructions: later work may have changed what this describes. Current behavior is in the [README](../../README.md).
+
 # Plan: proposal snapshots on cards (issue #14)
 
 Approved design (2026-10-08, with three changes after reading #17): the agent saves its plan/design

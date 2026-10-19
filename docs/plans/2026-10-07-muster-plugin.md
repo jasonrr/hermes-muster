@@ -1,3 +1,5 @@
+> **Historical record (2026-10-07).** Not operating instructions: later work may have changed what this describes. Current behavior is in the [README](../../README.md).
+
 # Plan: muster v1 — port rc-intake into a Hermes plugin
 
 - **Goal:** `hermes-muster` is an installable Hermes plugin (`hermes plugins install <path|git url>`) that does what `~/Code/hermes-rc-engineering-intake/scripts/{rc_intake,rc_event,rc_run,rc_cleanup}.py` do today, with every RC constant replaced by plugin config, Claude Code as the only v1 agent kind, and no tally dependency.
