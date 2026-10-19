@@ -13,8 +13,6 @@ Merge.
   on your plan, your workload and its usage limits.
 - **See the work.** Every run is a real terminal pane in herdr. Watch it or type
   into it at any time.
-- **Decide from your phone.** Questions, permission prompts, design approvals and merges arrive as
-  messages with buttons. Nothing merges without you.
 - **No leftovers.** Finished worktrees are removed, and unsaved work is backed up first.
 
 Muster supports **Claude Code** only. Because each run is a plain herdr pane, other coding agents, or
