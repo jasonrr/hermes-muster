@@ -933,10 +933,24 @@ def test_a_tap_on_a_build_request_runs_the_action_and_settles_it(hermes):
         await until(lambda: decisions.load(req["id"])["status"] == "done")
 
     run(go())
-    assert decisions.load(req["id"])["outcome"] == "Left open. Not merged."
+    assert decisions.load(req["id"])["outcome"].startswith("⏸ Left open\n")
 
 
-def test_build_free_text_becomes_a_feedback_request_that_the_next_scan_presents(hermes):
+def test_an_ended_decision_card_on_telegram_reads_as_its_outcome_first(hermes):
+    req = decisions.create("build", "led1", run={"branch": "b"}, pr="https://github.com/o/r/pull/9", status="done",
+                           outcome=decisions.DELIVERED, resolved="Fix the null case.",
+                           presented={"platform": "telegram", "messages": {"0": ["m1"]}}, questions=[{"text": "R"}])
+    assert run(telegram.outcome(req)) is True
+    text = telegram.T.adapter.edits[-1][2]
+    assert text.startswith("↩️ Sent back · PR #9 · ") and "Your feedback reached the builder; revisions are pending." \
+        in text and text.endswith("> Fix the null case.") and "**" not in text
+
+
+def test_build_free_text_is_sent_back_with_the_humans_words_and_no_second_confirmation(hermes, monkeypatch):
+    def no_run(ledger):
+        raise core.CommandError(f"no run found for card {ledger}")
+
+    monkeypatch.setattr(decisions, "run_of", no_run)
     q = {"text": "R", "header": "Build", "multi": False, "options": [{"label": "Do nothing", "description": ""}]}
     req = decisions.create("build", "led1", run={"repo": "o/r", "branch": "b", "pane": "p1"}, actions=["nothing"],
                            choices=[["Do nothing"]], questions=[q], head="h" * 40, base="main", pr="u", cycle=1,
@@ -950,8 +964,9 @@ def test_build_free_text_becomes_a_feedback_request_that_the_next_scan_presents(
     run(go())
     (fb,) = decisions.for_ledger("led1", "feedback")
     assert fb["feedback"] == "Fix it.\n\nAdditional instructions from the human:\nplease also add docs"
-    assert fb["choices"] == [["Send feedback to builder", "Don't send"]]
-    assert [[b for b, _ in m["buttons"]] for m in sent()] == [["Send feedback to builder", "Don't send", fh.OTHER]]
+    # sent at once (this run has no record, so the send fails visibly), never offered again to confirm
+    assert fb["status"] == "failed" and decisions.load(req["id"])["outcome"].startswith("⚠️ Needs attention\n")
+    assert sent() == []
 
 
 def test_a_scan_retires_an_open_retry_whose_send_arrived_late_and_presents_nothing(tmp_path):
@@ -2031,12 +2046,12 @@ def test_a_question_shows_waiting_at_once_below_nothing_and_its_answer_ends_it(c
     req = ask(ledger=P)
     at("tool", NOW)  # a parallel worker's tool: the question is still open
     run(gateway.scan())
-    assert "Needs your decision: question · since" in telegram.T.adapter.edits[-1][2]
+    assert "🟡 Your decision: question · since" in telegram.T.adapter.edits[-1][2]
     assert int(sent()[-1]["mid"]) > int(status_id)  # the question lands below the status message, never above
     decisions.transition(req["id"], ("open",), "done", outcome=decisions.ANSWER_SENT)
     run(gateway.scan())
     [*_, last] = [text for _, mid, text in telegram.T.adapter.edits if mid == status_id]  # not the question's own edit
-    assert "Needs your decision" not in last and "last activity" in last
+    assert "Your decision" not in last and "last activity" in last
 
 
 def test_a_restart_never_posts_a_second_status_message(clock, monkeypatch):

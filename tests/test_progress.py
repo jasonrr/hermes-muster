@@ -46,7 +46,7 @@ def test_a_verified_review_outranks_a_missing_receipt():
     directory = launched()
     received(directory, NOW - 60, sha="other")  # no matching receipt record
     at("review", NOW - 600, "https://github.com/o/r/pull/9")
-    assert state() == (f"review:{NOW - 600}", "PR #9 opened · Coordinator is reviewing · no action needed", False)
+    assert state() == (f"review:{NOW - 600}", "🔍 Coordinator is reviewing PR #9 · nothing to decide yet", False)
 
 
 def test_a_turn_end_outranks_a_missing_receipt():
@@ -122,7 +122,7 @@ def test_an_open_question_stays_waiting_whatever_tool_finishes():
     at("tool", NOW - 10)  # a parallel subagent's tool, newer than the question
     key, text, _ = state(waits=[(NOW - 300, "question"), (NOW - 100, "question"), (NOW - 50, "permission")])
     assert key == f"waiting:3:{NOW - 300}"
-    assert text == f"Needs your decision: 2 questions, permission · since {hm(NOW - 300)}"
+    assert text == f"🟡 Your decision: 2 questions, permission · since {hm(NOW - 300)}"
 
 
 def test_once_the_request_ends_the_message_shows_activity_again():
@@ -141,7 +141,7 @@ def test_review_ready_until_a_send_back_arrives():
     at("stop", NOW - 580)
     key, text, _ = state()
     assert key == f"review:{NOW - 600}"
-    assert text == "PR #9 opened · Coordinator is reviewing · no action needed"
+    assert text == "🔍 Coordinator is reviewing PR #9 · nothing to decide yet"
     at("prompt", NOW - 60)  # the send-back
     at("tool", NOW - 30)
     assert state()[0] == "working"
@@ -151,7 +151,7 @@ def test_an_empty_review_file_still_reads():
     directory = launched()
     received(directory, NOW - 3000)
     at("review", NOW - 600)
-    assert state()[1] == "the pull request opened · Coordinator is reviewing · no action needed"
+    assert state()[1] == "🔍 Coordinator is reviewing the pull request · nothing to decide yet"
 
 
 def test_a_turn_end_with_nothing_open_says_the_agent_waits_at_its_prompt():
@@ -174,9 +174,9 @@ def test_session_end():
 def test_finished_only_once_the_work_resolved():
     launched()
     assert state(ref={"state": "closed", "closed_by": "human"})[0] == "launched"  # a human's close is not finished
-    assert state(ref={"state": "closing", "resolved_at": 5}) == ("finished", "Finished · the pull request merged", True)
+    assert state(ref={"state": "closing", "resolved_at": 5}) == ("finished", "✅ Finished · the pull request merged", True)
     at("review", NOW - 600, "https://github.com/o/r/pull/9")
-    assert state(ref={"state": "closing", "resolved_at": 5})[1] == "Finished · PR #9 merged"
+    assert state(ref={"state": "closing", "resolved_at": 5})[1] == "✅ Finished · PR #9 merged"
 
 
 def test_archived_is_final():
@@ -250,7 +250,7 @@ def test_an_approval_under_review_alone_reads_reviewing_not_needs_your_decision(
     reqs = [ask("a", "Approval", pin=PIN)]
     assert progress.needs(reqs) == {L: []}
     assert state(waits=progress.needs(reqs)[L]) == (f"reviewing:{NOW - 600}",
-                                                    "Coordinator is reviewing design v2 · no action needed", False)
+                                                    "🔍 Coordinator is reviewing design v2 · nothing to decide yet", False)
 
 
 def test_a_separate_question_or_permission_still_needs_your_decision_while_a_plan_is_reviewed():
@@ -260,7 +260,7 @@ def test_a_separate_question_or_permission_still_needs_your_decision_while_a_pla
     reqs = [ask("a", "Approval", pin=PIN), ask("q", "Which?"), ask("p", kind="permission")]
     waits = progress.needs(reqs)[L]
     assert [w for _, w in waits] == ["question", "permission"]
-    assert state(waits=waits)[1] == f"Needs your decision: question, permission · since {hm(NOW - 100)}"
+    assert state(waits=waits)[1] == f"🟡 Your decision: question, permission · since {hm(NOW - 100)}"
 
 
 def test_a_bundled_approval_counts_only_its_other_questions_while_under_review():
@@ -297,14 +297,14 @@ def test_delivered_feedback_reads_revision_pending_until_the_revision_is_reviewe
     at("prompt", NOW - 600)
     at("revision", NOW - 600)
     at("tool", NOW - 120)
-    assert state() == (f"revision:{NOW - 600}", f"Feedback delivered {hm(NOW - 600)} · revision pending · last "
+    assert state() == (f"revision:{NOW - 600}", f"↩️ Feedback delivered {hm(NOW - 600)} · revisions pending · last "
                                                 f"activity 2 min ago ({hm(NOW - 120)})", False)
     at("review", NOW - 60, "https://github.com/o/r/pull/9")  # the revision, verified
-    assert state()[1] == "PR #9 opened · Coordinator is reviewing · no action needed"
+    assert state()[1] == "🔍 Coordinator is reviewing PR #9 · nothing to decide yet"
 
 
 def test_a_decision_outlives_the_builders_session():
     directory = launched()
     received(directory, NOW - 3000)
     at("end", NOW - 300)
-    assert state(waits=[(NOW - 100, "PR #9")])[1] == f"Needs your decision: PR #9 · since {hm(NOW - 100)}"
+    assert state(waits=[(NOW - 100, "PR #9")])[1] == f"🟡 Your decision: PR #9 · since {hm(NOW - 100)}"

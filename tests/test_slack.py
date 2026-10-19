@@ -783,7 +783,7 @@ def test_a_resolved_threads_parent_is_left_to_its_lifecycle(threads):
     conversation.update(P, resolved_at=1000, state="closing")
     tick(threads)
     assert progress.load(P)["final"] is True
-    assert threads.client.updates[-1]["text"].endswith("\nFinished · the pull request merged")
+    assert threads.client.updates[-1]["text"].endswith("\n✅ Finished · the pull request merged")
     asyncio.run(slack.parent({**conversation.load(P), "parent_text": "reopened"}))  # reopened later for new work
     assert threads.client.updates[-1]["text"].endswith("\nReopened for a new request")  # never a finished line
 
@@ -890,6 +890,8 @@ def test_a_long_review_is_its_own_message_whole_and_the_card_keeps_its_deploy_ca
     assert card["text"] == "PR #9 · Fix it\nCoordinator recommends: merge"  # notification text: the lead, not the review
     asyncio.run(gateway.scan())
     assert len(channel.client.posts) == 2  # the detail is posted once
+    # the card links the review just above it: Slack must not unfurl that link into a second copy of the review
+    assert all(p["unfurl_links"] is False and p["unfurl_media"] is False for p in channel.client.posts)
 
 
 def detail_ts(req):
@@ -962,7 +964,8 @@ def test_question_then_review_shows_one_live_approval_surface_then_recorded_then
     asyncio.run(gateway.scan())
     (first,) = channel.client.posts
     first_ts = ts_of(q)
-    assert texts(first["blocks"]).startswith("*Design v2 ready · Issue #7*\nCoordinator is reviewing. No action needed.")
+    assert texts(first["blocks"]).startswith("*🔍 Design v2 · Issue #7*\nCoordinator is reviewing design v2; the "
+                                            "recommendation comes next. Nothing to decide yet.")
     buttons = [e["text"]["text"] for b in first["blocks"] if b["type"] == "actions" for e in b["elements"]]
     assert buttons == ["Approve without Coordinator's review", "Revise"]  # the early path, labelled
     d = design_card()
@@ -981,8 +984,11 @@ def test_question_then_review_shows_one_live_approval_surface_then_recorded_then
     decisions.transition(q["id"], ("answered",), "done", outcome=decisions.ANSWER_SENT)  # the pane's bridge delivered it
     asyncio.run(gateway.scan())
     asyncio.run(gateway.scan())
-    assert decisions.load(d["id"])["outcome"] == "Approval of design v2 delivered to the builder"
-    assert channel.client.updates[-1]["text"] == "Approval of design v2 delivered to the builder"
+    assert decisions.load(d["id"])["outcome"].startswith("✅ Approved\nThe builder received your approval of design v2.")
+    settled = texts(channel.client.updates[-1]["blocks"])  # the outcome leads; the request and its buttons are gone
+    assert settled.startswith("*✅ Approved · Design v2 · Issue #7*\nThe builder received your approval")
+    assert "recommends" not in settled and not [b for b in channel.client.updates[-1]["blocks"] if b["type"] in (
+        "actions", "input")]
     assert len(channel.client.posts) == 2  # nothing asked twice
 
 
@@ -993,10 +999,10 @@ def test_review_before_the_question_never_posts_the_question_and_leave_pending_b
     asyncio.run(gateway.scan())
     assert len(channel.client.posts) == 1  # the review is the one surface; the builder's question is not shown
     tap(channel, d, 0, "muster_choice_2", value=f"{d['id']}|0|2", message_ts=ts_of(d))  # Leave pending
-    assert decisions.load(d["id"])["outcome"] == "Left pending. The builder's question about design v2 stays open."
+    assert decisions.load(d["id"])["outcome"] == "⏸ Left pending\nThe builder's question about design v2 stays open."
     asyncio.run(gateway.scan())
     again = channel.client.posts[-1]
-    assert len(channel.client.posts) == 2 and texts(again["blocks"]).startswith("*Design v2 · Issue #7*\nNeeds your decision.")
+    assert len(channel.client.posts) == 2 and texts(again["blocks"]).startswith("*🟡 Design v2 · Issue #7*\nNeeds your decision.")
     assert decisions.load(q["id"])["status"] == "open"
 
 

@@ -255,16 +255,19 @@ def review(ledger, proposal, title=None):
     """Wake the coordinator to review this version (muster:escalation): one card per version, as decisions.rereview.
 
     Keyed by version and hash, so a replay or the same text proposed again finds the card done and wakes no one.
-    Delivery mode `wake`: the coordinator's recommendation is the human's one message, not a ping before it.
+    Delivery mode notify+wake, as a finished build's: the ping says the review started, and Hermes posts the
+    coordinator's activity under it rather than under an older message. The version's pin (heading) is in the body.
     """
-    head = heading(proposal)
+    head, n = heading(proposal), proposal["version"]
+    who = config.settings.get("coordinator_name") or "Coordinator"
     card = json.loads(core.kanban(
-        "create", "--body", f"Design review. ledger {ledger} | {head}\n{core.PROVENANCE}" + attached(ledger, proposal),
-        "--idempotency-key", f"design:{ledger}:v{proposal['version']}:{proposal['sha']}", "--created-by",
-        core.CREATED_BY, "--json", "--", f"{title or ledger}: {head}, ready for design review"))
+        "create", "--body", f"Design review; {core.REVIEW_CUE}. ledger {ledger} | {head}\n{core.PROVENANCE}"
+        + attached(ledger, proposal),
+        "--idempotency-key", f"design:{ledger}:v{n}:{proposal['sha']}", "--created-by",
+        core.CREATED_BY, "--json", "--", f"{title or ledger}: design v{n} review"))
     if card["status"] == "ready":
-        core.subscribe(card["id"], ledger, mode="wake")
-        core.kanban("complete", card["id"], "--summary", f"{head} ready for design review; {core.REVIEW_CUE}")
+        core.subscribe(card["id"], ledger)
+        core.kanban("complete", card["id"], "--summary", f"🔍 {who} is reviewing design v{n}. Nothing to decide yet.")
         expect(card["id"], "done", "design")
     return f"design: {head} review card {card['id']}"
 

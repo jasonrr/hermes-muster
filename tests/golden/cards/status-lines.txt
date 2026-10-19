@@ -1,0 +1,6 @@
+🔍 PR #57 opened · Ella is reviewing it. Nothing to decide yet; nothing is merged or deployed. https://github.com/acme/app/pull/57
+🔍 Ella is reviewing design v1 · nothing to decide yet
+🟡 Your decision: PR #57 · since HH:MM
+🔍 Ella is reviewing PR #57 · nothing to decide yet
+↩️ Feedback delivered HH:MM · revisions pending
+✅ Finished · PR #57 merged

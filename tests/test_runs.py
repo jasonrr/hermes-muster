@@ -923,8 +923,8 @@ def test_a_revised_pull_request_after_a_send_back_makes_a_ready_for_re_review_ca
     body = create[create.index("--body") + 1]
     assert CARD in body and PR["url"] in body and "abc" in body and "cycle 2" in body and core.PROVENANCE in body
     assert [c[5:] for c in calls(revised, "complete")] == [["t_wait1", "--summary",
-                                                           f"PR #7 updated to abc · Coordinator is re-reviewing. "
-                                                           f"No action needed. {PR['url']}"]]
+                                                           f"🔍 PR #7 updated · Coordinator is re-reviewing it. Nothing "
+                                                           f"to decide yet; nothing is merged or deployed. {PR['url']}"]]
     assert revised["mode"] == "notify+wake"
     assert revised["cards"][CARD] == "done" and calls(revised, "block") == [] and revised["comments"] == {}
     assert decisions.load(open_build)["status"] == "stale"

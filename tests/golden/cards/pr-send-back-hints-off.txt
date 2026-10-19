@@ -1,0 +1,13 @@
+│ *🟡 PR #9 · Make Muster docs a manual*
+│ *Ella recommends sending it back with this feedback:*
+│ > In README.md, remove “Decide from your phone” from the benefits list. Describe chat (Slack or
+│ Telegram) as where you make decisions, not as a distinguishing benefit. Change nothing else.
+│
+│ *Why*
+│ README still lists “Decide from your phone” as a benefit; you asked for chat to be described as the
+│ interface. Everything else meets the brief.
+│ Deploy on merge: none (documentation only).
+│
+│ [ Send back with this feedback ]*  [ Merge PR #9 ]  [ Leave PR open ]
+│
+│ Add to the feedback: [ … ]

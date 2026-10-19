@@ -96,6 +96,28 @@ def detail_label(req):
     return {"design": "Full review and design", "build": "Full review"}.get(req["kind"], "Full text")
 
 
+DECISIONS = ("build", "design", "feedback")  # cards whose text decisions writes, outcome first once they end
+
+
+def hints(req):
+    """True when req's message shows its how-to text: always for a builder's question or a permission, and for a
+    decision card unless the human turned `button_hints` off."""
+    return req["kind"] not in DECISIONS or bool(config.settings.get("button_hints", True))
+
+
+def settled(req):
+    """An ended decision card: its outcome as the headline and what follows, then what it sent. The request text and
+    its inputs go: nothing is left to decide."""
+    line = req.get("outcome") or req["status"]
+    head, _, rest = line.partition("\n")
+    if not rest:  # a one-line outcome (a refusal, a stale card): the line itself, under a plain headline
+        head, rest = ("⏹ Ended" if req["status"] == "stale" else "⚠️ Needs attention"), line
+    n = (req.get("proposal") or {}).get("version")
+    subject = f"Design v{n}" if req["kind"] == "design" else progress.pr_name(req.get("pr"))
+    sent = req.get("resolved")
+    return f"**{head} · {subject} · {title(req)}**\n{rest}" + (f"\n\n{decisions.quote(sent)}" if sent else "")
+
+
 def reviewing(req, n):
     """True for a builder's Approval question (decisions.approval_slot) whose design version still waits for the
     coordinator's review: answering it skips that review."""
@@ -115,9 +137,9 @@ def lead(req, n):
         plan = f"Design v{(req.get('proposal') or {}).get('version')}"
         if reviewing(req, n):
             who = config.settings.get("coordinator_name") or "Coordinator"
-            return (f"**{plan} ready · {title(req)}**\n{who} is reviewing. No action needed.\n\n"
-                    f"To decide without {who}'s review, answer the builder's question:")
-        return f"**{plan} · {title(req)}**\nNeeds your decision."
+            return (f"**🔍 {plan} · {title(req)}**\n{who} is reviewing {plan.lower()}; the recommendation comes next. "
+                    f"Nothing to decide yet.\n\nTo decide now without {who}'s review, answer the builder's question:")
+        return f"**🟡 {plan} · {title(req)}**\nNeeds your decision."
     return f"**{title(req)}**" + (f" · question {n + 1} of {count}" if count > 1 else "")
 
 
@@ -140,6 +162,8 @@ def render(req, n, *, cap, label_max, tail, number_multi=True):
                 notes.append(f"• {name}: {o['description']}" if said else f"• {name}")
         return "\n\n".join([*head, body, *(["\n".join(notes)] if notes else []), *tail])
 
+    if req.get("hints") and hints(req):  # kept whole like the tail: a cap cuts the reason first
+        tail = ["**What each button does**\n" + "\n".join(req["hints"]), *tail]
     text = build(True, q["text"])
     if len(text) > cap:
         tail.append("Some option details did not fit in this message.")

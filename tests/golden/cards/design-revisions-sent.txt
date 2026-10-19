@@ -1,0 +1,4 @@
+│ *↩️ Revisions sent · Design v2 · Make Muster docs a manual*
+│ The builder received your revisions to design v2; a new version is pending.
+│
+│ > Keep the launcher and intake in one module until the split is needed.
