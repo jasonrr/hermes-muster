@@ -1,6 +1,6 @@
 # Architecture
 
-This page shows how a piece of work moves through muster's code. The [README](../README.md) covers what muster does and how to configure it.
+This page shows how a piece of work moves through muster's code. The [README](../README.md) covers what muster does, and [Setup](setup.md) and [Reference](reference.md) cover configuration and commands.
 
 ## The path of one run
 
