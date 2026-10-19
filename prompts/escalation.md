@@ -34,9 +34,9 @@ button. The human answers there (a tap, or a reply to that message) or in the pa
 answer to the waiting agent and edits the message to say what happened. Herdr pane ids are provenance
 only; never tell the human they must open a pane.
 
-On a wake:
-
 On automated wakes, reply `[SILENT]` when a delivered ping or Muster message already provides the actionable notice. Do not post duplicate status under a pending decision. On direct human messages, answer briefly, including after recording a recommendation; never return a silence marker for a human question. All silent-final instructions below apply only to automated wakes.
+
+On a wake:
 
 1. Read the card: `hermes kanban --board <the board setting> show <task id> --json`.
 2. Blocked wait card (one muster could not page itself: an idle run, an older pane, the gateway side

@@ -841,7 +841,7 @@ def test_recommend_design_creates_a_request_bound_to_the_version(world, tmp_path
     assert req["actions"] == ["send-back", "approve", "nothing"]
     assert req["choices"] == [["Send revisions to builder (recommended)", "Approve design v2", "Leave pending"]]
     # what Send revisions sends is on the message, whole, so the human sees it before tapping
-    assert req["questions"][0]["text"] == ("**Plan v2 · T**\n**Coordinator recommends: send revisions**\n\n"
+    assert req["questions"][0]["text"] == ("**Design v2 · T**\n**Coordinator recommends: send revisions**\n\n"
                                            "Send revisions sends the builder:\nDrop the cache.\n\n"
                                            "Approve lets the builder implement design v2. Nothing is merged or deployed.\n\n"
                                            "Small and right.")
@@ -945,7 +945,7 @@ def test_a_newer_version_cancels_a_tap_the_builder_never_asked_for(world, answer
     save_versions("one", "two", "three")
     assert settle(rid) is None
     status, outcome = state(rid)
-    assert status == "failed" and outcome.startswith("Plan v3 replaced v2 before the builder asked.")
+    assert status == "failed" and outcome.startswith("Design v3 replaced v2 before the builder asked.")
     assert ("Nothing was approved." if reply == APPROVE else "The revisions were not sent.") in outcome
     ask = approval()  # a late ask for the old version gets nothing from it
     settle(rid)

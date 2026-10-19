@@ -413,7 +413,7 @@ def recommend_design(args):
     sends = [f"Send revisions sends the builder:\n{feedback}"] if feedback else []  # whole: FEEDBACK_MAX
     # the revisions a tap sends, and what Approve does, come before the review: a long card cuts only the review,
     # which is whole above the card
-    text = "\n\n".join([f"**Plan v{n} · {short(run)}**\n{lead}", *sends,
+    text = "\n\n".join([f"**Design v{n} · {short(run)}**\n{lead}", *sends,
                          f"Approve lets the builder implement design v{n}. Nothing is merged or deployed.",
                          summary or review])
     req = create("design", args.ledger, run=run, proposal=pin, review=review, summary=summary, feedback=feedback,
@@ -636,7 +636,7 @@ def settle_design(req):
     if not req["intent"].get("question"):
         newest = (events.versions(ledger) or [0])[-1]
         if newest > pin["version"]:
-            fail(rid, f"Plan v{newest} replaced v{pin['version']} before the builder asked. {nothing}")
+            fail(rid, f"Design v{newest} replaced v{pin['version']} before the builder asked. {nothing}")
             return None
         _answer_approval(req)  # ended questions first, even with none open: never a later one after a human answer
         req = load(rid)

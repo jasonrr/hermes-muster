@@ -3,7 +3,7 @@ name: dispatch
 description: When the human asks you to send coding work to a herdr pane (not a labeled issue), launch it with `hermes muster launch` so the run reports itself, and open analysis workspaces with `hermes muster open`. A card that wakes you is `muster:escalation`'s, whatever kind of run it tracks.
 ---
 
-# muster run
+# muster dispatch
 
 ## Dispatch
 
@@ -11,7 +11,9 @@ Only when the human asks for coding work in a herdr pane.
 
 1. Write the brief to a file. Say what to build and how to check it. Muster appends the house workflow
    (`prompts/builder-workflow.md`: root cause first, design approval, minimal code, reviews, one PR) and the
-   rules for asking the human; do not restate them. Do not add "call back when done",
+   rules for asking the human; do not restate them. Carry only the approach and scope the human gave:
+   a brief that states them is the approved design and skips design approval, so never fill them in
+   yourself. Do not add "call back when done",
    "run hermes kanban complete" or any other callback line: the run reports itself.
 2. Run, with a new branch name each time (the branch must be `feat|fix|chore|deps/<name>`):
 

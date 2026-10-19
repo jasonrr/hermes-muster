@@ -918,7 +918,7 @@ def test_agent_text_is_escaped_before_hermes_formats_it(channel):
     assert slack.mrkdwn("<!channel> **bold** & <@U1>") == "&LT;!CHANNEL&GT; **BOLD** &AMP; &LT;@U1&GT;"
     assert seen == ["&lt;!channel&gt; **bold** &amp; &lt;@U1&gt;"]  # escaped first: no ping survives
     slack.T.adapter = None
-    assert slack.mrkdwn("**Plan v2** <b>") == "*Plan v2* &lt;b&gt;"  # without Hermes's converter, muster's own bold
+    assert slack.mrkdwn("**Design v2** <b>") == "*Design v2* &lt;b&gt;"  # without Hermes's converter, muster's own bold
 
 
 # -- one decision surface per design version ---------------------------------------------------------------------------
@@ -942,7 +942,7 @@ def design_card():
     labels = ["Approve design v2 (recommended)", "Send revisions to builder", "Leave pending"]
     return decisions.create("design", "led1", run={"repo": "o/r", "issue": 7, "branch": "muster/7"}, proposal=PLAN,
                             review="Fine.", feedback="Drop the cache.", actions=["approve", "send-back", "nothing"],
-                            choices=[labels], questions=[{"text": "**Plan v2 · Issue #7**\n**Coordinator recommends: "
+                            choices=[labels], questions=[{"text": "**Design v2 · Issue #7**\n**Coordinator recommends: "
                                                                   "approve**\n\nFine.", "header": "Design",
                                                           "multi": False, "options": [
                                                               {"label": x, "description": ""} for x in labels]}])
@@ -962,13 +962,13 @@ def test_question_then_review_shows_one_live_approval_surface_then_recorded_then
     asyncio.run(gateway.scan())
     (first,) = channel.client.posts
     first_ts = ts_of(q)
-    assert texts(first["blocks"]).startswith("*Plan v2 ready · Issue #7*\nCoordinator is reviewing. No action needed.")
+    assert texts(first["blocks"]).startswith("*Design v2 ready · Issue #7*\nCoordinator is reviewing. No action needed.")
     buttons = [e["text"]["text"] for b in first["blocks"] if b["type"] == "actions" for e in b["elements"]]
     assert buttons == ["Approve without Coordinator's review", "Revise"]  # the early path, labelled
     d = design_card()
     asyncio.run(gateway.scan())
     redirect = channel.client.updates[-1]
-    assert redirect["ts"] == first_ts and redirect["text"] == "Plan v2 ready · decide on Coordinator's review below."
+    assert redirect["ts"] == first_ts and redirect["text"] == "Design v2 ready · decide on Coordinator's review below."
     assert not [b for b in redirect["blocks"] if b["type"] in ("actions", "input")]  # no second set of controls
     card = channel.client.posts[-1]
     assert [b["type"] for b in card["blocks"]].count("actions") == 1 and len(channel.client.posts) == 2
@@ -996,7 +996,7 @@ def test_review_before_the_question_never_posts_the_question_and_leave_pending_b
     assert decisions.load(d["id"])["outcome"] == "Left pending. The builder's question about design v2 stays open."
     asyncio.run(gateway.scan())
     again = channel.client.posts[-1]
-    assert len(channel.client.posts) == 2 and texts(again["blocks"]).startswith("*Plan v2 · Issue #7*\nNeeds your decision.")
+    assert len(channel.client.posts) == 2 and texts(again["blocks"]).startswith("*Design v2 · Issue #7*\nNeeds your decision.")
     assert decisions.load(q["id"])["status"] == "open"
 
 

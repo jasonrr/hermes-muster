@@ -102,7 +102,7 @@ def test_the_workflow_override_replaces_the_bundled_workflow_in_the_brief(tmp_pa
 
 def test_every_skill_a_prompt_or_the_readme_names_is_registered():
     registered = set(re.findall(r'for name in \(([^)]*)\)', (ROOT / "__init__.py").read_text())[0].replace('"', "").replace(" ", "").split(","))
-    texts = [p.read_text() for p in [*config.PROMPTS.glob("*.md"), ROOT / "README.md", *(ROOT / "muster").glob("*.py")]]
+    texts = [p.read_text() for p in [*config.PROMPTS.glob("*.md"), ROOT / "README.md", *(ROOT / "muster").rglob("*.py")]]
     named = {m for t in texts for m in re.findall(r"`muster:([\w-]+)`", t)}  # a skill is named in backticks
     assert named <= registered, named - registered
 

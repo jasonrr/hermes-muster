@@ -2165,10 +2165,10 @@ def test_telegram_points_the_approval_at_the_review_and_a_restart_never_brings_i
     labels = ["Approve design v2 (recommended)", "Leave pending"]
     d = decisions.create("design", "led1", run={"repo": "o/r", "issue": 7}, proposal=pin, review="Fine.",
                          actions=["approve", "nothing"], choices=[labels],
-                         questions=[{"text": "**Plan v2 · Issue #7**\n\nFine.", "header": "Design", "multi": False,
+                         questions=[{"text": "**Design v2 · Issue #7**\n\nFine.", "header": "Design", "multi": False,
                                      "options": [{"label": x, "description": ""} for x in labels]}])
     run(gateway.scan())
-    assert (asked["mid"], "Plan v2 ready · decide on Coordinator's review below.") in [
+    assert (asked["mid"], "Design v2 ready · decide on Coordinator's review below.") in [
         (mid, text) for _, mid, text in telegram.T.adapter.edits]
     assert [m["cid"] for m in sent()] == [asked["cid"], f"mu{d['id']}q0"]
     telegram.release(q["id"])
