@@ -10,7 +10,7 @@ config_schema:
   bug_label: {type: str, default: bug, description: Issues carrying it are briefed as bugs}
   approver_login: {type: str, default: "", required: true, description: GitHub login allowed to approve (case-insensitive)}
   approver_id: {type: int, default: 0, required: true, description: "Numeric GitHub id of the approver (gh api user --jq .id)"}
-  auto_approvers: {type: list, default: [], description: "Bots whose own label starts work: [{login, id, label, repos}]; see README"}
+  auto_approvers: {type: list, default: [], description: "Bots whose own label starts work: [{login, id, label, repos}]; see docs/setup.md"}
   repos: {type: list, default: [], required: true, description: "owner/name or owner/name=/abs/clone/path"}
   clone_root: {type: str, default: "~/Code", description: Where owner/name clones live when no path is given}
   board: {type: str, default: muster, description: Hermes kanban board slug; give muster its own board}
@@ -21,7 +21,7 @@ config_schema:
   notify_chat_id: {type: str, default: "", description: "Telegram: empty = DM the TELEGRAM_HOME_CHANNEL from $HERMES_HOME/.env. Slack: the channel id, required"}
   notify_user_id: {type: str, default: "", description: "Who may answer: one id, or approver ids separated by commas"}
   notify_chat_type: {type: str, default: group}
-  notify_topics: {type: bool, default: false, description: "One forum topic (Telegram) or thread (Slack) per run in the notify_chat_id chat; see README"}
+  notify_topics: {type: bool, default: false, description: "One forum topic (Telegram) or thread (Slack) per run in the notify_chat_id chat; see docs/channels.md"}
   coordinator_name: {type: str, default: Coordinator, description: "The Hermes agent's name in muster's messages (\"Ella is reviewing\")"}
   gh_config_dir: {type: str, default: "", description: Optional GH_CONFIG_DIR for a bot login used by gh/git in the pane}
   notes_dir: {type: str, default: "", description: Per-repo production notes; empty = plugin-data/muster/repos}
