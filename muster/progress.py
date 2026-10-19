@@ -7,7 +7,7 @@ Writers touch one file per kind in <data dir>/runs/<ledger>/activity/; its mtime
   stop      Stop: the agent ended its turn
   end       SessionEnd (not /clear)
   review    a verified pull request (text: its url): events.move done, runs.complete, decisions.rereview
-  proposal  a saved plan version (text: "v2"): events.propose
+  proposal  a saved design version (text: "v2"): events.propose
   recommended  the coordinator's recommendation was recorded: decisions.recommend, recommend_design
   revision  the human's feedback or plan revisions reached the builder (delivery evidence): decisions
 Only `launched` makes the directory, so a run from before this feature, or one cleanup removed, gets nothing.
@@ -169,7 +169,7 @@ def needs(reqs):
             what = ["question"] * len(left)
         else:
             what = [{"permission": "permission", "feedback": "feedback to send"}.get(kind) or (
-                f"plan v{(r.get('proposal') or {}).get('version')}" if kind == "design" else pr_name(r.get("pr")))]
+                f"design v{(r.get('proposal') or {}).get('version')}" if kind == "design" else pr_name(r.get("pr")))]
         out.setdefault(r["ledger"], []).extend((r.get("created_at", 0), w) for w in what)
     return out
 
@@ -222,7 +222,7 @@ def state(ledger, now, waits, ref, archived):
         return "ended", f"Session ended {hm(m['end'])} · the builder is not running", False
     recommended, review = m.get("recommended", 0), m.get("review", 0)
     if m.get("proposal", 0) > recommended:
-        plan = f"plan {read('proposal')}" if read("proposal") else "the plan"
+        plan = f"design {read('proposal')}" if read("proposal") else "the design"
         return f"reviewing:{m['proposal']}", f"{who} is reviewing {plan} · no action needed", False
     if m.get("revision", 0) > max(review, m.get("proposal", 0)):
         return (f"revision:{m['revision']}",

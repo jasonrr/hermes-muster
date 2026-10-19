@@ -85,19 +85,19 @@ def detail(req):
             plan = (events.proposals(req["ledger"]) / f"v{n}.md").read_text().strip()
         except OSError:
             plan = ""
-        return (f"**{who}'s full review · Plan v{n} · {title(req)}**\n\n{review}"
-                + (f"\n\n**Plan v{n}, full text**\n\n{plan}" if plan else ""))
+        return (f"**{who}'s full review · Design v{n} · {title(req)}**\n\n{review}"
+                + (f"\n\n**Design v{n}, full text**\n\n{plan}" if plan else ""))
     if kind == "feedback" and len(req.get("feedback") or "") > DETAIL_OVER:
         return f"**Feedback, full text · {progress.pr_name(req.get('pr'))} · {title(req)}**\n\n{req['feedback']}"
     return None
 
 
 def detail_label(req):
-    return {"design": "Full review and plan", "build": "Full review"}.get(req["kind"], "Full text")
+    return {"design": "Full review and design", "build": "Full review"}.get(req["kind"], "Full text")
 
 
 def reviewing(req, n):
-    """True for a builder's Approval question (decisions.approval_slot) whose plan version still waits for the
+    """True for a builder's Approval question (decisions.approval_slot) whose design version still waits for the
     coordinator's review: answering it skips that review."""
     if decisions.approval_slot(req) != n:
         return False
@@ -106,13 +106,13 @@ def reviewing(req, n):
 
 
 def lead(req, n):
-    """The lines a question message opens with: the task, and for a plan approval the plan's state. A build, design
+    """The lines a question message opens with: the task, and for a design approval the design's state. A build, design
     or feedback request's text opens with its own (decisions)."""
     if req["kind"] != "question":
         return ""
     count = len(req["questions"])
     if decisions.approval_slot(req) == n:
-        plan = f"Plan v{(req.get('proposal') or {}).get('version')}"
+        plan = f"Design v{(req.get('proposal') or {}).get('version')}"
         if reviewing(req, n):
             who = config.settings.get("coordinator_name") or "Coordinator"
             return (f"**{plan} ready · {title(req)}**\n{who} is reviewing. No action needed.\n\n"

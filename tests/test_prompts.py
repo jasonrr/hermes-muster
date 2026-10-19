@@ -3,6 +3,7 @@
 The golden files in tests/golden/ were rendered by the code before the move, with data full of characters a
 template could misread: braces, `$`, backticks, quotes and newlines.
 """
+import os
 import re
 import subprocess
 import types
@@ -69,7 +70,11 @@ def render(monkeypatch):
 
 
 def test_prompts_match_pre_refactor_output(nasty, monkeypatch):
+    """Edited a prompt on purpose? Regenerate with MUSTER_REGOLD=1, then read the golden diff."""
     out = render(monkeypatch)
+    if os.environ.get("MUSTER_REGOLD"):
+        for name, text in out.items():
+            (GOLDEN / f"{name}.txt").write_text(text)
     assert sorted(out) == sorted(p.stem for p in GOLDEN.glob("*.txt"))
     for name, text in out.items():
         assert text == (GOLDEN / f"{name}.txt").read_text(), name
@@ -80,7 +85,7 @@ def test_every_prompt_the_code_names_ships_in_git_and_none_is_orphaned():
     tracked = subprocess.run(["git", "ls-files", "prompts"], cwd=ROOT, capture_output=True, text=True,
                              check=True).stdout.split()
     source = "".join(p.read_text() for p in [ROOT / "__init__.py", *(ROOT / "muster").glob("*.py")])
-    named = set(re.findall(r'config\.prompt\("([\w-]+)"', source)) | {"dispatch", "escalation", "builder-workflow"}
+    named = set(re.findall(r'config\.prompt\("([\w-]+)"', source)) | {"dispatch", "escalation", "review-standard", "builder-workflow"}
     assert {f"prompts/{n}.md" for n in named} | {"prompts/README.md"} == set(tracked)
 
 
@@ -90,7 +95,16 @@ def test_the_workflow_override_replaces_the_bundled_workflow_in_the_brief(tmp_pa
     monkeypatch.setitem(config.settings, "workflow_prompt_file", str(custom))
     text = core.brief("o/r", 1, False)
     assert "## How to work\n\nMy own ${rules} {here}\n\n## Production" in text
-    assert (config.PROMPTS / "builder-workflow.md").read_text().splitlines()[2] not in text
+    assert (config.PROMPTS / "builder-workflow.md").read_text().splitlines()[0] not in text
+    footer = runs.footer({"card": "t_1", "repo": "o/r", "branch": "feat/a", "base": "main"})
+    assert footer.endswith("## How to work\n\nMy own ${rules} {here}\n")
+
+
+def test_every_skill_a_prompt_or_the_readme_names_is_registered():
+    registered = set(re.findall(r'for name in \(([^)]*)\)', (ROOT / "__init__.py").read_text())[0].replace('"', "").replace(" ", "").split(","))
+    texts = [p.read_text() for p in [*config.PROMPTS.glob("*.md"), ROOT / "README.md", *(ROOT / "muster").rglob("*.py")]]
+    named = {m for t in texts for m in re.findall(r"`muster:([\w-]+)`", t)}  # a skill is named in backticks
+    assert named <= registered, named - registered
 
 
 def test_a_placeholder_without_a_value_raises():

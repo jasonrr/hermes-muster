@@ -33,7 +33,7 @@ def setup(parser):
     p = sub.add_parser("hook", help="agent hook entry point; reads the hook payload on stdin")
     p.add_argument("event", choices=["notification", "prompt", "session-end", "stop", "done", "propose", "permission",
                                        "duplicate"])
-    p.add_argument("url", nargs="?", help="done: the pull request URL; propose: the plan or design file; "
+    p.add_argument("url", nargs="?", help="done: the pull request URL; propose: the design file; "
                                           "duplicate: the held report's issue number")
     p.add_argument("verdict", nargs="?", choices=["same", "different"], help="duplicate: your evaluation")
     p.add_argument("--card", default=None)

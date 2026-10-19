@@ -380,7 +380,8 @@ def flush(args=None):
 
 def footer(run):
     return "\n" + config.prompt("ad-hoc-run", card=run["card"], repo=run["repo"], branch=run["branch"],
-                                base=run["base"], hermes=config.hermes_bin()) + "\n"
+                                base=run["base"], hermes=config.hermes_bin(), workflow=config.workflow_text(),
+                                ask=config.prompt("ask-the-human", hook=f"{config.hermes_bin()} muster hook --card {run['card']}")) + "\n"
 
 
 def relaunch(run, prepare_text):

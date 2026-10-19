@@ -265,7 +265,7 @@ async def redirect(req, slot, shown):
     if not ids:
         return shown
     who = config.settings.get("coordinator_name") or "Coordinator"
-    line = f"Plan v{req['proposal'].get('version')} ready · decide on {who}'s review below."
+    line = f"Design v{req['proposal'].get('version')} ready · decide on {who}'s review below."
     chat = core.notify_target()["chat_id"]
     for mid in ids:
         await CHANNEL.edit(chat, mid, line)

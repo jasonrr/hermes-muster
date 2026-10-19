@@ -229,6 +229,7 @@ def brief(repo, number, bug, base="main", auto=None):
     return config.prompt("issue-dispatch", repo=repo, number=number, approved_by=approved_by(repo, number, auto),
                          bot=bot, branch=f"{s['branch_prefix']}{number}", base=base, kind="bug" if bug else "feature",
                          hermes=config.hermes_bin(), workflow=config.workflow_text(),
+                         ask=config.prompt("ask-the-human", hook=f"{config.hermes_bin()} muster hook"),
                          production=production_note(repo)) + "\n"
 
 

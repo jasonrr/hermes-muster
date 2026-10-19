@@ -250,7 +250,7 @@ def test_an_approval_under_review_alone_reads_reviewing_not_needs_your_decision(
     reqs = [ask("a", "Approval", pin=PIN)]
     assert progress.needs(reqs) == {L: []}
     assert state(waits=progress.needs(reqs)[L]) == (f"reviewing:{NOW - 600}",
-                                                    "Coordinator is reviewing plan v2 · no action needed", False)
+                                                    "Coordinator is reviewing design v2 · no action needed", False)
 
 
 def test_a_separate_question_or_permission_still_needs_your_decision_while_a_plan_is_reviewed():
@@ -274,7 +274,7 @@ def test_the_open_design_review_is_the_decision_not_the_approval_it_answers():
     at("proposal", NOW - 600, "v2")
     at("recommended", NOW - 300)
     reqs = [ask("a", "Approval", pin=PIN), ask("d", "Design", kind="design", pin=PIN)]
-    assert [w for _, w in progress.needs(reqs)[L]] == ["plan v2"]
+    assert [w for _, w in progress.needs(reqs)[L]] == ["design v2"]
 
 
 def test_an_approval_already_reviewed_with_no_review_card_open_needs_your_decision():

@@ -839,11 +839,11 @@ def test_recommend_design_creates_a_request_bound_to_the_version(world, tmp_path
     req = decisions.load(capsys.readouterr().out.strip())
     assert req["kind"] == "design" and req["status"] == "open" and req["proposal"] == {"version": 2, "sha": s2}
     assert req["actions"] == ["send-back", "approve", "nothing"]
-    assert req["choices"] == [["Send revisions to builder (recommended)", "Approve plan v2", "Leave pending"]]
+    assert req["choices"] == [["Send revisions to builder (recommended)", "Approve design v2", "Leave pending"]]
     # what Send revisions sends is on the message, whole, so the human sees it before tapping
-    assert req["questions"][0]["text"] == ("**Plan v2 · T**\n**Coordinator recommends: send revisions**\n\n"
+    assert req["questions"][0]["text"] == ("**Design v2 · T**\n**Coordinator recommends: send revisions**\n\n"
                                            "Send revisions sends the builder:\nDrop the cache.\n\n"
-                                           "Approve lets the builder implement plan v2. Nothing is merged or deployed.\n\n"
+                                           "Approve lets the builder implement design v2. Nothing is merged or deployed.\n\n"
                                            "Small and right.")
     assert req["feedback"] == "Drop the cache." and req["run"]["repo"] == "acme/app"
     assert decisions.recommend_design(design_args(tmp_path, f"v2:{s2}")) == 0  # the same version again
@@ -880,7 +880,7 @@ def design(answer, feedback="Drop the cache.", pin=PIN):
 
 APPROVE = f"Approve: the human approved {HEADING}."
 REVISE = f"Revise {HEADING} before building. Revisions from the human:\nDrop the cache."
-BOTH = [({"action": "approve"}, APPROVE, "Approval of plan v2"), ({"action": "send-back"}, REVISE, "Revisions for plan v2")]
+BOTH = [({"action": "approve"}, APPROVE, "Approval of design v2"), ({"action": "send-back"}, REVISE, "Revisions for design v2")]
 
 
 def settle(rid):
@@ -912,15 +912,15 @@ def test_a_tap_answers_the_approval_question_that_carries_the_reviewed_version(w
     assert settle(rid) is None
     status, outcome = state(rid)
     assert status == "done" and outcome == (
-        "Approval of plan v2 delivered to the builder" if what == "Approval"
-        else "Revisions for plan v2 delivered to the builder · revision pending")
+        "Approval of design v2 delivered to the builder" if what == "Approval"
+        else "Revisions for design v2 delivered to the builder · revision pending")
     assert ("revision" in progress.mtimes("t_1")) is (what == "Revisions")
 
 
 def test_leave_pending_leaves_the_approval_question_open(world):
     ask, rid = approval(), design({"action": "nothing"})
     decisions.execute(rid)
-    assert state(rid) == ("done", "Left pending. The builder's question about plan v2 stays open.")
+    assert state(rid) == ("done", "Left pending. The builder's question about design v2 stays open.")
     assert decisions.load(ask)["status"] == "open"
 
 
@@ -945,7 +945,7 @@ def test_a_newer_version_cancels_a_tap_the_builder_never_asked_for(world, answer
     save_versions("one", "two", "three")
     assert settle(rid) is None
     status, outcome = state(rid)
-    assert status == "failed" and outcome.startswith("Plan v3 replaced v2 before the builder asked.")
+    assert status == "failed" and outcome.startswith("Design v3 replaced v2 before the builder asked.")
     assert ("Nothing was approved." if reply == APPROVE else "The revisions were not sent.") in outcome
     ask = approval()  # a late ask for the old version gets nothing from it
     settle(rid)
@@ -977,7 +977,7 @@ def test_a_human_answer_in_between_stands_and_is_never_retargeted(world, answer,
     rid = design(answer)
     decisions.execute(rid)
     status, outcome = state(rid)
-    assert status == "failed" and outcome == ("You already answered the builder's question about plan v2: Revise: drop "
+    assert status == "failed" and outcome == ("You already answered the builder's question about design v2: Revise: drop "
                                               "the queue. Nothing else was sent.")
     assert decisions.load(ask)["answer"] == {"Approve this design 0?": "Revise: drop the queue"}
     second = approval()  # the same version asked again: an ended decision is never moved onto it
@@ -992,7 +992,7 @@ def test_a_question_that_ended_before_the_tap_is_not_answered_again(world, endin
     rid = design({"action": "approve"})
     decisions.execute(rid)
     if ending == "done":  # answered in the pane: that answer stands
-        assert state(rid) == ("failed", "You already answered the builder's question about plan v2: Answered in the "
+        assert state(rid) == ("failed", "You already answered the builder's question about design v2: Answered in the "
                                         "pane. Nothing else was sent.")
     else:  # abandoned unanswered: the tap waits for the builder to ask again
         assert state(rid)[0] == "executing"
@@ -1014,7 +1014,7 @@ def test_a_question_answered_between_scans_ends_an_early_tap_and_a_later_one_get
         decisions.recover(decisions.load(rid))
     else:
         assert settle(rid) is None
-    assert state(rid) == ("failed", "You already answered the builder's question about plan v2: Request changes. "
+    assert state(rid) == ("failed", "You already answered the builder's question about design v2: Request changes. "
                                     "Nothing else was sent.")
     q2 = approval()  # the same version asked again
     settle(rid)
@@ -1174,7 +1174,7 @@ def test_revisions_and_what_approve_does_lead_the_card_so_a_long_review_never_cu
     assert decisions.recommend_design(args) == 0
     req = decisions.load(capsys.readouterr().out.strip())
     text = shared.render(req, 0, cap=3500, label_max=64, tail=["x"])  # Telegram's cap
-    assert "DROP THE CACHE" in text and "Approve lets the builder implement plan v2" in text
+    assert "DROP THE CACHE" in text and "Approve lets the builder implement design v2" in text
     assert shared.detail(req).count("Long review.") == 500  # the cut review is whole above the card
 
 
@@ -1187,7 +1187,7 @@ def test_a_concurrent_step_that_gave_this_reply_is_not_mistaken_for_a_human_answ
     assert state(rid)[0] == "executing" and decisions.load(rid)["intent"]["question"] == ask
     delivered(ask)
     settle(rid)
-    assert state(rid) == ("done", "Approval of plan v2 delivered to the builder")
+    assert state(rid) == ("done", "Approval of design v2 delivered to the builder")
 
 
 def test_an_abandoned_ask_with_an_undelivered_part_does_not_block_a_later_tap(world):

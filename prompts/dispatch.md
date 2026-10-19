@@ -1,20 +1,19 @@
 ---
-name: run
-description: When the human asks you to send coding work to a herdr pane (not a labeled issue), launch it with `hermes muster launch` so the run reports itself; open analysis workspaces with `hermes muster open`; and when an ad-hoc run card wakes you, tell the human what happened and, on a finished build, recommend one action.
+name: dispatch
+description: When the human asks you to send coding work to a herdr pane (not a labeled issue), launch it with `hermes muster launch` so the run reports itself, and open analysis workspaces with `hermes muster open`. A card that wakes you is `muster:escalation`'s, whatever kind of run it tracks.
 ---
 
-# muster run
+# muster dispatch
 
 ## Dispatch
 
-Include this Ponytail-derived checklist directly in every coding dispatch brief; do not install a plugin or add agent configuration for it:
-
-> Solve the whole requested problem with the smallest complete change. Before adding code, take the first option that fully works: (1) omit unnecessary features, options and flexibility; (2) reuse existing code and project patterns; (3) use the standard library or native platform features, respecting house conventions; (4) reuse installed dependencies, adding none for a few lines; (5) use one readable line where sufficient; (6) otherwise write the minimum necessary code. Read affected callers and finish required tests, fixtures and integration changes. Preserve trust-boundary validation, data-loss handling, security and accessibility; test new non-trivial logic. Prefer behavioral/instruction fixes and existing recovery paths over new machinery. Treat bounded, visible failures as explicit trade-offs, not automatic blockers; defer speculative hardening. State material limits briefly.
-
-
 Only when the human asks for coding work in a herdr pane.
 
-1. Write the brief to a file. Say what to build and how to check it. Do not add "call back when done",
+1. Write the brief to a file. Say what to build and how to check it. Muster appends the house workflow
+   (`prompts/builder-workflow.md`: root cause first, design approval, minimal code, reviews, one PR) and the
+   rules for asking the human; do not restate them. Carry only the approach and scope the human gave:
+   a brief that states them is the approved design and skips design approval, so never fill them in
+   yourself. Do not add "call back when done",
    "run hermes kanban complete" or any other callback line: the run reports itself.
 2. Run, with a new branch name each time (the branch must be `feat|fix|chore|deps/<name>`):
 
@@ -47,25 +46,10 @@ one with `herdr workspace create` yourself: without the record it stays open for
 
 ## Wake
 
-A card whose body says "ad-hoc run", or a wait card whose body names one as its ledger:
-
-1. Read it: `hermes kanban --board <the board setting> show <card id> --json` (a wait card's body names
-   its ledger).
-2. The ping already gave the title, the whole reason and the pane, or the pull request link. Do not repeat
-   it. Add, in one or two sentences, only what it lacks:
-   - Completed (ledger or a review card): review the build and record one recommendation with
-     `hermes muster recommend`, exactly as the `muster:escalation` skill says. Never say merged, deployed
-     or live without appropriate evidence: `gh` proves merge state; installed/runtime evidence proves deployment.
-   - Wait card blocked by a question or permission prompt: it already went out with its options; add only
-     new context, else reply `[SILENT]`. Idle 10 minutes without a finished pull request: say so and why (the reason is in the
-     block text). The human answers by replying to the question's message, or in the pane.
-   - Ledger blocked "session ended": the agent's session ended without a finished pull request.
-   - Ledger blocked by a failed launch ("The coding agent did not start", "did not become ready", "its
-     first prompt may not have arrived", "The launch was refused"): the human fixes the cause, then runs
-     `hermes muster recover <card>`. For "may not have arrived", they look at the pane first and add
-     `--resend` only if it shows no brief.
-   - A card titled "Workspace kept · …": a cleanup warning; see the `muster:escalation` skill.
-3. On automated wakes, avoid duplicating delivered notices; reply `[SILENT]` when nothing new needs saying. On direct human messages, answer briefly even if a decision card was also posted. Follow `muster:escalation` for recommendation read-back and presentation verification.
+A card whose body says "ad-hoc run", or a wait card naming one as its ledger, is handled exactly as the
+`muster:escalation` skill says; the kind changes nothing. Two facts are ad-hoc only: the run has no issue,
+so its brief is `muster-brief.md` in the worktree's `.git` directory; and a wait card blocked after 10 idle
+minutes without a finished pull request says so in its block text (say that and why, nothing more).
 
 You must not type into or mirror the pane, start, stop or prompt any agent, move any card, comment on,
 merge, approve or deploy anything, or send revision instructions yourself: merge and send-back happen only
