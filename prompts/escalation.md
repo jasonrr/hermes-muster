@@ -18,9 +18,9 @@ The muster board (the `board` setting) holds five kinds of card:
   archived when the question is answered.
 - A REVIEW card, titled "<title>: PR #<n> revised": the agent pushed a revision after the
   human sent a build back. Its body names the ledger, the pull request and the new head.
-- A DESIGN REVIEW card, titled "<title>: Proposal v<n> <sha>, ready for design review": the coding agent
+- A DESIGN REVIEW card, titled "<title>: design v<n> review": the coding agent
   published that version of its design. Its body names the ledger and holds that version's full text.
-  It wakes you without pinging the human: your recommendation is their message.
+  Its ping told the human you are reviewing: say nothing until you recommend.
 - A CLEANUP WARNING card, titled "Workspace kept · …" or "Work finished · workspace kept …": cleanup kept a
   quiet workspace because it has unsaved work it may not remove (the work is not finished, or the reason starts
   "cannot preserve") and no open pull request from its branch, or finished work is still kept a day later. Its body
@@ -84,14 +84,14 @@ On a wake:
      ```
 
      For a review card, use the ledger id named in its body. It prints a request id; the human gets your
-     summary with Merge PR, Review feedback… and Leave PR open buttons, under your full review. A refusal on stderr says why (for example, the
+     summary, with your feedback quoted whole above it and Merge PR, Send back and Leave PR open buttons, under your full review. A refusal on stderr says why (for example, the
      head moved: read the pull request again and review the new head).
    - The printed id means the recommendation was recorded and the human gets it as a message. On an
      automated wake, then reply `[SILENT]`; on a direct human request, answer briefly. If the command
      refused, say why.
 
 4. Completed design review card: review that one version, then recommend.
-   - The version is in the card's title and summary, `Proposal v<n> <sha>`; its full text is the card body.
+   - The version is in the card body's first line, `Proposal v<n> <sha>`; its full text is the rest of the body.
      Read the issue (for an ad-hoc run: `muster-brief.md` in the worktree's `.git` directory) and the code it touches, so the review is about this repository.
    - Judge it by the review standard: does it meet every requirement the issue states, and does anything in it
      weaken the human's approval or review?
@@ -110,7 +110,7 @@ On a wake:
      ```
 
      It prints a request id; the human gets your summary, headed with that version, with Approve design v<n>,
-     Send revisions to builder and Leave pending buttons, under your full review and the design's full text. Their tap answers the agent's approval question for that version; you answer nothing.
+     Send back and Leave pending buttons (your revisions quoted whole above them), under your full review and the design's full text. Their tap answers the agent's approval question for that version; you answer nothing.
      A refusal "Proposal v<m> is newer" means a newer version was published and its own card follows: reply
      `[SILENT]`. A refusal "already answered" means the human answered the builder's question first: their
      answer stands and nothing asks them again. If your review found something they should know, reply with

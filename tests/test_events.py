@@ -649,19 +649,21 @@ def test_each_proposal_version_wakes_the_coordinator_once_in_the_run_topic(board
     head = f"Proposal v1 {sha(first)}"
     assert board["keys"][f"design:t_abc123:v1:{sha(first)}"] == "t_design1"
     body = board["bodies"]["t_design1"]
-    assert body.startswith(f"Design review. ledger t_abc123 | {head}\n") and body.endswith(first)  # the pinned text
+    assert body.startswith(f"Design review; {core.REVIEW_CUE}. ledger t_abc123 | {head}\n")  # the pin, in the body
+    assert body.endswith(first)  # the pinned text
     subscribe = next(c for c in board["calls"] if c[4:6] == ["notify-subscribe", "t_design1"])
-    assert subscribe[subscribe.index("--delivery-mode") + 1] == "wake"  # the coordinator's message, no ping first
-    assert completes(board, "t_design1") == [f"{head} ready for design review; {core.REVIEW_CUE}"]
+    # a ping first, as for a finished build: the coordinator's activity then lands under it, not an older message
+    assert subscribe[subscribe.index("--delivery-mode") + 1] == "notify+wake"
+    assert completes(board, "t_design1") == ["🔍 Coordinator is reviewing design v1. Nothing to decide yet."]
     assert board["cards"]["t_design1"] == "done"
     assert propose(tmp_path, first) == 0  # the same version again: no second review
     runs.enqueue("t_abc123", "design", head, proposal={"version": 1, "sha": sha(first)},
                  git_dir=str(board["git_dir"]), link=LINKS)
     runs.drain("t_abc123")  # a replay
-    assert completes(board, "t_design1") == [f"{head} ready for design review; {core.REVIEW_CUE}"]
+    assert completes(board, "t_design1") == ["🔍 Coordinator is reviewing design v1. Nothing to decide yet."]
     assert propose(tmp_path, second) == 0  # a revision is a new review; v1's card stays as it was
     assert board["keys"][f"design:t_abc123:v2:{sha(second)}"] == "t_design2"
-    assert completes(board, "t_design2") == [f"Proposal v2 {sha(second)} ready for design review; {core.REVIEW_CUE}"]
+    assert completes(board, "t_design2") == ["🔍 Coordinator is reviewing design v2. Nothing to decide yet."]
     assert len(completes(board, "t_design1")) == 1
 
 

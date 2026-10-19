@@ -1,0 +1,3 @@
+│ *✅ Approved · Design v1 · Make Muster docs a manual*
+│ The builder received your approval of design v1. Next: implementation, then a pull request for you
+│ to review here. Nothing is merged or deployed.

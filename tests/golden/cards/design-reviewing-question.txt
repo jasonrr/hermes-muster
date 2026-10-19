@@ -1,0 +1,13 @@
+│ *🔍 Design v1 · Make Muster docs a manual*
+│ Ella is reviewing design v1; the recommendation comes next. Nothing to decide yet.
+│
+│ To decide now without Ella's review, answer the builder's question:
+│
+│ Implement design v1?
+│
+│ Pick one, or type your own answer below. Typing here answers the builder; a thread reply goes to the
+│ coordinator.
+│
+│ [ Approve without Ella's review ]  [ Revise ]
+│
+│ Your own words: [ … ]

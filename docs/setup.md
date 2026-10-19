@@ -43,6 +43,11 @@ Muster does, start with the [README](../README.md).
    hermes kanban boards create muster
    ```
 
+   Then add `"human_notices": true` to the board's `board.json`
+   (`${HERMES_HOME:-$HOME/.hermes}/kanban/boards/muster/board.json`). This is Hermes's own setting. With it,
+   a status ping reads "✔ <task>" followed by Muster's text. Without it, the ping reads
+   "✔ [muster] Kanban t_… done — <task>", which says "done" while review is still under way.
+
 4. Copy the cron scripts and schedule them:
 
    ```bash
@@ -95,6 +100,7 @@ or malformed.
 | `agent_model` | `opus` | The model passed to Claude Code. |
 | `board` | `muster` | The Hermes kanban board. Give Muster its own board, and create it before the first tick. |
 | `coordinator_name` | `Coordinator` | The name Muster's messages give your Hermes agent ("Ella is reviewing design v2"). |
+| `button_hints` | `true` | `false` drops the "What each button does" list and the input hints from decision cards. The recommendation, the feedback, the reason and the deploy line always stay. |
 | `gh_config_dir` | `""` | Empty: the pane uses your own `gh` login. Set it to a `GH_CONFIG_DIR` holding another login, such as a bot's, and the pane's `gh` and `git push` act as that login. The directory must contain `hosts.yml`. |
 | `notes_dir` | `""` | Where [production notes](#production-notes) live. Empty means `$HERMES_HOME/plugin-data/muster/repos`. |
 | `workflow_prompt_file` | `""` | A non-empty file that replaces [`prompts/builder-workflow.md`](../prompts/builder-workflow.md) in every brief. |

@@ -257,7 +257,8 @@ async def outcome(req):
     newest = [ids[-1] for ids in (presented.get("messages") or {}).values() if ids]
     newest += [mid for ids in (presented.get("replies") or {}).values() for mid in ids]
     newest += [ids[-1] for ids in (presented.get("redirected") or {}).values() if ids]
-    return all([await edit(chat, mid, req.get("outcome") or req["status"]) for mid in newest])
+    text = shared.plain(shared.settled(req)) if req["kind"] in shared.DECISIONS else req.get("outcome") or req["status"]
+    return all([await edit(chat, mid, text) for mid in newest])
 
 
 # -- presenting -----------------------------------------------------------------------------------
@@ -266,9 +267,9 @@ def render(req, n):
     """Plain text: Hermes's clarify prompt HTML-escapes it, so muster's `**` markers would show (shared.plain)."""
     q = req["questions"][n]
     detail = ["Full text: the message above."] if (req.get("detail") or {}).get("platform") == name else []
-    return shared.plain(shared.render(req, n, cap=CAP, label_max=LABEL_MAX, tail=[
-        "Several: tap Other and type the numbers, e.g. 1,3" if q.get("multi")
-        else "Your own words: tap Other, or reply to this message.", *detail]))
+    how = ["Several: tap Other and type the numbers, e.g. 1,3" if q.get("multi")
+           else "Your own words: tap Other, or reply to this message."] if shared.hints(req) else []
+    return shared.plain(shared.render(req, n, cap=CAP, label_max=LABEL_MAX, tail=[*how, *detail]))
 
 
 def buttons(req, n):

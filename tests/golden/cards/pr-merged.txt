@@ -1,0 +1,2 @@
+│ *✅ Merged · PR #9 · Make Muster docs a manual*
+│ Merged into main, as reviewed. Muster does not deploy.

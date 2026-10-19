@@ -1,0 +1,5 @@
+│ *⚠️ Needs attention · PR #9 · Make Muster docs a manual*
+│ Delivery could not be confirmed; a retry is available below.
+│
+│ > In README.md, remove “Decide from your phone” from the benefits list. Describe chat (Slack or
+│ Telegram) as where you make decisions, not as a distinguishing benefit. Change nothing else.

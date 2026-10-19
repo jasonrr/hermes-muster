@@ -21,8 +21,10 @@ from pathlib import Path
 from . import config, core, events, launcher, progress
 
 OPEN = ("open", "answered", "executing")
-DELIVERED = "✓ Feedback delivered · revision pending"  # a feedback request the prompt hook saw arrive (launcher.seen)
-SENT = (DELIVERED, "Sent ✓")  # its outcome now, and before #48
+# An outcome's first line is the settled card's headline, the rest what follows (channels.shared.settled). Each claims
+# only its evidence: delivered is not done, so nothing says the builder "is revising".
+DELIVERED = "↩️ Sent back\nYour feedback reached the builder; revisions are pending."  # the prompt hook saw it (launcher.seen)
+SENT = (DELIVERED, "✓ Feedback delivered · revision pending", "Sent ✓")  # its outcome now, before #58, before #48
 ANSWER_SENT = "Answer sent to the builder"  # a question the pane's hook answered (bridge.deliver)
 TERMINAL = ("done", "failed", "stale")
 
@@ -45,11 +47,11 @@ def gateway_up():
 
 
 def create(kind, ledger, **fields):
-    """Save a new `open` request and return it."""
-    now, rid = time.time(), secrets.token_hex(8)
+    """Save a new request (`open` unless `status` says, e.g. a send-back already authorized on its card) and return it."""
+    now, rid, status = time.time(), secrets.token_hex(8), fields.pop("status", "open")
     path = root() / f"{rid}.json"
-    req = {**fields, "id": rid, "kind": kind, "ledger": ledger, "status": "open", "created_at": now,
-           "audit": [{"at": now, "step": "open", "result": "created"}]}
+    req = {**fields, "id": rid, "kind": kind, "ledger": ledger, "status": status, "created_at": now,
+           "audit": [{"at": now, "step": status, "result": "created"}]}
     core.save_json(path, req)
     return req
 
@@ -221,21 +223,25 @@ def rereview(ledger, run=None):
         "--", f"{short(run)}: {progress.pr_name(pr['url'])} revised"))
     if card["status"] == "ready":
         core.subscribe(card["id"], ledger)
-        core.kanban("complete", card["id"], "--summary", f"{progress.pr_name(pr['url'])} updated to {head[:7]} · "
-                    f"{who()} is re-reviewing. No action needed. {pr['url']}")
+        core.kanban("complete", card["id"], "--summary", f"🔍 {progress.pr_name(pr['url'])} updated · {who()} is "
+                    f"re-reviewing it. Nothing to decide yet; nothing is merged or deployed. {pr['url']}")
         events.expect(card["id"], "done", "rereview")
         progress.touch(ledger, "review", pr["url"])  # only when the card is made: a replay keeps "since"
     for old in for_ledger(ledger, "build"):  # a recommendation for this head is the current one: keep it
         if old["status"] == "open" and old.get("head") != head:
-            transition(old["id"], ("open",), "stale", outcome=f"stale: PR moved to {head[:7]}")
+            transition(old["id"], ("open",), "stale", outcome="Superseded: the pull request has new commits; "
+                                                               f"{who()} reviews them next.")
     return card["id"], None
 
 
 # -- recommend: the coordinator's review of a finished build becomes a `build` request ------------------
 
-LABELS = {"merge": "Merge PR", "send-back": "Review feedback…", "nothing": "Leave PR open"}  # "…": a second step
-VERBS = {"merge": "merge", "send-back": "send back", "nothing": "leave the PR open"}
+LABELS = {"merge": "Merge {pr}", "send-back": "Send back…", "nothing": "Leave PR open"}  # "…": the human types it
+SEND_BACK = "Send back with this feedback"  # the send-back label once the feedback is on the card
+LEADS = {"merge": "{who} recommends merging it.", "send-back": "{who} recommends sending it back.",
+         "nothing": "{who} recommends leaving it open for now."}
 SUMMARY_MAX = 900  # characters: the card shows this summary whole; the full review is its own message above the card
+PR_FIELDS = "url,state,headRefOid,headRefName,baseRefName,isDraft,isCrossRepository"  # what refusal checks
 MERGEABLE = ("CLEAN", "HAS_HOOKS", "UNSTABLE")  # GitHub's mergeStateStatus; it stays the authority on checks
 
 
@@ -268,7 +274,7 @@ def obsolete(req):
     the reviewed head, a feedback to its pull request still open. An unreadable pull request is no proof either way:
     None, and a merge reads it again before acting."""
     try:
-        pr = view(req["pr"], "url,state,headRefOid,headRefName,baseRefName,isDraft,isCrossRepository")
+        pr = view(req["pr"], PR_FIELDS)
     except (OSError, ValueError, core.CommandError) as caught:
         core.log("decisions", f"{req['id']}: pull request unreadable, shown anyway: {caught}")
         return None
@@ -311,6 +317,22 @@ def summary_of(args, kind):
     return text
 
 
+def quote(text):
+    return "\n".join(f"> {line}" if line.strip() else ">" for line in text.splitlines())
+
+
+def card(head, lead, feedback, reason, sending, what="feedback"):
+    """A decision card's text: the subject, the recommendation, what a send-back sends (quoted, whole), the reason.
+    What each button does is the request's `hints`, shown by the channel unless `button_hints` is off."""
+    if not feedback:
+        return f"**{head}**\n**{lead}**\n\n{reason}"
+    if sending:  # "Ella recommends sending it back with this feedback:"
+        said = f"**{lead[:-1]} with {'this' if what == 'feedback' else 'these'} {what}:**"
+    else:
+        said = f"**{lead}**\n\n**The {what} a send-back would send:**"
+    return f"**{head}**\n{said}\n{quote(feedback)}\n\n**Why**\n{reason}"
+
+
 def recommend(args):
     """`hermes muster recommend`: print the id of the open `build` request, or the refusal on stderr and 1."""
     core.prepare_env()
@@ -320,6 +342,9 @@ def recommend(args):
             raise ValueError("--choice send-back needs --feedback FILE")
         review = read_text(args.review, "review")
         feedback = read_text(args.feedback, "feedback") if args.feedback else None
+        if feedback and len(feedback) > FEEDBACK_MAX:
+            raise ValueError(f"the feedback is {len(feedback)} characters, over {FEEDBACK_MAX}: the human must see "
+                             f"all of it on the message, so shorten it")
         summary = summary_of(args, "build")
         for req in for_ledger(args.ledger, "build"):
             if req["status"] == "open" and req.get("head") == args.head:
@@ -327,7 +352,7 @@ def recommend(args):
                 print(req["id"])
                 return 0
         run = run_of(args.ledger)
-        why = refusal(run, args.pr, view(args.pr, "url,state,headRefOid,headRefName,baseRefName,isDraft,isCrossRepository"),
+        why = refusal(run, args.pr, view(args.pr, PR_FIELDS),
                       args.head)
         if why:
             raise ValueError(why)
@@ -335,17 +360,22 @@ def recommend(args):
         print(f"recommend: {caught}", file=sys.stderr)
         return 1
     order = [args.choice] + [a for a in LABELS if a != args.choice]
-    labels = [LABELS[a] + (" (recommended)" if a == args.choice else "") for a in order]
     sent = sum(1 for r in for_ledger(args.ledger, "feedback") if r["status"] == "done" and r.get("outcome") in SENT)
     pr = progress.pr_name(args.pr)
-    # what a tap does comes before the review, the one part a long card may cut (it is whole above the card)
-    text = "\n\n".join([f"**{pr} · {short(run)}**\n**{who()} recommends: {VERBS[args.choice]}**",
-                         f"Merge squashes {pr} into {run['base']}. Muster does not deploy.", summary or review])
+    labels = {**LABELS, "merge": LABELS["merge"].format(pr=pr), **({"send-back": SEND_BACK} if feedback else {})}
+    hints = {"merge": f"puts it into {run['base']} now, as it stands. Muster does not deploy.",
+             "send-back": f"sends the text above to the builder, asking it to revise {pr}. Nothing is merged."
+             if feedback else "type what to change below; your words go to the builder. Nothing is merged.",
+             "nothing": "nothing changes."}
+    # the feedback a tap sends comes first, whole (FEEDBACK_MAX); then the reason, the one part a long card may cut
+    text = card(f"🟡 {pr} · {short(run)}", LEADS[args.choice].format(who=who()), feedback, summary or review,
+                sending=args.choice == "send-back")
     req = create("build", args.ledger, run=run, head=args.head, base=run["base"], pr=args.pr, review=review,
                  summary=summary, feedback=feedback, cycle=1 + sent, proposal=None, wait=None, actions=order,
-                 choices=[labels], recommended=args.choice,
+                 choices=[[labels[a] for a in order]], recommended=args.choice,
+                 hints=[f"• {labels[a]}: {hints[a]}" for a in order],
                  questions=[{"text": text, "header": "Build", "multi": False,
-                             "options": [{"label": label, "description": ""} for label in labels]}])
+                             "options": [{"label": labels[a], "description": ""} for a in order]}])
     stale_others(args.ledger, ("build",), req["id"], "superseded by a newer recommendation")
     progress.touch(args.ledger, "recommended")
     print(req["id"])
@@ -354,8 +384,10 @@ def recommend(args):
 
 # -- recommend-design: the coordinator's review of one proposal version becomes a `design` request ----------
 
-DESIGN_LABELS = {"approve": "Approve design v{n}", "send-back": "Send revisions to builder", "nothing": "Leave pending"}
-DESIGN_VERBS = {"approve": "approve", "revise": "send revisions", "judgment": None}
+DESIGN_LABELS = {"approve": "Approve design v{n}", "send-back": "Send back with revisions…", "nothing": "Leave pending"}
+DESIGN_SEND_BACK = "Send back with these revisions"  # once the revisions are on the card
+DESIGN_LEADS = {"approve": "{who} recommends approving it.", "revise": "{who} recommends sending it back.",
+                "judgment": "{who}: this one is your call."}
 DESIGN_CHOICE = {"approve": "approve", "revise": "send-back", "judgment": None}
 PIN = re.compile(r"v(\d+):([0-9a-f]{12})")
 FEEDBACK_MAX = 1500  # characters: Send back's text leads the message, so the human sees all of it before a tap
@@ -407,19 +439,21 @@ def recommend_design(args):
         return 1
     chosen, n = DESIGN_CHOICE[args.choice], pin["version"]
     order = [chosen] + [a for a in DESIGN_LABELS if a != chosen] if chosen else list(DESIGN_LABELS)
-    labels = [DESIGN_LABELS[a].format(n=n) + (" (recommended)" if a == chosen else "") for a in order]
-    verb = DESIGN_VERBS[args.choice]
-    lead = f"**{who()} recommends: {verb}**" if verb else f"**{who()}: this one is your call**"
-    sends = [f"Send revisions sends the builder:\n{feedback}"] if feedback else []  # whole: FEEDBACK_MAX
-    # the revisions a tap sends, and what Approve does, come before the review: a long card cuts only the review,
-    # which is whole above the card
-    text = "\n\n".join([f"**Design v{n} · {short(run)}**\n{lead}", *sends,
-                         f"Approve lets the builder implement design v{n}. Nothing is merged or deployed.",
-                         summary or review])
+    labels = {**{a: label.format(n=n) for a, label in DESIGN_LABELS.items()},
+              **({"send-back": DESIGN_SEND_BACK} if feedback else {})}
+    hints = {"approve": "sends your approval to the builder, which then implements it. You review the pull request "
+                        "before anything merges.",
+             "send-back": "sends the revisions above to the builder." if feedback
+             else "type them below; they go to the builder.",
+             "nothing": "the builder keeps waiting."}
+    # the revisions a tap sends come first, whole (FEEDBACK_MAX); a long card cuts only the reason, whole above it
+    text = card(f"🟡 Design v{n} · {short(run)}", DESIGN_LEADS[args.choice].format(who=who()), feedback,
+                summary or review, sending=args.choice == "revise", what="revisions")
     req = create("design", args.ledger, run=run, proposal=pin, review=review, summary=summary, feedback=feedback,
-                 wait=None, actions=order, choices=[labels], recommended=chosen,
+                 wait=None, actions=order, choices=[[labels[a] for a in order]], recommended=chosen,
+                 hints=[f"• {labels[a]}: {hints[a]}" for a in order],
                  questions=[{"text": text, "header": "Design", "multi": False,
-                             "options": [{"label": label, "description": ""} for label in labels]}])
+                             "options": [{"label": labels[a], "description": ""} for a in order]}])
     stale_others(args.ledger, ("design",), req["id"], "superseded by a newer design review")
     progress.touch(args.ledger, "recommended")
     print(req["id"])
@@ -500,18 +534,19 @@ def _execute(rid, boot):
         _design(req, boot)
     elif req["kind"] == "build":
         if text is None and action == "nothing":
-            transition(rid, ("answered",), "done", outcome="Left open. Not merged.")
+            transition(rid, ("answered",), "done", outcome="⏸ Left open\nNothing was merged; the pull request stays "
+                                                           "open on GitHub.")
         elif text is not None or action == "send-back":
             req, ok = transition(rid, ("answered",), "executing", executing_boot=boot,
                                  intent={"action": "send-back", "head": req["head"]})
             if ok:
-                _feedback_from_build(req)
+                _feedback_from_build(req, boot)
         elif action == "merge":
             _merge(req, boot)
         else:
             fail(rid, f"unknown action {action!r}")
     elif text is None and action == "cancel":
-        transition(rid, ("answered",), "done", outcome="Not sent. Nothing reached the builder.")
+        transition(rid, ("answered",), "done", outcome="Not sent\nYou chose not to send it; Muster sent nothing.")
     else:
         _send(req, boot)
 
@@ -520,7 +555,7 @@ def _design(req, boot):
     """The human's tap on a design review: the reply their approval question gets, or nothing."""
     rid, head, answer = req["id"], events.heading(req["proposal"]), req.get("answer") or {}
     if "text" not in answer and answer.get("action") == "nothing":
-        transition(rid, ("answered",), "done", outcome=f"Left pending. The builder's question about design "
+        transition(rid, ("answered",), "done", outcome=f"⏸ Left pending\nThe builder's question about design "
                                                        f"v{req['proposal']['version']} stays open.")
         return
     if "text" in answer or answer.get("action") == "send-back":
@@ -534,7 +569,8 @@ def _design(req, boot):
     else:
         fail(rid, f"unknown action {answer.get('action')!r}")
         return
-    req, ok = transition(rid, ("answered",), "executing", executing_boot=boot, intent={"reply": reply, "action": action})
+    req, ok = transition(rid, ("answered",), "executing", executing_boot=boot, intent={"reply": reply, "action": action},
+                         **({"resolved": revisions} if action == "revise" else {}))
     if ok:
         _answer_approval(req)
 
@@ -655,8 +691,11 @@ def settle_design(req):
     if ask["status"] == "done" and ask.get("outcome") in (ANSWER_SENT, "Sent to Claude") and approval_part(ask) == \
             req["intent"]["reply"]:
         revise = not req["intent"]["reply"].startswith("Approve")
-        transition(rid, ("executing",), "done", outcome=f"{what} delivered to the builder"
-                                                        + (" · revision pending" if revise else ""))
+        n = pin["version"]
+        transition(rid, ("executing",), "done", outcome=(
+            f"↩️ Revisions sent\nThe builder received your revisions to design v{n}; a new version is pending."
+            if revise else f"✅ Approved\nThe builder received your approval of design v{n}. Next: implementation, "
+                           "then a pull request for you to review here. Nothing is merged or deployed."))
         if revise:
             progress.touch(ledger, "revision")
         return None
@@ -664,8 +703,10 @@ def settle_design(req):
     return None
 
 
-def _feedback_from_build(req):
-    """The send-back of a build request: a feedback request to confirm. Idempotent per build request."""
+def _feedback_from_build(req, boot=""):
+    """The send-back of a build request: the feedback its card showed (with any typed words), sent at once through a
+    feedback request (`_send`: delivery evidence, a retry offered on failure). The card ends with that send's outcome.
+    Idempotent per build request: a recovery finds the feedback request, whose own recovery settles it."""
     answer, base = req["answer"], req.get("feedback")
     if "text" in answer:
         text = amend(base, answer["text"])
@@ -674,9 +715,36 @@ def _feedback_from_build(req):
     else:
         fail(req["id"], "no feedback was proposed; reply to the message with your instructions")
         return
-    if not [r for r in for_ledger(req["ledger"], "feedback") if r.get("source") == req["id"]]:
+    made = [r for r in for_ledger(req["ledger"], "feedback") if r.get("source") == req["id"]]
+    if not made and "hints" not in req:  # a card from before #58 never showed its feedback: confirm it first
         make_feedback(req, text, source=req["id"])
-    transition(req["id"], ("executing",), "done", outcome="Feedback ready below: confirm it to send it")
+        transition(req["id"], ("executing",), "done", outcome="Feedback ready below: confirm it to send it")
+        return
+    if not made:
+        # As a merge, and fail closed: only the pull request reviewed, read now and still open at the reviewed head.
+        # (obsolete() shows a card when GitHub is unreadable; that is no proof here.)
+        try:
+            why = refusal(req["run"], req["pr"], view(req["pr"], PR_FIELDS), req["head"])
+        except (OSError, ValueError, core.CommandError) as caught:
+            fresh(req)  # unchanged as far as anyone knows: the human may tap again once GitHub answers
+            fail(req["id"], f"GitHub could not confirm the pull request ({caught}). Nothing was sent; a fresh card "
+                            "follows below to try again")
+            return
+        if why:
+            fail(req["id"], f"{why}. Nothing was sent")
+            return
+        fb = make_feedback(req, text, source=req["id"], status="answered", answer={"action": "send"})
+        execute(fb["id"], boot)  # never raises: anything that goes wrong ends the feedback request failed
+        made = [load(fb["id"])]
+    fb = made[0]
+    if fb["status"] == "done":
+        outcome = fb.get("outcome")
+    elif fb["status"] in TERMINAL:
+        outcome = f"⚠️ Needs attention\n{fb.get('outcome')}"
+    else:  # a recovery: the send was interrupted, and its own recovery confirms it or offers a retry
+        outcome = ("⏳ Sending\nMuster was interrupted while sending your feedback. The run's status line shows when "
+                   "it arrives; if it can't be confirmed, a retry appears below.")
+    transition(req["id"], ("executing",), "done", outcome=outcome, resolved=text)
 
 
 def _merge(req, boot):
@@ -708,16 +776,27 @@ def _merge(req, boot):
         except (core.CommandError, ValueError):
             continue
         if state.get("state") == "MERGED":
-            sha7 = ((state.get("mergeCommit") or {}).get("oid") or head)[:7]
-            transition(rid, ("executing",), "done", outcome=f"✓ Merged {sha7} (squash). Not deployed by Muster.")
+            transition(rid, ("executing",), "done", outcome=merged(req))
             return
     if error:
         fail(rid, error)
     elif state.get("state") == "OPEN" and state.get("autoMergeRequest"):
-        transition(rid, ("executing",), "done", outcome="Merge queued · not merged yet")
+        transition(rid, ("executing",), "done", outcome="⏳ Merge queued\nGitHub merges it once its checks pass; not "
+                                                        "merged yet.")
     else:
         fail(rid, f"Merge not confirmed: GitHub reads {state.get('state') or 'unknown'}. Check the PR before tapping "
                   "again.")
+
+
+def fresh(req):
+    """The same build card again, open, for a tap that could not act: the human decides again from it."""
+    return create("build", req["ledger"], **{k: req[k] for k in (  # only what it has: no `hints` on a pre-#58 card
+        "run", "head", "base", "pr", "review", "summary", "feedback", "cycle", "proposal", "wait", "actions", "choices",
+        "questions", "recommended", "hints") if k in req})
+
+
+def merged(req):
+    return f"✅ Merged\nMerged into {req['base']}, as reviewed. Muster does not deploy."
 
 
 def wire_text(req, run, text):
@@ -732,7 +811,7 @@ def _retry(req, why):
     if not [r for r in for_ledger(req["ledger"], "feedback") if r.get("retry_of") == req["id"]]:
         make_feedback(req, req.get("resolved") or req["feedback"], origin=req.get("origin") or req["id"],
                       retry_of=req["id"], prompt_sha=(req.get("intent") or {}).get("prompt_sha"))
-    fail(req["id"], f"{why}. A retry request follows.")
+    fail(req["id"], f"{why}; a retry is available below.")
 
 
 def reconcile(req):
@@ -769,10 +848,10 @@ def _send(req, boot):
     if not launcher.seen(evidence, sha):
         agent = launcher.agent_at(run["pane"]) if run.get("pane") else None
         if agent is None:
-            _retry(req, "the agent is gone")
+            _retry(req, "Not sent: the builder's session is gone, so Muster did not send it")
             return
         if agent.get("agent_status") in ("working", "blocked"):
-            _retry(req, "the agent is busy; nothing sent")
+            _retry(req, "Not sent: the builder was busy, so Muster did not send it")
             return
         try:
             launcher.herdr_result("agent", "prompt", run["pane"], wire, "--wait", "--until", "working", "--until",
@@ -782,7 +861,7 @@ def _send(req, boot):
     end = time.monotonic() + SEEN_WAIT
     while not launcher.seen(evidence, sha):
         if time.monotonic() >= end:
-            _retry(req, "not confirmed delivered")
+            _retry(req, "Delivery could not be confirmed")
             return
         time.sleep(min(SEEN_POLL, max(end - time.monotonic(), 0)))
     delivered(transition(rid, ("executing",), "done", outcome=DELIVERED))
@@ -801,13 +880,10 @@ def _recover(req):
             fail(rid, "interrupted; not merged (could not read the pull request)")
             return
         if pr.get("state") == "MERGED" and pr.get("headRefOid") == req["head"]:
-            sha7 = ((pr.get("mergeCommit") or {}).get("oid") or req["head"])[:7]
-            transition(rid, ("executing",), "done", outcome=f"✓ Merged {sha7} (squash). Not deployed by Muster.")
+            transition(rid, ("executing",), "done", outcome=merged(req))
             return
         if pr.get("state") == "OPEN" and pr.get("headRefOid") == req["head"]:  # unchanged: the human may click again
-            create("build", req["ledger"], **{k: req.get(k) for k in (
-                "run", "head", "base", "pr", "review", "feedback", "cycle", "proposal", "wait", "actions", "choices",
-                "questions", "recommended")})
+            fresh(req)
         fail(rid, "interrupted; not merged")
     else:
         sha = (req.get("intent") or {}).get("prompt_sha")
@@ -817,4 +893,4 @@ def _recover(req):
         elif launcher.seen(evidence, sha):
             delivered(transition(rid, ("executing",), "done", outcome=DELIVERED))
         else:
-            _retry(req, "interrupted; not confirmed delivered")
+            _retry(req, "Interrupted: delivery could not be confirmed")

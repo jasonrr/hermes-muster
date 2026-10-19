@@ -32,6 +32,19 @@ Write for the decision, not for an audit log. Lead with a recognizable task, rec
 - Do not require use-case/rationale lists, severity sections, praise sections or deployment boilerplate on every card. Omit empty or repetitive sections. The card's "Deploy on merge" line is the one place for the deploy consequence; do not repeat it in prose.
 - Author the short summary deliberately; never truncate the full review to make one.
 
+Every text the human reads (the summary, the feedback or revisions, the full review) follows one standard:
+
+- Lead with what changes, why it matters and what the tap authorizes. The full review opens with your plain
+  recommendation ("Send it back: …", "Approve: …"), not with a version label.
+- Name which part of the software does which job ("intake reads issues and starts runs"), never an abstraction
+  such as "the ownership split meets the dispatch brief".
+- No commit hashes, ledger or card ids, internal task states or references the human cannot open. The version pin
+  goes only in the command's `--head` or `--proposal`.
+- Don't restate the brief, the plan, the card or each other: the card already shows the subject, your
+  recommendation and the quoted feedback.
+- When the proposal has a preview or examples section (messages, screens, output), the summary's first line points
+  to it, e.g. "👀 Preview the proposed messages: section 1 of the plan, just above this card".
+
 Example, documentation conflict:
 
 > The fix passed review, but two documentation additions conflict. Keep both and verify no code changed; no test rerun is needed for that resolution. Recommended: send those instructions to the builder, then check the resolved revision before merging.

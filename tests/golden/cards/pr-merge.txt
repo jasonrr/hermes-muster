@@ -1,0 +1,15 @@
+│ *🟡 PR #9 · Make Muster docs a manual*
+│ *Ella recommends merging it.*
+│
+│ Docs-only change; README is now a 140-line manual and every link resolves.
+│ Deploy on merge: none (documentation only).
+│
+│ *What each button does*
+│ • Merge PR #9: puts it into main now, as it stands. Muster does not deploy.
+│ • Send back…: type what to change below; your words go to the builder. Nothing is merged.
+│ • Leave PR open: nothing changes.
+│
+│ [ Merge PR #9 ]*  [ Send back… ]  [ Leave PR open ]
+│
+│ Your feedback: [ … ]
+│ (Enter sends it back to the builder with these words as the feedback.)

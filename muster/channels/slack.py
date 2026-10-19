@@ -106,6 +106,7 @@ def mrkdwn(text):
     # A Markdown link would become <target|label>: "[x](!here)" pings, "[x](@U1)" mentions. Muster's own links are
     # built apart (headline, the detail link), so agent text gets none: the "](" is broken with a zero-width space.
     escaped = shared.slack_text(text).replace("](", "]\u200b(")
+    escaped = re.sub(r"(?m)^&gt;( |$)", r">\1", escaped)  # a line's leading "> " stays a quote: it pings nothing
     convert = getattr(T.adapter, "format_message", None)
     return convert(escaped) if callable(convert) else re.sub(r"\*\*(.+?)\*\*", r"*\1*", escaped)  # muster's own bold
 
@@ -134,11 +135,32 @@ def body(req, n):
             else "Pick one, or type your own answer below." if req["choices"][n] else "Type your answer below.")
     if req["kind"] == "question":
         tail += " Typing here answers the builder; a thread reply goes to the coordinator."
-    out = sections(shared.render(req, n, cap=TEXT_MAX, label_max=LABEL_MAX, tail=[tail], number_multi=False))
+    tails = [] if req["kind"] in ("build", "design") or not shared.hints(req) else [tail]  # their hints say it
+    out = sections(shared.render(req, n, cap=TEXT_MAX, label_max=LABEL_MAX, tail=tails, number_multi=False))
+    return out + link(req)
+
+
+def link(req):
+    """The link to the request's detail message (shared.detail), when it has one: Slack's own permalink."""
     url = (req.get("detail") or {}).get("url")
-    if url:  # Slack's own permalink, from chat.getPermalink
-        out.append({"type": "context", "elements": [{"type": "mrkdwn", "text": f"<{url}|{shared.detail_label(req)}>"}]})
-    return out
+    return [{"type": "context", "elements": [{"type": "mrkdwn", "text": f"<{url}|{shared.detail_label(req)}>"}]}] \
+        if url else []
+
+
+# A decision card's input: its label, and its hint (shown unless `button_hints` is off). Enter there sends it back,
+# with the proposed feedback or revisions when the card has them.
+TYPED = {"build": "feedback", "design": "revisions"}
+
+
+def typed(req):
+    """(label, hint or None) of the card's text input."""
+    what = TYPED.get(req["kind"])
+    if not what:
+        return "Your own words", None
+    if not req.get("feedback"):
+        return f"Your {what}", f"Enter sends it back to the builder with these words as the {what}."
+    return f"Add to the {what}", f"Enter sends it back with your words added to the {what}; start with replace: to " \
+                                 "send only yours."
 
 
 def blocks(req, n):
@@ -160,11 +182,14 @@ def blocks(req, n):
              "options": [{"text": plain(label), "value": str(i)} for i, label in enumerate(labels)]},
             {"type": "button", "action_id": "muster_submit", "text": plain("Submit"), "value": f"{rid}|{n}"}]})
     elif choices:
+        recommended = [a == req.get("recommended") for a in req.get("actions") or []]  # a build or design review's
         out.append({"type": "actions", "block_id": f"mu:{rid}:{n}:choices", "elements": [
-            {"type": "button", "action_id": f"muster_choice_{i}", "text": plain(label), "value": f"{rid}|{n}|{i}"}
+            {"type": "button", "action_id": f"muster_choice_{i}", "text": plain(label), "value": f"{rid}|{n}|{i}",
+             **({"style": "primary"} if i < len(recommended) and recommended[i] else {})}
             for i, label in enumerate(labels)]})
+    label, hint = typed(req)
     out.append({"type": "input", "block_id": f"mu:{rid}:{n}:text", "dispatch_action": True, "optional": True,
-                "label": plain("Your own words"),
+                "label": plain(label), **({"hint": plain(hint)} if hint and shared.hints(req) else {}),
                 "element": {"type": "plain_text_input", "action_id": "muster_text",
                             "dispatch_action_config": {"trigger_actions_on": ["on_enter_pressed"]}}})
     return out
@@ -174,7 +199,9 @@ def blocks(req, n):
 
 async def post(blocks_, text, meta=None):
     """One message in the channel (in the run's thread with meta); returns its ts."""
+    # no unfurl: a card links its full review, posted just above it, and Slack would show that review a second time
     res = await T.client.chat_postMessage(channel=chat(), text=shared.slack_text(text), blocks=blocks_,
+                                          unfurl_links=False, unfurl_media=False,
                                           **({"thread_ts": meta["thread_id"]} if meta else {}))
     return str(res["ts"])
 
@@ -273,9 +300,12 @@ async def outcome(req):
     line = req.get("outcome") or req["status"]
     ok = True
     for n, ids in [*(presented.get("messages") or {}).items(), *(presented.get("redirected") or {}).items()]:
-        kept = approval_body(req) if req["kind"] == "permission" else body(req, int(n))
+        if req["kind"] in shared.DECISIONS:  # the outcome is the headline; the request text goes
+            kept = [*sections(shared.settled(req)), *link(req)]
+        else:
+            kept = [*(approval_body(req) if req["kind"] == "permission" else body(req, int(n))), context(line)]
         for ts in ids:
-            ok = await update(ts, [*kept, context(line)], line) and ok
+            ok = await update(ts, kept, line) and ok
     return ok
 
 
@@ -514,7 +544,7 @@ def parent_line(ref, status, line=None):
         text = str(saved.get("text") or "")
         if status == "running" and not saved.get("final"):
             line = text or None
-        elif status == "done" and saved.get("final") and text.startswith("Finished"):
+        elif status == "done" and saved.get("final") and saved.get("key") == "finished":
             line = text
     return headline(ref["ledger"], line or PARENT[status], ref.get("name"))
 

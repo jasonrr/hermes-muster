@@ -178,7 +178,7 @@ def opened(url):
     """A completed run's one-line summary, the human's ping: the pull request is open and under review, nothing
     merged or deployed. The coordinator reviews a completed ledger by its kind (skill muster:escalation)."""
     who = config.settings.get("coordinator_name") or "Coordinator"
-    return f"{pr_name(url)} opened · {who} is reviewing. No action needed; not merged or deployed. {url}"
+    return f"🔍 {pr_name(url)} opened · {who} is reviewing it. Nothing to decide yet; nothing is merged or deployed. {url}"
 
 
 def pr_name(url):
@@ -206,7 +206,7 @@ def state(ledger, now, waits, ref, archived):
     if archived is True or ref.get("state") in ("retiring", "deleted"):
         return "archived", "Archived", True
     if ref.get("resolved_at"):  # cleanup saw the merge; a human's close of the topic is not this
-        return "finished", f"Finished · {pr_name(read('review'))} merged", True
+        return "finished", f"✅ Finished · {pr_name(read('review'))} merged", True
     try:
         launch = json.loads((activity(ledger) / "launched").read_text())
         seen = launcher.seen_at(launch["dir"], launch["sha256"])
@@ -217,21 +217,21 @@ def state(ledger, now, waits, ref, archived):
     if waits:  # before the session's end: a merge or plan decision outlives the builder's session
         first, counts = min(t for t, _ in waits), collections.Counter(w for _, w in waits)
         what = ", ".join(w if n == 1 else f"{n} {w}s" for w, n in counts.items())
-        return f"waiting:{len(waits)}:{first}", f"Needs your decision: {what} · since {hm(first)}", False
+        return f"waiting:{len(waits)}:{first}", f"🟡 Your decision: {what} · since {hm(first)}", False
     if m.get("end", 0) > max(latest, stop):
         return "ended", f"Session ended {hm(m['end'])} · the builder is not running", False
     recommended, review = m.get("recommended", 0), m.get("review", 0)
     if m.get("proposal", 0) > recommended:
         plan = f"design {read('proposal')}" if read("proposal") else "the design"
-        return f"reviewing:{m['proposal']}", f"{who} is reviewing {plan} · no action needed", False
+        return f"reviewing:{m['proposal']}", f"🔍 {who} is reviewing {plan} · nothing to decide yet", False
     if m.get("revision", 0) > max(review, m.get("proposal", 0)):
         return (f"revision:{m['revision']}",
-                f"Feedback delivered {hm(m['revision'])} · revision pending" + (
+                f"↩️ Feedback delivered {hm(m['revision'])} · revisions pending" + (
                     f" · last activity {ago(tool, now)}" if tool and tool > m["revision"] else ""), False)
     if review > prompt:
         pr = pr_name(read("review"))
         if review > recommended:
-            return f"review:{review}", f"{pr} opened · {who} is reviewing · no action needed", False
+            return f"review:{review}", f"🔍 {who} is reviewing {pr} · nothing to decide yet", False
         return f"reviewed:{recommended}", f"{pr} open · {who} reviewed it", False
     if stop > latest:
         return "turn", f"Turn ended {hm(stop)} · the builder is waiting at its prompt, no question open", False

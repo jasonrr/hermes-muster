@@ -1,0 +1,17 @@
+│ *🟡 Design v1 · Make Muster docs a manual*
+│ *Ella recommends approving it.*
+│
+│ It splits Muster into three parts: intake reads GitHub issues and starts runs, the launcher starts
+│ and recovers coding agents, and delivery carries their events to you. Nothing changes in behavior.
+│ - Limit: imports move, so open branches may need a rebase.
+│
+│ *What each button does*
+│ • Approve design v1: sends your approval to the builder, which then implements it. You review the
+│ pull request before anything merges.
+│ • Send back with revisions…: type them below; they go to the builder.
+│ • Leave pending: the builder keeps waiting.
+│
+│ [ Approve design v1 ]*  [ Send back with revisions… ]  [ Leave pending ]
+│
+│ Your revisions: [ … ]
+│ (Enter sends it back to the builder with these words as the revisions.)
