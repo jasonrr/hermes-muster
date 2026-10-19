@@ -355,8 +355,6 @@ The tests are fully mocked: `tests/fake_herdr.py` stands in for `herdr`, `gh` an
 
 - [`docs/learnings.md`](docs/learnings.md): pattern → consequence lessons from past work. Builders read it before planning.
 - [`docs/review-lenses.md`](docs/review-lenses.md): the review lenses the builder's sub-agent reviewers use in this repository.
-- [`docs/decisions/`](docs/decisions/README.md): dated decision records that explain why things are built as they are.
-- [`docs/plans/`](docs/plans/README.md): dated design and implementation plans, kept as the record of past work. They are not operating instructions; this README describes current behavior.
 
 ## License
 
