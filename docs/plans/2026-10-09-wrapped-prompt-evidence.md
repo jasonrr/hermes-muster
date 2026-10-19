@@ -1,3 +1,5 @@
+> **Historical record (2026-10-09).** Not operating instructions: later work may have changed what this describes. Current behavior is in the [README](../../README.md).
+
 # Wrapped prompts count as delivered (issue #27)
 
 ## Problem (reproduced, root cause confirmed)

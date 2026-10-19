@@ -1,3 +1,5 @@
+> **Historical record (2026-10-16).** Not operating instructions: later work may have changed what this describes. Current behavior is in the [README](../../README.md).
+
 # Plan: hold possible duplicate error issues; retire closed runs (issue #34)
 
 Design: `docs/plans/2026-10-16-incident-dedupe-design.md` (v4, approved 2026-10-16). Read `docs/learnings.md`

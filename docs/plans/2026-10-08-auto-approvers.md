@@ -1,3 +1,5 @@
+> **Historical record (2026-10-08).** Not operating instructions: later work may have changed what this describes. Current behavior is in the [README](../../README.md).
+
 # Plan: automatic approvers (issue #2)
 
 Approved design (2026-10-08): `auto_approvers`, a list that is empty by default. Each entry is

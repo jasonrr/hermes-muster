@@ -1,3 +1,5 @@
+> **Historical record (2026-10-16).** Not operating instructions: later work may have changed what this describes. Current behavior is in the [README](../../README.md).
+
 # Plan: Ella reviews each proposal version; the human acts with one tap (issue #36)
 
 Design: Proposal v2 5c0779c477b3 on ledger t_c5218f7e, approved 2026-10-16. Summary:

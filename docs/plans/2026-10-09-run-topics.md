@@ -1,3 +1,5 @@
+> **Historical record (2026-10-09).** Not operating instructions: later work may have changed what this describes. Current behavior is in the [README](../../README.md).
+
 # Plan: one Telegram topic per run (issue #24)
 
 Design: `docs/plans/2026-10-09-run-topics-design.md` (Proposal v3, approved 2026-10-09). The human will check live,

@@ -1,7 +1,7 @@
 [project]
 name = "hermes-muster"
 version = "0.1.0"
-description = "A Hermes plugin: one named human labels a GitHub issue, muster gathers a coding agent in a herdr pane to work it."
+description = "A Hermes plugin that brings human-directed coding agents into your workflow, from dispatch and design approval through review and cleanup, with decisions in Telegram or Slack and the work visible in herdr."
 requires-python = ">=3.11"
 
 [dependency-groups]

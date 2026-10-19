@@ -1,3 +1,5 @@
+> **Historical record (2026-10-07).** Not operating instructions: later work may have changed what this describes. Current behavior is in the [README](../../README.md).
+
 # Design: muster — open-source Hermes plugin from rc-intake (approved 2026-10-07)
 
 Copy of design s_dlypbrb33v3s1 from the hermes-rc-engineering-intake store. Approved by Jason 2026-10-07. Name: muster.

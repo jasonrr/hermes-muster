@@ -1,3 +1,5 @@
+> **Historical record (2026-10-16).** Not operating instructions: later work may have changed what this describes. Current behavior is in the [README](../../README.md).
+
 # Design: judge duplicate error issues with a cheap model; retire closed runs (issue #34) — v4
 
 v4 replaces v3's §1 (a 60-minute time-window hold) with a model judgment, at the human's direction, 2026-10-16:

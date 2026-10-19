@@ -1,30 +1,30 @@
 # hermes-muster
 
-A Hermes plugin: one named human labels a GitHub issue, and muster gathers a coding agent in a herdr pane to work it.
+Muster is a Hermes plugin that brings human-directed coding agents into your workflow, from dispatch and design approval through implementation, review and cleanup. You make the decisions in Telegram or Slack, and the work stays visible in herdr.
 
-On a one-minute cron tick muster looks for issues carrying your approving label (default `agent-ready`) that the configured approver applied. For each one it makes a Hermes kanban card, opens a herdr worktree pane on your machine, starts your coding agent with a fixed brief, and moves the card as the agent asks questions, stops, or finishes. You are pinged (Telegram) and the Hermes agent wakes to summarize.
+You approve work by labeling a GitHub issue, or you ask the Hermes agent for an ad-hoc run. Muster then opens a herdr worktree pane on your machine and starts Claude Code in it with a brief. It tracks the run on a Hermes kanban card. It sends each question, permission prompt, design and finished build to your chat as a message with buttons. Merges happen only when you tap. Once the work is merged, muster removes the finished workspace, after backing up anything it would otherwise lose.
 
-1. The approver labels an issue in a configured repository.
-2. `hermes muster tick` (cron) sees the label event, checks the approver's login and numeric id, and makes one ledger card per approval.
-3. The card is subscribed `notify+wake` to your chat, then a herdr worktree on branch `<branch_prefix><issue number>` is created.
-4. The agent starts empty in the pane, then the brief (rules, the "how to work" prompt, the repo's production note) is submitted as its first prompt.
-5. The agent works the issue. When it asks a question or a permission prompt waits, you get a Telegram message with the question, its context and every option as a button; tap one or reply to the message, and muster hands your answer to the waiting agent and edits the message to say what happened (sent to Claude, answered in the pane, ...). The pane still works too: whichever answers first wins.
-6. The agent opens exactly one pull request whose body ends with `Closes #<n>` and runs `hermes muster hook done <PR url>`; the ledger card completes and you get the link. The Hermes agent then reviews the pull request and sends one recommendation (merge, send back, or do nothing) with buttons; see [Decisions in the channel](#decisions-in-the-channel).
-7. `hermes muster cleanup` (cron) closes the workspace once the PR is merged and every pane has been quiet for 30 minutes, after backing up anything not clean and pushed.
+- [Who does what](#who-does-what)
+- [Requirements](#requirements) · [Install](#install) · [Configuration](#configuration)
+- [Starting work](#starting-work): [labeled issues](#labeled-issues), [automatic approvals](#automatic-approvals-and-duplicate-reports), [ad-hoc runs](#ad-hoc-runs), [analysis workspaces](#analysis-workspaces)
+- [During a run](#during-a-run): [how the builder works](#how-the-builder-works), [questions and permissions](#questions-and-permission-prompts), [design approval](#design-approval), [build review](#build-review-merge-and-revisions), [progress](#run-progress), [cards](#cards-on-the-board), [recovery](#recovery)
+- [Cleanup](#cleanup)
+- [Channels](#channels): [Telegram](#telegram), [run topics](#run-topics), [Slack](#slack)
+- [Prompts](#prompts) · [Security and disclosure](#security-and-disclosure) · [Development](#development) · [Repository docs](#repository-docs)
 
-## Why not a bot
+## Who does what
 
-- One named human approves. The label event must come from `approver_login` with `approver_id`; a label applied or re-applied by anyone else refuses the issue. The one exception is a bot you list in `auto_approvers` (empty by default), under your standing rule.
-- Local. It runs on your machine, in a visible pane you can type into. Nothing is hosted.
-- Your own agent CLI, your own `gh` login (or a bot login you name).
-- Per-repo memory. A production note per repository (where it runs, how to read logs, what the agent may not touch) is pasted into every brief.
-
-Peers: [herdr-factory](https://github.com/razajamil/herdr-factory) is a herdr plugin with strong overlap; muster adds the approver gate, Hermes kanban cards, Telegram pings and per-repo notes. [Sortie](https://github.com/sortie-ai/sortie) also turns a label into an agent run, but without herdr or an interactive pane.
+- **You, the human**, approve work, answer the builder's questions and permission prompts, approve designs, and decide every merge or send-back. Only the GitHub account you configure can approve an issue, and only the chat members you list can answer muster's messages.
+- **The builder** is Claude Code in a herdr pane. It works one branch in one worktree. It asks you through its own question tool, and it opens exactly one pull request. Its brief forbids it to push to the base branch, merge, approve, deploy or force-push.
+- **The coordinator** is the Hermes agent you already talk to; `coordinator_name` sets the name muster's messages give it. When a card wakes it, it tells you what happened. It reviews each design version and each finished build, then records one recommendation, and your tap acts on it. It never types into a pane, answers the builder, moves a card or merges anything itself. Its instructions are the skills `muster:escalation`, `muster:review-standard` and `muster:dispatch`.
+- **Muster** is the plumbing between them: cron jobs, the pane's Claude Code hooks, and the gateway-side channel code.
 
 ## Requirements
 
-- Hermes >= 0.21.5, herdr >= 0.9.3, `gh` logged in, `git`, Claude Code (`claude`).
+- Hermes >= 0.21.5 with its gateway running and connected to Telegram or Slack.
+- herdr >= 0.9.3, `git`, `gh` (logged in), and Claude Code (`claude`). Claude Code is the only supported agent.
 - macOS or Linux.
+- Local clones of the repositories you configure.
 
 ## Install
 
@@ -32,7 +32,7 @@ Peers: [herdr-factory](https://github.com/razajamil/herdr-factory) is a herdr pl
 hermes plugins install <path-or-git-url>
 ```
 
-Enable the plugin and add its settings in `$HERMES_HOME/config.yaml` (the `plugins.enabled` list is the gate):
+Enable the plugin and add its settings in `$HERMES_HOME/config.yaml`. Hermes loads the plugin only if it is on the `plugins.enabled` list:
 
 ```yaml
 plugins:
@@ -51,7 +51,7 @@ plugins:
         agent_model: opus
 ```
 
-Create the board muster uses (the slug is your `board` setting); a tick fails on a missing board:
+Create the board muster uses. The slug is your `board` setting, and a tick fails if the board is missing:
 
 ```bash
 hermes kanban boards create muster
@@ -66,61 +66,73 @@ hermes cron create "every 5m" --no-agent --script muster-cleanup.sh --name muste
 hermes cron create "every 1m" --no-agent --script muster-flush.sh --name muster-flush
 ```
 
+`tick` looks for newly approved issues. `cleanup` removes finished workspaces and closes conversations. `flush` delivers hook events that a pane could not deliver itself.
+
+Restart the Hermes gateway after installing or updating muster. The gateway registers muster's channel handlers and its `pre_gateway_dispatch` hook only when it starts. The gateway and the panes must resolve the same `HERMES_HOME`, because the decision requests live in its plugin data.
+
 Check the setup without launching anything:
 
 ```bash
 hermes muster tick --dry-run
 ```
 
+Under `plugins.isolation: host`, Hermes skips `register_cli_command`, so the `hermes muster` commands do not exist.
+
 ## Configuration
 
-Set under `plugins.entries.muster.settings`. Required: `approver_login`, `approver_id`, `repos`.
+Set these under `plugins.entries.muster.settings`. Required: `approver_login`, `approver_id`, `repos`. The commands that launch, recover, recommend or clean up check every setting first, and refuse to run while one is missing or malformed.
 
 | Key | Default | Meaning |
 |---|---|---|
-| `label` | `agent-ready` | Label whose application by the approver authorizes work. |
-| `bug_label` | `bug` | Issues carrying it are briefed as bugs, others as features. |
-| `approver_login` | (required) | GitHub login allowed to approve. Compared case-insensitively, but `approver_id` is what authorizes. |
-| `approver_id` | (required) | The approver's numeric GitHub id (`gh api user --jq .id`), unquoted: an integer. A login can be renamed; an id cannot. |
-| `auto_approvers` | `[]` | Bots that may approve without you. Each entry is `{login, id, label, repos}`. `login` and `id` are required: a `[bot]` login belongs to exactly one GitHub App. `label` is optional and defaults to `automatic-approval`. `repos` is required and must be a subset of `repos`. An issue is approved automatically when its repo is in the entry's `repos`, the entry's login and id opened it, it still carries the entry's `label`, and the newest `label` event and the newest event for the entry's label were both made by that account. Entries are tried in order and the first match wins; when none matches, only you can approve. An automatic approval is briefed as a bug, and the brief and card say the bot approved it, never you. A bot re-applying `label` makes a new card, as a relabel by you does; re-applying only its own label does not. |
-| `repos` | (required) | List of `owner/name` (clone at `clone_root/<name>`) or `owner/name=/abs/clone/path`, each with an optional `@base` suffix (`you/app@develop`, `you/site=/srv/site@master`): the branch worktrees are cut from and pull requests target. Without it, muster reads `origin/HEAD` in the clone (running `git remote set-head origin -a` once if unset), else uses `main` and notes that in the launch record. An `@` right after `/` belongs to the path (`node_modules/@scope`); any other `@` in a path is read as the suffix, so give such a path an explicit `@base`. `launch --base` overrides it for an ad-hoc run. Two clones may not share a directory name (herdr names worktrees `<worktrees>/<clone dir name>/<branch>`): give one an explicit path. |
-| `clone_root` | `~/Code` | Where clones live when no path is given. |
-| `board` | `muster` | Hermes kanban board slug. Give muster its own board; idempotency keys are per board. It must exist before the first tick. |
-| `agent_kind` | `claude` | Coding agent. v1: `claude` only. |
-| `agent_model` | `opus` | Model passed to the agent CLI. |
-| `branch_prefix` | `muster/` | Issue branches are `<prefix><issue number>`. Must be a non-empty string, and a namespace muster owns: cleanup treats worktrees on `<prefix><n>` branches as its own. |
-| `notify_platform` | `telegram` | Where muster talks to you: `telegram` or `slack` (see [Slack](#slack)). Anything else is refused. |
-| `notify_chat_id` | `""` | Telegram: empty = DM the `TELEGRAM_HOME_CHANNEL` from `$HERMES_HOME/.env`. When you set it to a group, also set `notify_user_id` (the code falls back to the chat id as the user id). Slack: the channel id (`C…`), required. |
-| `notify_user_id` | `""` | The approvers: one id, or ids separated by commas (`"42,43"`). Only they may answer a muster prompt. The first is the user the subscription is for. |
-| `notify_chat_type` | `group` | Chat type used with `notify_chat_id` (a DM fallback uses `dm`). Slack needs `group`. |
-| `notify_topics` | `false` | One conversation per run: a Telegram forum topic in the `notify_chat_id` group, or a Slack thread; see [Run topics](#run-topics). Needs `notify_chat_id` and `notify_user_id`. |
+| `label` | `agent-ready` | The label that authorizes work when the approver applies it. |
+| `bug_label` | `bug` | Issues that carry it are briefed as bugs; all others are briefed as features. |
+| `approver_login` | (required) | The GitHub login allowed to approve. It is compared case-insensitively, but `approver_id` is what authorizes. |
+| `approver_id` | (required) | The approver's numeric GitHub id (`gh api user --jq .id`), written unquoted as an integer. A login can be renamed; an id cannot. |
+| `auto_approvers` | `[]` | Bots that may approve without you. Each entry is `{login, id, label, repos}`. `login` and `id` are required: a `[bot]` login belongs to exactly one GitHub App. `label` is optional and defaults to `automatic-approval`; it must differ from `label`. `repos` is required and must be a subset of `repos`. See [automatic approvals](#automatic-approvals-and-duplicate-reports). |
+| `repos` | (required) | A list of `owner/name` (cloned at `clone_root/<name>`) or `owner/name=/abs/clone/path`. Each entry takes an optional `@base` suffix (`you/app@develop`, `you/site=/srv/site@master`), which names the branch that worktrees are cut from and pull requests target. Without the suffix, muster reads `origin/HEAD` in the clone. If that is unset, it runs `git remote set-head origin -a` once; if that also fails, it uses `main` and notes this on the card. An `@` right after `/` belongs to the path (`node_modules/@scope`). Any other `@` in a path is read as the suffix, so give such a path an explicit `@base`. Two clones may not share a directory name, because herdr names worktrees `<worktrees>/<clone dir name>/<branch>`; give one of them an explicit path. |
+| `clone_root` | `~/Code` | Where clones live when an entry gives no path. |
+| `board` | `muster` | The Hermes kanban board slug. Give muster its own board, because idempotency keys are per board. The board must exist before the first tick. |
+| `agent_kind` | `claude` | The coding agent. Only `claude` is accepted. |
+| `agent_model` | `opus` | The model passed to Claude Code. |
+| `branch_prefix` | `muster/` | Issue branches are named `<prefix><issue number>`. The prefix must be a non-empty string in a namespace muster owns, because cleanup treats worktrees on `<prefix><n>` branches as its own. |
+| `notify_platform` | `telegram` | Where muster talks to you: `telegram` or `slack`. Anything else is refused. |
+| `notify_chat_id` | `""` | On Telegram, empty means muster DMs the `TELEGRAM_HOME_CHANNEL` from `$HERMES_HOME/.env`. If you set it to a group, also set `notify_user_id`; otherwise muster uses the chat id as the user id. On Slack, this is the channel id (`C…`) and is required. |
+| `notify_user_id` | `""` | The approvers in the chat: one id, or several separated by commas (`"42,43"`). Only they may answer a muster prompt. The first id is the user that card subscriptions are made for. |
+| `notify_chat_type` | `group` | The chat type used with `notify_chat_id`. A DM fallback uses `dm`. Slack needs `group`. |
+| `notify_topics` | `false` | Gives each run its own conversation: a Telegram forum topic in the `notify_chat_id` group, or a Slack thread. It needs `notify_chat_id` and `notify_user_id`. See [run topics](#run-topics). |
 | `coordinator_name` | `Coordinator` | The Hermes agent's name in muster's messages ("Ella is reviewing design v2"). |
-| `gh_config_dir` | `""` | Empty = the pane uses your own `gh` login. Set it to a `GH_CONFIG_DIR` holding another login (for example a bot): the pane then gets `GH_CONFIG_DIR=<dir>` and blank `GH_TOKEN`/`GITHUB_TOKEN`, so `gh` and `git push` act as that login. The launch refuses if `hosts.yml` is missing there. |
-| `notes_dir` | `""` | Per-repo production notes. Empty = `$HERMES_HOME/plugin-data/muster/repos`. |
-| `workflow_prompt_file` | `""` | Replaces `prompts/builder-workflow.md` in the brief. |
+| `gh_config_dir` | `""` | Empty means the pane uses your own `gh` login. Set it to a `GH_CONFIG_DIR` that holds another login, for example a bot's. The pane then gets `GH_CONFIG_DIR=<dir>` with `GH_TOKEN` and `GITHUB_TOKEN` blanked, so `gh` and `git push` act as that login. A launch is refused if `hosts.yml` is missing from that directory. |
+| `notes_dir` | `""` | Where the per-repo production notes live. Empty means `$HERMES_HOME/plugin-data/muster/repos`. |
+| `workflow_prompt_file` | `""` | A file that replaces `prompts/builder-workflow.md` in every brief. It must exist and must not be empty. |
 | `worktrees` | `~/.herdr/worktrees` | herdr's worktree directory. |
-| `project_owner` | `""` | Optional. With `project_number`, the GitHub Project (v2) whose Status moves when an issue's agent gets its brief (`gh project view <number> --owner <owner>`). Empty = off: no `gh project` call at all. |
-| `project_number` | `0` | That Project's number, an integer. Set both or neither. |
+| `project_owner` | `""` | Optional. Together with `project_number`, it names a GitHub Project (v2) whose Status moves when an issue's builder gets its brief (`gh project view <number> --owner <owner>`). Empty turns this off, and no `gh project` call is made. |
+| `project_number` | `0` | That Project's number, as an integer. Set both `project_owner` and `project_number`, or neither. |
 | `project_status_field` | `Status` | The single-select field to set. |
-| `project_status_value` | `In Progress` | The option it is set to. |
+| `project_status_value` | `In Progress` | The option to set it to. |
 
-The Project move runs after each launch or recover delivers the brief, and is never retried. Ids are resolved every time. The outcome is one card comment: `project: In Progress`, `project: not in Project #<n>` (or `not in the first 300 items of Project #<n>`: only 300 are searched), `project: field/option not found`, or `project: failed: <error>`. It never blocks a launch. The tick's `gh` login needs the `project` scope: `gh auth refresh -s project`.
+The Project move runs after each launch or recover delivers the brief, and it is never retried. Ids are looked up each time. The outcome is one card comment: `project: In Progress`, `project: not in Project #<n>` (or `not in the first 300 items of Project #<n>`, since only 300 items are searched), `project: field/option not found`, or `project: failed: <error>`. It never blocks a launch. The `gh` login that the tick uses needs the `project` scope: `gh auth refresh -s project`.
 
-## Per-repo production notes
+### Per-repo production notes
 
-`<notes_dir>/<owner>__<repo>.md`, for example `you__app.md`. Its text goes into every brief for that repository; with no file, the brief says production is unknown and to ask. Use six headings: Platforms; Where production runs; How to read config and logs; Tools the worker image needs; Read-only credentials to provision; Open questions. You edit it (or ask your agent to); the pane agent only reads it.
+Each repository can have a note at `<notes_dir>/<owner>__<repo>.md`, for example `you__app.md`. Its text goes into every issue brief for that repository, and the coordinator reads it to state what a merge deploys. Without a note, the brief says that nothing records what a merge deploys and tells the builder to ask. A useful note covers where production runs, how to read its config and logs, the tools and read-only credentials the work needs, and what the builder must not touch. You edit the note, or ask your agent to; the builder only reads it.
 
-## How work flows
+## Starting work
 
-- The **ledger card** is the record of one approval (or ad-hoc run). It is blocked when the agent's launch fails or its session ends without a pull request, and completed when the pull request is done.
-- A **wait card** opens each time the agent stops to wait for you (a question or permission prompt) and is archived once it is answered (in the channel or the pane). When muster can deliver the question itself (Telegram, a pane started with the bridge hook, the gateway side running) the card takes no subscription (no plain ping, no Hermes agent turn): muster's own message is the one notice. Otherwise it pings as before. Questions after the pull request (a reviewer asks for a change) still open one and ping you; only an archived ledger is silent. After 10 idle minutes without a finished run, an ad-hoc run's wait card says so.
-- A **proposal** is the plan or design an agent asks you to approve. The brief tells it to write the whole thing to a file and run `hermes muster hook propose <file>` (an ad-hoc run: `hermes muster hook --card <card> propose <file>`) before it asks. Each distinct text becomes the next version, `Proposal v<n> <sha256[:12]>`: one ledger comment headed so, and a copy in `<data dir>/runs/<ledger>/proposals/v<n>.md`. Earlier versions stay. Once the comment reads back on the ledger, the version is armed for the agent's approval request: an AskUserQuestion with a question headed `Approval`. That request's wait card body carries the version id, the full text and every question and option the agent asked, and the ping names the version. Other questions and permission prompts never take a proposal. An approval request is refused before its dialog shows (the agent sees why) when no proposal is armed (none saved, the comment not on the ledger yet, or the armed one already carried by an earlier approval request), or when another wait card is still open; a refusal keeps the armed version for the next request. The armed version is used up only once a wait card carries it. To review: `hermes kanban --board <board> show <wait card> --json` (the body), and `show <ledger> --json` (every version, in its comments). The file is capped at 48 KB (and each option preview on the card at 2 KB), and GitHub tokens in it are redacted.
-- Every card is subscribed `notify+wake`: the gateway pings you, then queues a Hermes agent turn. The skills `muster:escalation` and `muster:dispatch` tell that agent to inform you and never act on the pane, the issue or the pull request. Those skills, and every other prompt muster gives an agent or model, are files in [`prompts/`](prompts/README.md).
-- If a launch failed ("The coding agent did not start", "did not become ready", "its first prompt may not have arrived", "The launch was refused"), fix the cause and run `hermes muster recover <ledger card id>`. For "may not have arrived", look at the pane first and add `--resend` only if it shows no brief. Add `--adopt` when a launch refused a branch that already has commits ahead of base, or a worktree muster did not make, and you want the agent to work on it as is (it also resumes an ad-hoc run from before launch records). An issue card from before launch records cannot be recovered: remove and re-apply the label. Never re-launch the work on a new branch.
+### Labeled issues
 
-## Duplicate error reports
+1. The approver applies `label` to an issue in a configured repository.
+2. On its next tick (every minute), `hermes muster tick` reads the issue's timeline. It checks that the newest event for the label came from `approver_login` with `approver_id`; a label applied or re-applied by anyone else refuses the issue. It then makes one ledger card for that approval. Re-applying the label later makes a new card.
+3. The card is subscribed to your chat. Muster creates a herdr worktree on branch `<branch_prefix><issue number>`, cut from the repository's base branch, and starts Claude Code in it with no prompt.
+4. Muster then submits the brief as Claude Code's first prompt. The brief contains the rules, [how to work](#how-the-builder-works), [how to ask you](#questions-and-permission-prompts) and the repository's production note. Issue text never enters the brief: the builder reads the issue with `gh` and treats it as data.
+5. The builder comments "Picked up by muster." on the issue and works it. Questions, permission prompts and design approvals reach you in the chat.
+6. The builder opens one pull request whose body ends with `Closes #<n>`, then runs `hermes muster hook done <PR url>`. Muster refuses it unless `gh` names the run's branch as the pull request's head. The ledger card is completed, and the coordinator [reviews the build](#build-review-merge-and-revisions).
+7. Once the pull request is merged and the panes are quiet, [cleanup](#cleanup) removes the workspace.
 
-An error tracker often files several issues for one incident within seconds (#34: three Sentry issues, three builders). Before an automatic approval (an `auto_approvers` bot) launches, muster compares it with the repository's *live runs*: issue runs whose ledger is not archived and whose agent is still in its pane. It makes one model call through Hermes (`ctx.llm`, muster's auxiliary task `muster_dedupe`), which can only name one of those runs or none. Muster picks no model. To use a cheap one, set it in `$HERMES_HOME/config.yaml`:
+### Automatic approvals and duplicate reports
+
+A bot listed in `auto_approvers`, such as an error tracker, can start work on the issues it opens. Muster approves an issue automatically when all of these hold: its repository is in the entry's `repos`; the entry's login and id opened it; it still carries the entry's `label`; and the newest `label` event and the newest event for the entry's label were both made by that account. Entries are tried in order and the first match wins; when none matches, only you can approve. An automatic approval is briefed as a bug, and the brief and card say that the bot approved it, never you. A bot re-applying `label` makes a new card, just as a relabel by you does; re-applying only its own label does not.
+
+Error trackers often file several issues for one incident. Before an automatic approval launches, muster compares the issue with the repository's live runs: issue runs whose ledger is not archived and whose builder is still in its pane. It makes one model call through Hermes (`ctx.llm`, under muster's auxiliary task `muster_dedupe`). The model can answer only by naming one of those runs, or none. Muster does not pick a model; to use a cheap one, set it in `$HERMES_HOME/config.yaml`:
 
 ```yaml
 auxiliary:
@@ -128,127 +140,207 @@ auxiliary:
     model: <a cheap model your provider offers>
 ```
 
-- **None, or any failure** (no model, a timeout, an unusable answer): the issue launches as before. A failure is also noted on its card ("dedupe check failed").
-- **Duplicate of a live run:** the issue's card is held: blocked ("Possible duplicate of …; not dispatched"), with no worktree and no agent. Muster hands the judgment to that run's agent in its pane, as one line plus JSON data, once its agent is idle and no question of yours is open there. It counts as delivered only when the pane's prompt hook confirms it. The agent evaluates it:
-  - **Same incident:** it comments on the report, adds `Closes #<n>` to its own pull request body, and runs `hermes muster hook duplicate <n> same`. The held card says so and stays held. When that pull request merges, GitHub closes the report and the tick archives the held card.
-  - **Different incident:** it runs `hermes muster hook duplicate <n> different`, and the next tick launches the report normally (the approval is re-checked).
-- **You decide instead:** `hermes muster recover <held card>` launches it, and closing the issue drops it. A reopened issue is not dispatched again on its old approval: only a new approving label event makes a new card.
-- **Notices:** the block pings once, and at most one more card follows: if the run's agent is gone, or nothing was delivered or answered within 24 hours.
-- Human-labelled issues are never checked: you judged each one when you labelled it.
+- **No duplicate, or any failure** (no model, a timeout, an unusable answer): the issue launches normally. A failure is also noted on its card ("dedupe check failed").
+- **A possible duplicate of a live run:** the issue's card is held. It is blocked with "Possible duplicate of …; not dispatched", and it gets no worktree and no builder. Muster hands the judgment to the live run's builder in its pane, as one line plus JSON data, once that builder is idle and none of your questions is open there. The handoff counts as delivered only when the pane's prompt hook confirms it arrived. The builder then decides:
+  - **Same incident:** it comments on the report, adds `Closes #<n>` to its own pull request body, and runs `hermes muster hook duplicate <n> same`. The held card records this and stays held. When that pull request merges, GitHub closes the report and the tick archives the held card.
+  - **Different incident:** it runs `hermes muster hook duplicate <n> different`, and the next tick launches the report normally, after checking the approval again.
+- **You decide instead:** `hermes muster recover <held card>` launches the report, and closing the issue drops it. A reopened issue is not dispatched again on its old approval; only a new approving label event makes a new card.
+- **Notices:** the block pings you once. At most one more card follows, if the live run's builder is gone, or if nothing was delivered or answered within 24 hours.
+- Issues you labeled yourself are never checked, since you judged each one when you labeled it.
 
-## Decisions in the channel
+### Ad-hoc runs
 
-Herdr is optional: every routine decision can be made from Telegram. Pane ids appear on messages as provenance only.
+For coding work that has no labeled issue, ask the Hermes agent to dispatch it. Its `muster:dispatch` skill writes your request to a brief file and runs:
 
-- **Questions.** Each pane starts with a Claude Code `PermissionRequest` hook (`hermes muster hook permission`). It runs beside the pane's own dialog, records the dialog as a decision request in `<data dir>/decisions/`, and waits up to 24 hours for your answer. Inside the Hermes gateway, muster shows it with Hermes's own clarify prompt: the question, the agent's context, every option with its description, and the proposal version when it asks for approval. Tap an option, tap Other and type, or reply to the message with text; for several choices type the numbers (`1,3`). Hermes parses the reply.
-- **Permission prompts.** These use Hermes's own approval card: the command as code, then Allow once and Deny. There is no "allow for the session": a session rule did not stop Claude asking again for the same command, and neither did Claude's own "don't ask again" (seen live), so each prompt is decided once. A reply to the card denies it and tells the agent your words. Hermes's `approvals.timeout` applies; an unanswered card is denied, and the agent is told why. A subagent's permission prompt works the same way and names the subagent. Claude shows a subagent's dialog in the pane only after the hook returns, so while muster waits, the pane cannot answer it; with the gateway down, the hook returns at once and the dialog shows.
-- **Either way**, answering in the pane first works as before (Claude stops the hook). If anything goes wrong (the gateway down, an error), the hook gives no decision and the pane's dialog decides: muster never allows on error.
-- **Builds.** When a pull request is ready (or revised, below), the ping says "PR #<n> opened · <coordinator> is reviewing. No action needed". The Hermes agent reads the diff, the code around it, the checks and the repo's production note, and runs `hermes muster recommend <ledger> --pr <url> --head <sha> --choice merge|send-back|nothing --review <file> --summary <file> [--feedback <file>]`. Its full review (what it verified versus what the coding agent claimed, gaps, the deploy consequence) is posted whole as its own message; just below it, the decision card shows the recommendation, the summary (at most 900 characters, refused rather than cut, and it must state the deploy consequence) and three buttons:
-  - **Leave PR open** records the choice; the pull request stays open.
-  - **Merge** re-checks that the pull request is still the run's own (same branch, base and repository, not a fork or draft), that its head is still the reviewed sha, and that GitHub reports it mergeable (`mergeStateStatus` CLEAN, HAS_HOOKS or UNSTABLE: required checks are GitHub's call, so on a repository without branch protection a red check does not block), then runs `gh pr merge --squash --match-head-commit <sha>` with your own `gh` login (the bot's `GH_TOKEN`, `GITHUB_TOKEN` and `GH_CONFIG_DIR` are removed) and reads back MERGED before saying so. A merge never implies a deploy.
-  - **Review feedback…** opens a confirmation card with the whole proposed revision instructions: **Send feedback to builder**, add your own words, or start them with `replace:` to replace them. They go to the same agent in the same pane, and count as sent only once the pane's prompt hook confirms they arrived. A busy or gone agent gets nothing, and you get a Retry.
-- **Designs.** Each version an agent publishes with `hook propose` gets a design review card that wakes the Hermes agent (no ping) in the run's topic. It reviews that exact version and runs `hermes muster recommend-design <ledger> --proposal v<n>:<sha> --choice approve|revise|judgment --review <file> --summary <file> [--feedback <file>]`. Its full review and the design's full text are posted as one message; below it, the card shows the summary, the whole revisions it would send, and three buttons: **Approve design v<n>** and **Send revisions to builder** answer the agent's approval question for that same version; **Leave pending** leaves the question to you. One decision per version:
-  - Until the review arrives, the builder's question says "Design v<n> ready · <coordinator> is reviewing. No action needed", and its approve button reads "… without <coordinator>'s review" (on Telegram, the text says so). Once the review card is posted, the question points at it and loses its buttons; the review card is the one place to decide. If you choose Leave pending, the question shows again.
-  - A tap before the agent asks is kept, with its exact words, and given when the agent asks for that version; a newer version cancels it ("Nothing was approved" / "The revisions were not sent"). A tap answers only the Approval question of a request that asks several; the others keep their own messages and answers.
-  - The card says what happened: "recorded · delivering to the builder", "recorded · awaiting your other answer above", then "delivered to the builder" once the pane's hook took it. If you answered the builder's question first, that answer stands: the review comes as a short note with no buttons, and nothing asks you again.
-  - A tap never acts on another version, never moves to another question after one was answered, and the Hermes agent cannot answer the question itself.
-- **Re-review.** After a delivered send-back, the agent's next `hook done` (an issue run) or finished turn (an ad-hoc run) with a pushed, clean, non-draft pull request at a new head opens a review card, "PR #<n> revised", whose ping says the coordinator is re-reviewing (no action needed) and which wakes the Hermes agent to recommend again. One card per reviewed head, however often done runs. New commits make older recommendations stale: their buttons answer "stale". An unfinished revision makes `hook done` exit 1 and tell the agent why.
-- **Safety.** Only an approver in `notify_user_id` (or, for a DM, the DM's user) in the notify chat can tap or reply to a muster prompt. Being allowed to talk to the Hermes agent is not enough. Anyone else's tap is refused and logged, and anyone else's message is never taken as an answer (it reaches the Hermes agent as an ordinary message). Each message is edited to what happened (Answer sent to the builder, Allowed once · sent to the builder, Denied · sent to the builder, Answered in the pane, Expired: denied after 10 min). "Sent" means muster handed your answer to Claude. Claude takes whichever answer comes first, so that is not confirmation it was applied, and an allow is permission, not a command that succeeded. Every request records an audit trail (each status change with its time and result). A double tap, a replay or a gateway restart never repeats an effect. On Telegram, after a restart, the questions still unanswered are shown again (older messages say "Replaced after a restart"), and answers already given are kept; on Slack the prompts already posted stay live, and an interrupted merge or send-back is read back from GitHub or the pane, never redone without a new tap.
+```bash
+hermes muster launch --cwd ~/Code/app --branch feat/thing --title "Add thing" --brief brief.md [--base develop] [--model opus]
+```
 
-The gateway side registers Telegram callback guards (muster prompts answer only the notify user; the reply prompt after Other) and a `pre_gateway_dispatch` hook, so **restart the Hermes gateway after installing or upgrading muster**. The gateway and the panes must resolve the same `HERMES_HOME` (the requests live in its plugin data). Panes started before the upgrade have no bridge hook; their questions ping as before. On Slack: see [Slack](#slack).
+The branch must match `(feat|fix|chore|deps)/<name>`, where the name uses lowercase letters, digits, `.`, `_` and `-`, and each branch can be used for only one run. `--base` defaults to the repository's `@base` in `repos`, and otherwise to origin's default branch. `--model` defaults to `agent_model`. The command makes a card, opens the pane, delivers the brief and prints the run as JSON.
 
-## Slack
+The builder's prompt is your brief followed by a footer that names the run's card, branch and base, the same "Asking the human" and "How to work" text that issue runs get, and the rule never to push to the base, merge, deploy or force-push. If your brief already states the approach and scope, it counts as the approved design and the builder goes straight to building. Otherwise the builder proposes a design first.
 
-**Not yet accepted.** The Slack channel is built and passes its tests against a fake Slack client. It counts as working only after the live acceptance run in a test workspace (plan `docs/plans/2026-10-17-channels.md`, Task 11). Until then, treat it as unverified. The design is `docs/plans/2026-10-17-channels-design.md`.
+An ad-hoc builder does not report its own completion. Each time its turn ends, muster checks GitHub. The run is finished when exactly one open or merged, non-draft pull request goes from the branch into the base, its head is the worktree's HEAD, and no tracked file has uncommitted changes. If the builder sits idle for 10 minutes without a finished pull request, a wait card says so.
 
-- **Settings.** `notify_platform: slack`, `notify_chat_id: C…` (the channel), `notify_user_id` (one or more member ids `U…`, separated by commas) and `notify_chat_type: group`. A missing or wrong one is refused by `hermes muster` and logged by the gateway when Slack connects. Slack has no DM fallback.
-- **Hermes owns the Slack app.** It reads `SLACK_BOT_TOKEN` and `SLACK_APP_TOKEN`; muster reads no Slack secret. In the app's settings, turn **Interactivity** on (Socket Mode needs it for buttons), and invite the bot to the channel. One workspace only: muster posts with Hermes's first bot token.
-- **Prompts.** Each question is its own message: the question, one button per option, and a "Your own words" box (press Enter to send). Several choices use checkboxes and Submit. A permission prompt shows the command verbatim with Allow once and Deny, and a "Deny with a message" box. Hermes's own clarify and approval prompts are not used on Slack: Hermes runs its own button handlers before any plugin's, so muster could not limit who answers them.
-- **Who may answer.** Only an approver, in the configured channel. Anyone else's tap gets "Not authorized" (only they see it) and is logged. Thread replies are never taken as answers; they go to the Hermes agent as usual.
-- **Restarts.** A prompt stays answerable across a gateway restart: nothing is posted again, and answers already given to some questions of a request are kept. (A gateway that dies between Slack taking a post and muster saving its id posts that prompt once more; both copies answer the same request once.)
-- **Timeout.** Hermes's `approvals.timeout` does not apply on Slack. An unanswered permission prompt is denied after 10 minutes by muster's own deadline. A command over 2900 characters, or a question with more options than Slack shows (25; 10 when several may be picked), cannot be shown whole: you get a card saying so, and you answer it in the pane.
-- **Threads** (`notify_topics`). The bot posts one parent message per run and the run talks under it. The parent is what you scan in the channel: the run's short title in bold, then its state and whether it needs you, then the issue as a link, e.g. "*Activity status* / Needs your decision: design v2 · since 14:05 · Issue #46". When the work is resolved the parent says "Finished · PR #<n> merged"; a new request from the run still posts in the thread ("Reopened for a new request"). An archived run's parent says "Archived" and its prompts end.
-- **Formatting.** Agent and human text is escaped first (no ping or link it did not mean), then converted with Hermes's own Markdown converter, so headings, bold and links render natively. A long card is split into several sections, never cut; a full review is its own message, linked from its card. muster deletes no Slack message. Deleting a parent by hand is unsupported: later messages may land orphaned.
-- **The Hermes agent in a thread.** Hermes's `thread_require_mention`, `strict_mention` or `allowed_channels` settings can keep your un-mentioned thread replies from the Hermes agent. Check them if it does not answer in a run's thread.
-- **Switching platform** leaves the old platform's topics or threads, and their kanban subscriptions, as they are. Open requests of a run whose conversation is on the other platform are posted at the top of the new channel, headed with the run.
+### Analysis workspaces
 
-## Run topics
+For research or analysis that ends in no pull request, the Hermes agent runs `hermes muster open --cwd <dir> --label "<short label>"`. This opens a herdr workspace that muster records, so cleanup can close it after every pane has been quiet for 30 minutes. Closing it deletes no file. The command prints `workspace`, `pane` and `terminal` as JSON. No card tracks the workspace.
 
-Opt-in (`notify_topics: true`). Each run (an issue or an ad-hoc launch) gets one forum topic in the notify group, named `<short title> · #<issue>` (or `<short title> · <branch>`; with several repos configured, `<repo>#<issue>`). The title is cut at a word near 48 characters. Two live runs never share a name: the second gets ` (2)`. Everything about the run happens there: its questions, permission cards, proposals for approval, wait and review pings, the Hermes agent's review and the Merge / Send back / Do nothing buttons, send-backs and re-reviews. Hermes's kanban notifier pings, and runs the Hermes agent's turn, in each card's subscription thread, so the agent's commentary lands in the topic too. General planning stays in the main chat (General).
+## During a run
 
-- **Before you turn it on:** enable Topics in the group's settings, and make the bot an admin with the Manage Topics and Delete Messages rights (Telegram needs the second to delete an archived run's topic). muster never changes either. Restart the Hermes gateway after upgrading.
-- **At launch** the gateway makes the topic (Hermes's `create_handoff_thread`) while the launch waits up to 45 s. If Topics is off, the right is missing, the gateway is down, or the group cannot be checked after three tries, the run stays in the main chat. You get one message saying why there, and a `topic:` comment on the ledger card. Runs launched before you turned topics on stay in the main chat; nothing migrates.
-- **A lost create.** Telegram may make the topic while its reply is lost. Hermes reports every failed create as "no topic", so muster calls create at most once per destination and never retries a create that returned nothing. It waits 20 s for Telegram's own "topic created" notice. If a notice for a topic the bot made has that run's name (unique among live runs), it adopts that topic; a notice that names no run, or several, is ignored. Without a notice the run stays in the main chat, with the usual message saying why. A notice that arrives later closes that topic as unused. So a run never has two live topics, though a lost reply with no notice can leave one empty topic open in the group. Whether Telegram delivers the notice to the bot that made the topic is unverified. Check it before relying on the topic: after the first launch with topics on, `$HERMES_HOME/plugin-data/muster/logs/gateway.log` shows a `topic notice: thread …` line for each notice that arrives.
-- **Answers are scoped to the topic.** A tap or reply counts only inside the run's topic, from the notify user. Text after "Other" goes to the prompt waiting in the topic it was typed in, so two runs' prompts never compete. A muster message found anywhere else (Hermes moves a message to General when its topic is gone) is not answered there: the tap says "Moved" and the request is shown again in its topic.
-- **A deleted topic** is found when a prompt lands outside it: Hermes resends a message whose thread is gone to General, and a tap on a request's newest prompt there marks the topic gone (so does a reopen that finds no thread). Nothing probes a topic: Telegram has no read of a topic's state, and any call that could stand in for one changes it. muster then makes a new topic, shows the open prompts there again, says so, and moves every card's subscription. A card's move counts only when Hermes's subscription list shows it at the new topic and no longer at the old one. A card that has not moved is retried, backing off to once a minute, and logged each time; the repair is recorded as done only when none is left. Until the deletion is found, pings land in General, where Hermes resends them.
-- **When the run's work is resolved** (its ledger is `done` and the newest pull request from its branch merged, none open; cleanup checks every 5 min) its open build, feedback and design requests end, and the topic gets "Finished. This topic is now closed." and is closed. Nothing about the worktree (unsaved work, a running process, an owner record that no longer matches) holds the close: those hold only the worktree's removal. It counts as closed only once Telegram confirms the close; a failed close is retried, backing off to once an hour, and logged. A pull request still open is in review: the topic stays open.
-- **A closed topic stays closed.** A restart, a scan, a replayed hook or a saved request never reopens it. Only a request made after the close (a new question from the agent, a new review) reopens it, unless the run is archived. A resolved run's topic reopened that way (or remade after a deletion) closes again on cleanup's next pass. A build or feedback request whose pull request merged, closed or moved to another head is never shown again; it ends as stale.
-- **Closing a topic by hand** is kept (Telegram's "topic closed" notice): nothing reopens it but a new request, and the run's work goes on; its older prompts can still be answered in the pane. Reopening it by hand is the explicit resume: its open prompts show again, and it stays open until you close it.
-- **When the run's ledger card is archived** (by you or the board), the run is retired: its open prompts end as "The run is archived" and its topic is deleted with its history, within 30 s of the archive (5 min for a closed topic). The archived card keeps the pull request, proposals and comments, and `<data dir>/runs/<card>/conversation.json` keeps the topic's name and ids. A retired run is never probed, reopened or given a new topic, so deleting its topic by hand is final too. A delete Telegram does not confirm (for example without the Delete Messages right) closes the topic meanwhile and is retried, backing off to once an hour. Only a card that reads `archived` retires a run; a card missing from the board deletes nothing.
-- The reference lives in `<data dir>/runs/<ledger>/conversation.json` (platform, chat, thread, requester, state). Its thread field is Telegram's `message_thread_id`, or the Slack thread parent's `ts`.
-- **An archived run's card subscriptions are removed** (`hermes kanban notify-unsubscribe`, on both platforms), so its pings stop landing in General or the thread. A removal that fails is retried.
-- On Slack, see [Slack](#slack): the same states, with a thread parent in place of the topic.
+### How the builder works
 
-## Run progress
+Every brief includes the same house workflow, [`prompts/builder-workflow.md`](prompts/builder-workflow.md), unless `workflow_prompt_file` replaces it. In short:
 
-Each run launched with this version gets **one status message**, edited in place and never posted again, so you can tell a started build from a quiet or waiting one without asking. On Slack with a run thread it is the thread's parent (the run's short title, with the line under it); on Telegram, and on Slack without a thread, muster posts it once in the run's topic or the main chat when the brief is sent. Later questions land below it.
+- **Bugs:** reproduce the bug, find its root cause, write a failing test, then fix it at the source. An architectural or multi-file fix is handled like a feature.
+- **Features:** read the code, then write a short design covering the problem, the chosen approach, what was cut and why, and open questions. **You approve the design**, and no code is written before you do.
+- **Implementation plan:** after the design is approved, the builder writes a step-by-step plan to `docs/plans/YYYY-MM-DD-<slug>.md` in the worktree, and a fresh sub-agent attacks it until it holds. That attack is the plan's approval: you approve the design, not the plan, and you are never asked to approve the plan.
+- **Build:** tests come first. A cheap sub-agent reviews each task, and a fresh sub-agent reviews the whole branch before the pull request is opened, using the repository's `docs/review-lenses.md` if it has one.
+- **Pull request:** one pull request. Its body is your evidence: every review finding with its severity, verdict and outcome, the probe log, the test and lint commands that were run, and any deviations from the plan.
+- Trivial one-file changes skip the design and the plan.
 
-What it says, and the evidence for each (the pane's own hooks; never herdr's screen state, never pane content):
+### Questions and permission prompts
+
+The builder asks with Claude Code's AskUserQuestion tool, because a question in plain text pings no one. Each pane starts with Claude Code hooks pointing at `hermes muster hook`. When a dialog waits for you, muster opens a wait card, records the dialog as a decision request in `<data dir>/decisions/`, and the gateway shows it to you as its own message. You can answer there or in the pane, and whichever answer comes first wins.
+
+- **Questions** show the question, the builder's context, every option with its description, and the design version when the question asks for approval. Tap an option, or answer in your own words (see [Telegram](#telegram) and [Slack](#slack) for how each channel takes them). A question waits up to 24 hours.
+- **Permission prompts** show the command and offer Allow once and Deny; you can also deny with a message, which the builder is told. Each prompt is decided once, and there is no "allow for the session". An unanswered prompt is denied, and the builder is told why. A subagent's permission prompt works the same way and names the subagent. While muster waits, the pane cannot answer that prompt, because Claude Code shows a subagent's dialog only after the hook returns.
+- **Fail closed:** if anything goes wrong, such as the gateway being down or an error, the hook makes no decision and the pane's own dialog decides. Muster never allows anything on error.
+- **What a message says afterwards:** each message is edited to show what happened, for example "Answer sent to the builder", "Allowed once · sent to the builder" or "Answered in the pane". "Sent" means muster handed your answer to Claude Code. It does not confirm the answer was applied, and an allow is permission, not proof that the command succeeded. Every request keeps an audit trail of its status changes, with times and results. A double tap, a replay or a gateway restart never repeats an effect.
+- When muster cannot deliver a question itself, for example while the gateway side is down, the wait card pings you the ordinary Hermes way instead.
+
+### Design approval
+
+Before asking you to approve a design, the builder writes all of it to a file and runs `hermes muster hook propose <file>`; an ad-hoc builder runs `hermes muster hook --card <card> propose <file>`. Each distinct text becomes the next version, `Proposal v<n> <sha256[:12]>`. The version is saved as one ledger comment with that heading, and as a copy in `<data dir>/runs/<ledger>/proposals/v<n>.md`. Earlier versions are kept. A proposal file is capped at 48 KB, each option preview on the card at 2 KB, and GitHub tokens in it are redacted.
+
+The builder then asks with AskUserQuestion, giving the approval question the header `Approval`. Muster refuses that question before its dialog shows, and tells the builder why, in three cases: no version has been saved and read back on the ledger, the saved version was already carried by an earlier approval request, or another wait card is still open. To read a version yourself, run `hermes kanban --board <board> show <ledger> --json`; every version is in its comments.
+
+Each version also wakes the coordinator, without pinging you, so it can review that exact version. The coordinator records its review with `hermes muster recommend-design <ledger> --proposal v<n>:<sha> --choice approve|revise|judgment --review <file> --summary <file> [--feedback <file>]`. You get its full review and the design's full text, then a card with its summary, the complete revisions it would send, and three buttons: **Approve design v<n>**, **Send revisions to builder** and **Leave pending**. One decision is made per version:
+
+- Until the review arrives, the builder's question says "Design v<n> ready · <coordinator> is reviewing. No action needed", and its approve button reads "… without <coordinator>'s review". Once the review card is posted, the question points at it and loses its buttons, so the review card is the one place to decide. If you choose Leave pending, the question shows again.
+- A tap made before the builder asks is kept, with its exact words, and given to the builder when it asks about that version. A newer version cancels the tap ("Nothing was approved" / "The revisions were not sent"). A tap answers only the Approval question of a request that asks several; the other questions keep their own messages and answers.
+- The card shows what happened: "recorded · delivering to the builder", or "recorded · awaiting your other answer above", then "delivered to the builder" once the pane's hook has taken it. If you answered the builder's question first, that answer stands. The review then arrives as a short note with no buttons, and nothing asks you again.
+- A tap never acts on another version, and never moves on to another question once one has been answered. The coordinator cannot answer the question itself.
+
+### Build review, merge and revisions
+
+When a pull request is ready, the ping says "PR #<n> opened · <coordinator> is reviewing. No action needed". The coordinator reads the diff, the code around it, the checks, the builder's review log in the pull request body and the repository's production note. It records one recommendation with `hermes muster recommend <ledger> --pr <url> --head <sha> --choice merge|send-back|nothing --review <file> --summary <file> [--feedback <file>]`. Its full review is posted as its own message. It covers what the coordinator verified versus what the builder claimed, the gaps, and the deploy consequence. Below it, a decision card shows the recommendation and the summary. The summary is at most 900 characters (a longer one is refused, never cut) and must state the deploy consequence. The card has three buttons:
+
+- **Leave PR open** records your choice, and the pull request stays open.
+- **Merge** first checks the pull request again: it must still be the run's own (same branch, base and repository, not a fork or a draft), its head must still be the reviewed sha, and GitHub must report it mergeable (`mergeStateStatus` CLEAN, HAS_HOOKS or UNSTABLE). Required checks are GitHub's call, so on a repository without branch protection a red check does not block the merge. Muster then runs `gh pr merge --squash --match-head-commit <sha>` with your own `gh` login, removing the bot's `GH_TOKEN`, `GITHUB_TOKEN` and `GH_CONFIG_DIR`. It reads back MERGED before saying the merge happened. A merge never implies a deploy.
+- **Review feedback…** opens a confirmation card that shows the complete proposed revision instructions. You can choose **Send feedback to builder**, add your own words, or start your words with `replace:` to replace the instructions. They go to the same builder in the same pane, and count as sent only once the pane's prompt hook confirms they arrived. A busy or absent builder gets nothing, and you get a Retry button.
+
+**Re-review.** After a send-back has been delivered, the builder pushes a revision. On an issue run it runs `hook done` again; on an ad-hoc run its turn ends. Once the pull request is pushed, clean and non-draft at a new head, muster opens a review card, "PR #<n> revised", and the coordinator recommends again. There is one card per reviewed head. New commits make older recommendations stale, and their buttons then answer "stale". An unfinished revision makes `hook done` exit 1 and tell the builder why.
+
+### Run progress
+
+Each run gets one status message that is edited in place and never posted again, so you can tell a started build from a quiet or waiting one without asking. On Slack with run threads, it is the thread's parent message. Otherwise muster posts it once, when the brief is sent, in the run's topic or the main chat. Later questions appear below it.
+
+Each line comes from the pane's own Claude Code hooks, never from herdr's screen state or the pane's content:
 
 | Line | Evidence |
 |---|---|
-| Dispatched 14:01 · waiting for the builder to start | muster sent the brief; the agent's prompt hook has not reported it, and nothing stronger (a question, a review, a turn end) was seen |
-| Started 14:02 · no tool activity yet | the UserPromptSubmit hook's hash of the brief (its own time, not later prompts') |
-| Working · last activity 3 min ago (14:37) | the newest PostToolUse / PostToolUseFailure (main agent or a subagent) |
-| Quiet 40 min · last tool 14:37 · long tools can be quiet | no tool finished for 15 min. Unknown, not a failure; muster takes no action |
-| Needs your decision: question, design v2 · since 14:41 | an open request you must answer: a question or permission prompt, or a design, build or feedback card. A builder's Approval question still under the coordinator's review does not count; only their own answer, settle or liveness paths end them |
-| Ella is reviewing design v2 · no action needed | a design version saved (`hook propose`) with no recommendation since |
-| PR #9 opened · Ella is reviewing · no action needed | a verified pull request: an issue run's `hook done`, an ad-hoc run's verified completion, or a verified revision after a send-back, with no recommendation since. A later prompt (a send-back) ends it |
-| PR #9 open · Ella reviewed it | a recommendation was recorded and decided |
-| Feedback delivered 15:10 · revision pending | a send-back or plan revisions the pane's hooks confirmed arrived, with no newer review or plan |
-| Turn ended 15:20 · the builder is waiting at its prompt, no question open | the Stop hook, with nothing newer |
-| Session ended 15:30 · the builder is not running | the SessionEnd hook (not `/clear`) |
-| Finished · PR #9 merged / Archived | cleanup saw the merge (run topics) / the ledger reads archived. Final: never edited again |
+| Dispatched 14:01 · waiting for the builder to start | Muster sent the brief, but the prompt hook has not reported it and nothing stronger has been seen. |
+| Started 14:02 · no tool activity yet | The UserPromptSubmit hook reported the brief's hash. |
+| Working · last activity 3 min ago (14:37) | The newest PostToolUse or PostToolUseFailure, from the main agent or a subagent. |
+| Quiet 40 min · last tool 14:37 · long tools can be quiet | No tool has finished for 15 minutes. This means unknown, not failed, and muster takes no action. |
+| Needs your decision: question, design v2 · since 14:41 | An open request you must answer: a question, a permission prompt, or a design, build or feedback card. An Approval question still under the coordinator's review does not count. |
+| Ella is reviewing design v2 · no action needed | A design version was saved and has no recommendation yet. |
+| PR #9 opened · Ella is reviewing · no action needed | A verified pull request (an issue run's `hook done`, an ad-hoc run's verified completion, or a verified revision) with no recommendation yet. |
+| PR #9 open · Ella reviewed it | A recommendation was recorded and decided. |
+| Feedback delivered 15:10 · revision pending | The pane's hooks confirmed that a send-back or design revisions arrived, and there is no newer review or design. |
+| Turn ended 15:20 · the builder is waiting at its prompt, no question open | The Stop hook fired, with nothing newer. |
+| Session ended 15:30 · the builder is not running | The SessionEnd hook fired (not on `/clear`). |
+| Finished · PR #9 merged / Archived | Cleanup saw the merge (with run topics), or the ledger reads archived. This line is final and never edited again. |
 
-- **Cadence.** An edit when the line's state changes; while the same state only ages its times, at most one edit every 5 minutes. No heartbeat, no polling of GitHub or the pane. An edit never moves an observed time: only hooks and verified completions write them (`<data dir>/runs/<ledger>/activity/`, one file per kind, its mtime the time). `<data dir>/runs/<ledger>/progress.json` keeps the message id.
-- **Never acts.** A quiet or unknown status triggers no retry, redispatch, approval, merge or cleanup.
-- **Restarts and replays** post nothing new. A post or edit Telegram or Slack refused is tried again a minute later (a refused final edit too: the message is final only once it shows it); one whose reply was lost (or a gateway that died mid-send) is not, so there is never a second message, and that run has none. A run archived or finished before its message was ever shown gets none. A remade topic gets one new message.
-- **Gaps.** A long tool (a test suite) fires no hook until it ends. A plain-text question reads as "Turn ended". An MCP elicitation dialog, or a subagent's permission prompt while the gateway is down, has no request, so it does not read as waiting (its Hermes ping still goes out). Between your tap and the agent taking the answer the line already leaves "Needs your decision". Without `notify_topics` nothing records the merge, so the line stays on the pull request until the ledger is archived; an ad-hoc run whose pull request was already merged when it finished reads "Turn ended". On a Slack thread the final state is the parent's own `Finished` / `Archived`. Panes launched before the upgrade get no message. A Telegram send that reports failure after delivering would be retried once a minute (as muster's prompts would). Times are the gateway host's local clock.
+- **Cadence.** The message is edited when the state changes. While the state stays the same and only its times age, it is edited at most once every 5 minutes. There is no heartbeat, and nothing polls GitHub or the pane.
+- **It never acts.** A quiet or unknown status triggers no retry, redispatch, approval, merge or cleanup.
+- **Restarts and replays** post nothing new. A post or edit that Telegram or Slack refused is retried a minute later. A post whose reply was lost is not retried, so there is never a second message, though that run then has none.
+- **Gaps.** A long tool, such as a test suite, fires no hook until it ends. A plain-text question reads as "Turn ended". An MCP elicitation dialog, or a subagent's permission prompt while the gateway is down, creates no request, so it does not read as waiting (its Hermes ping still goes out). Without `notify_topics`, nothing records the merge, so the line stays on the pull request until the ledger is archived. Times use the gateway host's local clock.
 
-## Ad-hoc runs
+### Cards on the board
 
-For coding work that is not a labeled issue:
+- The **ledger card** is the record of one approval or one ad-hoc run. It is blocked when the builder's launch fails or its session ends without a pull request, and completed when the pull request is done. For an issue run, its `muster links: {...}` comment names the issue, the pane and the worktree.
+- A **wait card** opens each time the builder stops to wait for you, and is archived once you answer, in the chat or in the pane. When muster delivers the question itself, the card takes no subscription, so muster's own message is your only notice. Questions asked after the pull request, such as when a reviewer asks for a change, still open a wait card.
+- **Review cards** wake the coordinator: one per design version, and one per revised pull request head.
+- **Cleanup warnings** ("Workspace kept · …", "Work finished · workspace kept …") are explained under [cleanup](#cleanup).
 
-```bash
-hermes muster launch --cwd ~/Code/app --branch feat/thing --title "Add thing" --brief brief.md [--base main] [--model opus]
-```
+A card that should reach you is subscribed `notify+wake`: the gateway pings you, then queues a coordinator turn. Use `hermes kanban --board <board> show <card> --json` to read any card.
 
-The branch must match `feat|fix|chore|deps/<name>`. It makes a card, opens the pane, delivers the brief, and prints the run as JSON. Hook events the pane could not deliver are queued and delivered by `hermes muster flush`, which the `muster-flush` cron job runs every minute. For research with no pull request, `hermes muster open --cwd <dir> --label <label>` opens an analysis workspace muster owns, so cleanup can close it.
+### Recovery
+
+If a launch failed ("The coding agent did not start", "did not become ready", "its first prompt may not have arrived", "The launch was refused"), fix the cause, then run `hermes muster recover <ledger card id>`.
+
+- For "may not have arrived", look at the pane first, and add `--resend` only if the pane shows no brief.
+- Add `--adopt` when a launch refused a branch that already has commits ahead of the base, or a worktree muster did not make, and you want the builder to work on it as it is. When a launch reuses a checkout that has work in it, the brief tells the builder to keep that work.
+- Never relaunch the same work on a new branch.
+
+The coordinator never runs `recover` itself; it tells you when the retry is yours.
 
 ## Cleanup
 
-`hermes muster cleanup` covers only workspaces muster has a record for: issue worktrees, ad-hoc runs, and analysis workspaces. A coding worktree is removed (the branch stays) once its pull request(s) are merged and every pane has been quiet for 30 minutes (agents idle or done, no job running under a shell). A clean, pushed checkout at the merged head is removed as it is (agent scaffolding copied from the main checkout is backed up and deleted first). Anything else, uncommitted or untracked files, local commits, or a HEAD past the merged head, is preserved first: a self-contained git bundle of the history plus a stash-shaped commit of the index, the tracked files on disk and the untracked files git does not ignore, verified by fetching it back into an empty repository, with a `manifest.json` holding the one `restore` command, under `<data dir>/backups/cleanup/<time>-<name>/`. Only then is it removed with `--force`. Files git ignores (`.env`, build output, dependencies) are never read or kept. Backups are never deleted automatically; each manifest records its `bundle_bytes`. A merge conflict in progress, an intent-to-add entry, a repository inside the checkout or submodules cannot be preserved faithfully, so they keep the worktree, as does an open decision request or undelivered event for the run. An analysis workspace needs only the quiet window; closing it deletes no file. Any failed check restarts the 30-minute window.
+`hermes muster cleanup` runs every 5 minutes. It touches only workspaces muster has a record for: issue worktrees, ad-hoc runs and analysis workspaces. `hermes muster cleanup --dry-run` reports what it would do without acting.
 
-A run whose work ended without a merge is removed under the same clean, pushed and quiet checks once its ledger card is archived and no pull request from its branch is open. That covers a duplicate whose pull request you closed in favour of another. Nothing may still own the run: no open decision, no undelivered hook event, no launch or recover under way. A read that fails or comes back incomplete keeps the workspace.
+**Finished work.** A coding worktree is removed, and its branch kept, once its pull requests are merged and every pane has been quiet for 30 minutes. Quiet means the agents are idle or done and no job is running under a shell. A clean, pushed checkout at the merged head is removed as it is; agent scaffolding copied from the main checkout is backed up and deleted first.
 
-A run whose issue was closed as not planned or a duplicate, with no open pull request, is retired first: one "retired" comment that keeps the close reason, then its ledger is archived. A quiet run whose pull requests all closed unmerged while its issue stays open gets one card, "Workspace kept · pull request closed in <repo>", which says what archiving its ledger does (ends its prompts, deletes its topic, lets cleanup remove the workspace; the branch is kept) and how to keep it. A run whose ledger is `done` and whose worktree is already gone, whoever removed it, is retired the same way (#33) once no pull request from its branch is open and no prompt or event still waits; its topic is then deleted. That includes a run cleanup itself removed: its topic closes, then is deleted on the next pass.
+**Anything else is preserved first.** That covers uncommitted or untracked files, local commits, and a HEAD past the merged head. Cleanup writes a self-contained git bundle of the history plus a stash-shaped commit of the index, the tracked files on disk and the untracked files git does not ignore. It verifies the bundle by fetching it back into an empty repository. The backup goes under `<data dir>/backups/cleanup/<time>-<name>/`, with a `manifest.json` holding the one `restore` command. Only then is the worktree removed with `--force`. Files that git ignores (`.env`, build output, dependencies) are never read or kept. Backups are never deleted automatically, and each manifest records its `bundle_bytes`.
 
-A run's topic closes when its work is resolved, not when its worktree goes (see run topics). If a resolved run's worktree is still kept a day later, by anything (work that cannot be preserved, a running process, an owner record that no longer matches), cleanup opens one card, "Work finished · workspace kept in <repo>", in the main chat, never the run's closed topic. It names the worktree, the exact blocker, the ledger card and the safe next step; cleanup never discards anything it has not preserved. One card per blocker: the same blocker never pings again, a new one replaces the card, and a cleared one archives it. Archive the card to keep the worktree.
+**What keeps a worktree.** These cannot be preserved faithfully, so the worktree stays: a merge conflict in progress, an intent-to-add entry, a repository inside the checkout, submodules, or index flags that hide edits. A worktree also stays while it has an open decision request or an undelivered event. Any failed check restarts the 30-minute window, and a read that fails or comes back incomplete keeps the workspace.
 
-A coding worktree that is quiet but has unsaved work it may not remove (its work is not finished, or cleanup cannot preserve it) is never removed: unless a pull request from its branch is still open (work under way), once per state a blocked card "Workspace kept · unsaved work in <repo>" pings you with what each choice does: for unfinished work, commit and push it and open a pull request, or archive the run's ledger card so cleanup backs it up and removes the workspace; for work it cannot preserve, resolve that first. The Hermes agent stays silent on it unless it knows something the card lacks. `hermes muster cleanup --dry-run` reports what it would do without acting. `hermes muster open` is described under Ad-hoc runs.
+**Work that ended without a merge.** Such a run's workspace is removed under the same clean, pushed and quiet checks once its ledger card is archived and no pull request from its branch is open. Nothing may still own the run: no open decision, no undelivered hook event, and no launch or recover under way.
 
-## Agents
+**Retiring runs.**
+- A run whose issue was closed as not planned or as a duplicate, with no open pull request, is retired: it gets one "retired" comment that keeps the close reason, then its ledger is archived.
+- A run whose ledger is `done` and whose worktree is already gone, whoever removed it, is retired the same way, once no pull request from its branch is open and no prompt or event still waits. Its topic is then deleted.
 
-v1 supports Claude Code. To add a kind, write one module in `muster/` with `KIND`, `hook_settings`, `launch_args`, `is_ours`, `ignore` and `detail` (see `muster/claude.py`). A CLI without hooks would need a `herdr agent wait` fallback; that is planned, not built.
+**Warnings that ask you.**
+- *"Workspace kept · pull request closed in <repo>":* a quiet run whose pull requests all closed unmerged, while its issue stays open. The card says what archiving the ledger does (it ends the run's prompts, deletes its topic and lets cleanup remove the workspace; the branch is kept) and how to keep the workspace instead.
+- *"Workspace kept · unsaved work in <repo>":* a quiet coding worktree that has unsaved work cleanup may not remove, because the work is unfinished or cannot be preserved, and no open pull request. For unfinished work, the card offers two choices: commit, push and open a pull request, or archive the ledger so cleanup backs up the work and removes the workspace. For work that cannot be preserved, you resolve that first.
+- *"Work finished · workspace kept in <repo>":* a resolved run whose worktree is still there a day later. This card goes to the main chat and names the worktree, the exact blocker, the ledger card and the safe next step. There is one card per blocker: the same blocker never pings again, a new blocker replaces the card, and a cleared one archives it. Archive the card to keep the worktree.
+
+Cleanup never discards anything it has not preserved. The coordinator stays silent on cleanup warnings unless it knows something the card lacks, and it never pushes, commits, discards or removes anything for you.
+
+## Channels
+
+You never need to open herdr to decide anything: every routine decision can be made from the channel. Pane ids appear on messages only as provenance. The panes stay visible in herdr, where you can watch a run or type into it.
+
+**Who may answer.** Only an approver listed in `notify_user_id` (or, for a DM, the DM's user) can tap or reply to a muster prompt, and only in the notify chat. Being allowed to talk to the Hermes agent is not enough. Anyone else's tap is refused and logged, and anyone else's message is never taken as an answer; it reaches the Hermes agent as an ordinary message. If you answer a builder's question by talking to the coordinator, it tells you to answer on the question's own message.
+
+### Telegram
+
+- Questions use Hermes's own clarify prompt. Tap an option, or tap Other and type, or reply to the message with text. For several choices, type the numbers (`1,3`). Hermes parses the reply.
+- Permission prompts use Hermes's own approval card: the command as code, then Allow once and Deny. A reply to the card denies the prompt and passes your words to the builder. Hermes's `approvals.timeout` applies, and muster denies a prompt itself after 10 minutes at the latest.
+- After a gateway restart, the questions still unanswered are shown again. Older copies say "Replaced after a restart", and answers already given are kept.
+- Muster registers Telegram callback guards so that its prompts answer only the notify user, plus a `pre_gateway_dispatch` hook that swallows only your replies to its own messages.
+
+### Run topics
+
+Run topics are opt-in (`notify_topics: true`). Each run, whether an issue or an ad-hoc launch, gets one forum topic in the notify group, named `<short title> · #<issue>` or `<short title> · <branch>`; with several repositories configured, `<repo>#<issue>`. The title is cut at a word near 48 characters, and two live runs never share a name: the second gets ` (2)`. Everything about the run happens in its topic: its status message, questions, permission cards, designs, reviews, decision buttons, send-backs and re-reviews. Hermes's kanban notifier pings, and runs the coordinator's turn, in each card's subscription thread, so the coordinator's commentary lands in the topic too. General planning stays in the main chat (General).
+
+- **Before you turn it on:** enable Topics in the group's settings, and make the bot an admin with the Manage Topics and Delete Messages rights. Telegram needs the second right to delete an archived run's topic. Muster never changes either setting.
+- **At launch,** the gateway creates the topic with Hermes's `create_handoff_thread` while the launch waits up to 45 seconds. If Topics is off, a right is missing, the gateway is down, or the group cannot be checked after three tries, the run stays in the main chat. You get one message there saying why, and a `topic:` comment on the ledger card. Runs launched while topics were off stay in the main chat.
+- **A lost create.** Telegram may create the topic while its reply is lost, and Hermes reports every failed create as "no topic". So muster calls create at most once per destination, and never retries a create that returned nothing. Instead it waits 20 seconds for Telegram's own "topic created" notice. If a notice for a topic the bot made carries the run's name, muster adopts that topic; a notice that names no run, or several, is ignored. Without a notice, the run stays in the main chat, with the usual message saying why. A notice that arrives later closes that topic as unused. A run therefore never has two live topics, though a lost reply with no notice can leave one empty topic open. Whether Telegram delivers this notice to the bot that made the topic has not been verified live. After your first launch with topics on, look in `$HERMES_HOME/plugin-data/muster/logs/gateway.log` for a `topic notice: thread …` line for each notice that arrived.
+- **Answers are scoped to the topic.** A tap or reply counts only inside the run's topic, and only from the notify user. Text typed after "Other" goes to the prompt waiting in the topic it was typed in, so two runs' prompts never compete. A muster message found anywhere else (Hermes moves a message to General when its topic is gone) is not answered there: the tap says "Moved", and the request is shown again in its topic.
+- **A deleted topic** is detected when a prompt lands outside it. Hermes resends a message whose thread is gone to General, and a tap there on a request's newest prompt marks the topic gone; so does a reopen that finds no thread. Nothing probes a topic, because Telegram has no way to read a topic's state and any call that could stand in for one changes it. Muster then creates a new topic, shows the open prompts there again, says so, and moves every card's subscription. A move counts only when Hermes's subscription list shows the card at the new topic and no longer at the old one. A card that has not moved is retried, backing off to once a minute. Until the deletion is detected, pings land in General.
+- **When the run's work is resolved** (its ledger is `done` and the newest pull request from its branch is merged, with none open), its open build, feedback and design requests end. The topic gets "Finished. This topic is now closed." and is closed. Nothing about the worktree holds the close; worktree issues hold only the worktree's removal. A failed close is retried, backing off to once an hour. A pull request that is still open is in review, so the topic stays open.
+- **A closed topic stays closed.** A restart, a scan, a replayed hook or a saved request never reopens it. Only a request made after the close, such as a new question or a new review, reopens it, unless the run is archived. A resolved run's topic reopened that way closes again on cleanup's next pass. A build or feedback request whose pull request was merged, closed or moved to another head is never shown again; it ends as stale.
+- **Closing a topic by hand** is respected: nothing reopens it except a new request, the run's work goes on, and its older prompts can still be answered in the pane. Reopening a topic by hand resumes it: its open prompts show again, and it stays open until you close it.
+- **When the ledger card is archived,** by you or by the board, the run is retired. Its open prompts end with "The run is archived", and its topic is deleted with its history within 30 seconds of the archive (5 minutes for a closed topic). The archived card keeps the pull request, proposals and comments, and `<data dir>/runs/<card>/conversation.json` keeps the topic's name and ids. A retired run is never probed, reopened or given a new topic, so deleting its topic by hand is final too. A delete that Telegram does not confirm (for example, without the Delete Messages right) closes the topic in the meantime and is retried, backing off to once an hour. Only a card that reads `archived` retires a run; a card missing from the board deletes nothing. An archived run's card subscriptions are removed (`hermes kanban notify-unsubscribe`), and a removal that fails is retried.
+
+### Slack
+
+Slack support is covered by the test suite against a fake Slack client. This repository records no live acceptance run in a real Slack workspace, so check it in yours before relying on it.
+
+- **Settings.** Set `notify_platform: slack`, `notify_chat_id: C…` (the channel), `notify_user_id` (one or more member ids `U…`, separated by commas) and `notify_chat_type: group`. A missing or wrong setting is refused by `hermes muster` and logged by the gateway when Slack connects. Slack has no DM fallback.
+- **Hermes owns the Slack app.** It reads `SLACK_BOT_TOKEN` and `SLACK_APP_TOKEN`; muster reads no Slack secret. In the app's settings, turn **Interactivity** on (Socket Mode needs it for buttons), and invite the bot to the channel. Only one workspace is supported: muster posts with Hermes's first bot token.
+- **Prompts.** Each question is its own message, with the question, one button per option and a "Your own words" box (press Enter to send). Questions that allow several choices use checkboxes and a Submit button. A permission prompt shows the command verbatim, with Allow once, Deny and a "Deny with a message" box. Hermes's own clarify and approval prompts are not used on Slack, because Hermes runs its own button handlers before any plugin's, so muster could not limit who answers them.
+- **Who may answer.** Only an approver, in the configured channel. Anyone else's tap gets "Not authorized", visible only to them, and is logged. Thread replies are never taken as answers; they go to the Hermes agent as usual.
+- **Restarts.** A prompt stays answerable across a gateway restart. Nothing is posted again, and answers already given to some questions of a request are kept. If the gateway dies between Slack accepting a post and muster saving its id, that prompt is posted once more, and both copies answer the same request once. An interrupted merge or send-back is read back from GitHub or the pane, never redone without a new tap.
+- **Limits.** Hermes's `approvals.timeout` does not apply on Slack; an unanswered permission prompt is denied after 10 minutes by muster's own deadline. A command over 2900 characters, or a question with more options than Slack can show (25, or 10 when several may be picked), cannot be shown whole. You get a card saying so, and you answer in the pane.
+- **Threads** (`notify_topics`). The bot posts one parent message per run, and the run talks under it. The parent shows the run's short title in bold, then its state and whether it needs you, then the issue as a link, for example "*Activity status* / Needs your decision: design v2 · since 14:05 · Issue #46". When the work is resolved, the parent says "Finished · PR #<n> merged"; a new request from the run still posts in the thread ("Reopened for a new request"). An archived run's parent says "Archived" and its prompts end. Muster deletes no Slack message. Deleting a parent by hand is unsupported, because later messages may land orphaned.
+- **Formatting.** Agent and human text is escaped first, so it cannot ping anyone or create a link it did not mean. It is then converted with Hermes's own Markdown converter, so headings, bold and links render natively. A long card is split into several sections, never cut, and a full review gets its own message, linked from its card.
+- **The coordinator in a thread.** Hermes's `thread_require_mention`, `strict_mention` and `allowed_channels` settings can keep your un-mentioned thread replies from reaching the Hermes agent. Check them if it does not answer in a run's thread.
+- **Switching platform** leaves the old platform's topics or threads, and their kanban subscriptions, as they are. Open requests of a run whose conversation is on the other platform are posted at the top of the new channel, headed with the run's name.
+
+## Prompts
+
+Every instruction that muster gives an agent or a model is a file in [`prompts/`](prompts/README.md), one file per purpose, filled in when it is used:
+
+- **Builder (issue run):** `launch-envelope.md` wraps `issue-dispatch.md`. That file includes `ask-the-human.md`, `builder-workflow.md`, and the production note (or `no-production-note.md`). `reused-worktree.md` is appended when a launch reuses a checkout that has work in it.
+- **Builder (ad-hoc run):** `launch-envelope.md` wraps your brief plus `ad-hoc-run.md`, which includes the same `ask-the-human.md` and `builder-workflow.md`.
+- **Builder, later in the run:** `build-revision.md` (with `build-revision-issue.md` or `build-revision-ad-hoc.md`) carries a send-back. `design-reply-approve.md` and `design-reply-revise.md` answer a design approval question. `duplicate-handoff.md` hands over a possible duplicate report.
+- **Coordinator:** `escalation.md`, `review-standard.md` and `dispatch.md` are registered whole as the Hermes skills `muster:escalation`, `muster:review-standard` and `muster:dispatch`. `design-review-cue.md` and `cleanup-warning-cue.md` are lines on cards that route a wake to the right skill.
+- **Model:** `duplicate-classifier.md` instructs the duplicate check.
+
+`workflow_prompt_file` is the only override: it replaces `builder-workflow.md`. The other prompts are changed by editing their files. [`prompts/README.md`](prompts/README.md) lists each file's consumer, its placeholders and which text is treated as untrusted data.
 
 ## Security and disclosure
 
-- Shells out to `gh`, `git`, `herdr` and `hermes`. Reads GitHub issues and timelines, the board's sqlite (read-only), `$HERMES_HOME/.env` for the DM chat id, and the per-repo notes.
-- Writes: kanban cards, worktrees under `worktrees`, state under `$HERMES_HOME/plugin-data/muster/`, and per-pane agent settings (the hooks) in that data directory. Nothing global in your agent's config changes.
-- The agent is interactive, runs as you, and is not sandboxed. Claude Code starts with `--permission-mode auto`, so it runs most tools without asking. The brief forbids it to push to main, merge, approve, deploy or force-push, to edit `.github/`, CI, deployment config, secrets, lockfiles or agent-instruction files, or to add dependencies. Issue text never enters the brief and is treated as data.
-- Human review of the pull request is the control: nothing merges or deploys without you. muster merges only when you tap Merge on a recommendation, squash, pinned to the reviewed head, with your own `gh` login.
-- Inside the Hermes gateway, muster runs a scan every 2 s over `<data dir>/decisions/`, and a `pre_gateway_dispatch` hook that swallows only Telegram replies to its own messages from you. It registers the selected platform's surfaces only: on Telegram a callback guard, on Slack a handler for its own `muster_*` button and input ids, which posts and updates muster's own messages in the configured channel. With `notify_topics` it also creates, closes, reopens (only for new work) and (for archived runs) deletes forum topics in the notify group, and reads Telegram's topic created, closed and reopened notices there; on Slack it posts and updates one thread parent per run and deletes nothing.
-- Under `plugins.isolation: host`, Hermes skips `register_cli_command`, so the `hermes muster` commands do not exist.
+- Muster shells out to `gh`, `git`, `herdr` and `hermes`. It reads GitHub issues and timelines, the board's sqlite database (read-only), `$HERMES_HOME/.env` for the DM chat id, and the per-repo notes.
+- It writes kanban cards, worktrees under `worktrees`, state under `$HERMES_HOME/plugin-data/muster/`, and per-pane agent settings (the hooks) in that data directory. Nothing global in your Claude Code config changes.
+- The builder is interactive, runs as you, and is not sandboxed. Claude Code starts with `--permission-mode auto`, so it runs most tools without asking. The brief forbids it to push to the base branch, merge, approve, deploy or force-push, to edit `.github/`, CI, deployment config, secrets, lockfiles or agent-instruction files, and to add dependencies. Issue text never enters the brief and is treated as data.
+- Human review of the pull request is the control: nothing merges or deploys without you. Muster merges only when you tap Merge on a recommendation, as a squash pinned to the reviewed head, using your own `gh` login.
+- Inside the Hermes gateway, muster scans `<data dir>/decisions/` every 2 seconds, and registers only the selected platform's surfaces. On Telegram these are a callback guard and a `pre_gateway_dispatch` hook that swallows only your replies to its own messages. On Slack it is a handler for muster's own `muster_*` button and input ids, which posts and updates muster's own messages in the configured channel. With `notify_topics`, muster also creates, closes, reopens (only for new work) and, for archived runs, deletes forum topics in the notify group, and it reads Telegram's topic created, closed and reopened notices there. On Slack it posts and updates one thread parent per run and deletes nothing.
 
 ## Development
 
@@ -257,7 +349,12 @@ python3 -m pytest -q
 hermes plugins validate .
 ```
 
-Tests are fully mocked: `tests/fake_herdr.py` stands in for `herdr`, `gh` and `hermes`.
+The tests are fully mocked: `tests/fake_herdr.py` stands in for `herdr`, `gh` and `hermes`. Code that touches private Hermes names lives only in `muster/hermes_private.py`; see [`AGENTS.md`](AGENTS.md).
+
+## Repository docs
+
+- [`docs/learnings.md`](docs/learnings.md): pattern → consequence lessons from past work. Builders read it before planning.
+- [`docs/review-lenses.md`](docs/review-lenses.md): the review lenses the builder's sub-agent reviewers use in this repository.
 
 ## License
 

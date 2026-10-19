@@ -1,3 +1,5 @@
+> **Historical record (2026-10-17).** Not operating instructions: later work may have changed what this describes. Current behavior is in the [README](../../README.md).
+
 # Design: channels — Telegram and Slack as peers (issue #40)
 
 Status: v2 approved by Jason 2026-10-17 (Proposal v2 efb6803da851, ledger t_9b5b2aa0). v1 (Proposal v1 c11b93522bce, ledger t_9b5b2aa0) was approved by Jason 2026-10-17 with

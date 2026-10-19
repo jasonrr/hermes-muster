@@ -1,3 +1,5 @@
+> **Historical record (2026-10-18).** Not operating instructions: later work may have changed what this describes. Current behavior is in the [README](../../README.md).
+
 # Human collaboration UX: message gallery and plan (checkpoint for approval)
 
 v2 changes from v1, as Jason asked:
