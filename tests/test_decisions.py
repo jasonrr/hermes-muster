@@ -566,6 +566,50 @@ def test_a_send_back_on_a_pull_request_that_moved_or_closed_sends_nothing(world,
     assert world.prompts == [] and decisions.for_ledger("t_1", "feedback") == []
 
 
+def unreadable(world, monkeypatch, how):
+    """GitHub cannot answer the pull request read: gh missing, gh failing, or an answer that is not JSON."""
+    real = world.run
+
+    def run(argv, env=None):
+        if argv[:3] == ["gh", "pr", "view"]:
+            if how == "missing":
+                raise FileNotFoundError(2, "No such file or directory: 'gh'")
+            if how == "failing":
+                raise core.CommandError("gh pr view: exit 1\nHTTP 502")
+            return "<html>bad gateway</html>"
+        return real(argv, env)
+
+    monkeypatch.setattr(core, "run", run)
+
+
+@pytest.mark.parametrize("how", ["missing", "failing", "malformed"])
+def test_a_send_back_fails_closed_when_github_cannot_confirm_the_pull_request(world, monkeypatch, how):
+    unreadable(world, monkeypatch, how)
+    rid = build(world, {"action": "send-back"})
+    decisions.execute(rid)
+    status, outcome = state(rid)
+    assert status == "failed" and "GitHub could not confirm the pull request" in outcome and "Nothing was sent" in outcome
+    assert world.prompts == [] and decisions.for_ledger("t_1", "feedback") == []  # no feedback request, no send
+    (again,) = [r for r in decisions.for_ledger("t_1", "build") if r["id"] != rid]  # the human may tap again
+    assert again["status"] == "open" and again["head"] == HEAD and again["feedback"] == "Fix the null case."
+    assert "hints" in again and "answer" not in again
+    monkeypatch.setattr(core, "run", world.run)  # GitHub answers again: the fresh card's tap sends
+    decisions.transition(again["id"], ("open",), "answered", answer={"action": "send-back"})
+    decisions.execute(again["id"])
+    assert state(again["id"]) == ("done", decisions.DELIVERED) and len(world.prompts) == 1
+
+
+def test_a_fresh_card_for_a_pre_58_card_keeps_its_confirmation(world, monkeypatch):
+    unreadable(world, monkeypatch, "failing")
+    rid = build(world, {"action": "send-back"})
+    req = decisions.load(rid)
+    del req["hints"]
+    decisions.save(req)
+    decisions.execute(rid)  # legacy: confirmation first, no GitHub read needed
+    assert decisions.for_ledger("t_1", "feedback")[0]["status"] == "open" and world.prompts == []
+    assert "hints" not in decisions.fresh(req)
+
+
 def test_build_free_text_is_a_send_back_with_the_humans_words(world):
     rid = build(world, {"text": "also add a test"})
     decisions.execute(rid)

@@ -241,6 +241,7 @@ SEND_BACK = "Send back with this feedback"  # the send-back label once the feedb
 LEADS = {"merge": "{who} recommends merging it.", "send-back": "{who} recommends sending it back.",
          "nothing": "{who} recommends leaving it open for now."}
 SUMMARY_MAX = 900  # characters: the card shows this summary whole; the full review is its own message above the card
+PR_FIELDS = "url,state,headRefOid,headRefName,baseRefName,isDraft,isCrossRepository"  # what refusal checks
 MERGEABLE = ("CLEAN", "HAS_HOOKS", "UNSTABLE")  # GitHub's mergeStateStatus; it stays the authority on checks
 
 
@@ -273,7 +274,7 @@ def obsolete(req):
     the reviewed head, a feedback to its pull request still open. An unreadable pull request is no proof either way:
     None, and a merge reads it again before acting."""
     try:
-        pr = view(req["pr"], "url,state,headRefOid,headRefName,baseRefName,isDraft,isCrossRepository")
+        pr = view(req["pr"], PR_FIELDS)
     except (OSError, ValueError, core.CommandError) as caught:
         core.log("decisions", f"{req['id']}: pull request unreadable, shown anyway: {caught}")
         return None
@@ -351,7 +352,7 @@ def recommend(args):
                 print(req["id"])
                 return 0
         run = run_of(args.ledger)
-        why = refusal(run, args.pr, view(args.pr, "url,state,headRefOid,headRefName,baseRefName,isDraft,isCrossRepository"),
+        why = refusal(run, args.pr, view(args.pr, PR_FIELDS),
                       args.head)
         if why:
             raise ValueError(why)
@@ -720,7 +721,15 @@ def _feedback_from_build(req, boot=""):
         transition(req["id"], ("executing",), "done", outcome="Feedback ready below: confirm it to send it")
         return
     if not made:
-        why = obsolete(req)  # as a merge: only the pull request reviewed, still open at the reviewed head
+        # As a merge, and fail closed: only the pull request reviewed, read now and still open at the reviewed head.
+        # (obsolete() shows a card when GitHub is unreadable; that is no proof here.)
+        try:
+            why = refusal(req["run"], req["pr"], view(req["pr"], PR_FIELDS), req["head"])
+        except (OSError, ValueError, core.CommandError) as caught:
+            fresh(req)  # unchanged as far as anyone knows: the human may tap again once GitHub answers
+            fail(req["id"], f"GitHub could not confirm the pull request ({caught}). Nothing was sent; a fresh card "
+                            "follows below to try again")
+            return
         if why:
             fail(req["id"], f"{why}. Nothing was sent")
             return
@@ -777,6 +786,13 @@ def _merge(req, boot):
     else:
         fail(rid, f"Merge not confirmed: GitHub reads {state.get('state') or 'unknown'}. Check the PR before tapping "
                   "again.")
+
+
+def fresh(req):
+    """The same build card again, open, for a tap that could not act: the human decides again from it."""
+    return create("build", req["ledger"], **{k: req[k] for k in (  # only what it has: no `hints` on a pre-#58 card
+        "run", "head", "base", "pr", "review", "summary", "feedback", "cycle", "proposal", "wait", "actions", "choices",
+        "questions", "recommended", "hints") if k in req})
 
 
 def merged(req):
@@ -867,9 +883,7 @@ def _recover(req):
             transition(rid, ("executing",), "done", outcome=merged(req))
             return
         if pr.get("state") == "OPEN" and pr.get("headRefOid") == req["head"]:  # unchanged: the human may click again
-            create("build", req["ledger"], **{k: req.get(k) for k in (
-                "run", "head", "base", "pr", "review", "feedback", "cycle", "proposal", "wait", "actions", "choices",
-                "questions", "recommended")})
+            fresh(req)
         fail(rid, "interrupted; not merged")
     else:
         sha = (req.get("intent") or {}).get("prompt_sha")
