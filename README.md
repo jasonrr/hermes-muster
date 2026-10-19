@@ -1,19 +1,24 @@
 # Muster
 
-Muster is a Hermes plugin that turns your coding-agent
-subscription into a small software factory you run from chat. You approve work in GitHub, or ask for it
-in Telegram or Slack. Muster starts a coding agent for it in a visible herdr pane on your machine, sends
-you its questions and designs, has your Hermes agent review the result, and merges only when you tap
-Merge.
+Muster is a Hermes plugin that coordinates subscription-backed coding agents in visible terminal
+sessions. You start work from a GitHub issue or an ad-hoc request, follow it in herdr, and direct the
+process through Telegram or Slack. Your Hermes agent reviews the result; you decide whether to merge.
 
 ## Why use it
 
 - **Use the subscription you already pay for.** Each run is an ordinary interactive Claude Code session,
   so it draws on your Claude plan rather than billing you per API call. How much work that covers depends
   on your plan, your workload and its usage limits.
-- **See the work.** Every run is a real terminal pane in herdr. Watch it or type
-  into it at any time.
+- **See and take over the work.** herdr keeps each agent in an ordinary terminal pane. Watch it or
+  type into it directly, rather than relying only on the factory's status reports.
+- **Keep project knowledge with the code.** Agents use the repository's instructions, history and
+  tooling, alongside Muster's default workflow. Improvements committed there travel with the repository
+  and remain useful when you work without Muster.
 - **No leftovers.** Finished worktrees are removed, and unsaved work is backed up first.
+
+The design favors repository-owned practice and a clear human-facing orchestration layer. It is an
+opinion, not a claim that every project should work this way. See [why this design](docs/design.md) for
+the rationale, today's hybrid and the intended direction.
 
 Muster supports **Claude Code** only. Because each run is a plain herdr pane, other coding agents, or
 several side by side, could be added later; they are not supported today.
@@ -103,6 +108,9 @@ If a launch fails, the run's card says why; fix the cause and run `hermes muster
 - **The builder is not sandboxed.** It runs as you, in Claude Code's auto permission mode, so it runs
   most tools without asking. Its brief forbids pushing to the base branch, merging, deploying,
   force-pushing, editing CI, deployment config, secrets or lockfiles, and adding dependencies.
+- **GitHub access is configurable.** The builder uses your `gh` login by default; `gh_config_dir` can
+  give it a restricted identity. GitHub permissions constrain that identity's repository operations,
+  not the agent's local access. Merges use your own login after your explicit decision.
 - **Issue text is data.** It never enters the builder's instructions.
 - **Only your listed approvers** can answer Muster's prompts, and only in the configured chat.
 - **On error, nothing is allowed.** A permission prompt Muster cannot handle falls back to the pane's own
