@@ -10,7 +10,7 @@
 
 ## base branch (issue #4, 2026-10-07)
 
-- A config suffix on a free-form path (`owner/name=/path@base`) → any `@` already in the path parses as a branch that `check-ref-format` accepts, so the clone path is silently cut; exempt only the unambiguous form (`/@`), document the rest, and validate every git ref argument (`--base -x` reached `git fetch` as an option) in the one function all launches route through (`core.plan`).
+- A config suffix on a free-form path (`owner/name=/path@base`) → any `@` already in the path parses as a branch that `check-ref-format` accepts, so the clone path is silently cut; exempt only the unambiguous form (`/@`), document the rest, and validate every git ref argument (`--base -x` reached `git fetch` as an option) in the one function all launches route through (`launcher.plan`).
 
 ## hardening (issue #7, 2026-10-07)
 
@@ -33,7 +33,7 @@
 ## issue-run outbox (issue #5, 2026-10-07)
 
 - Saving an event only after its delivery failed (the design the issue proposed) → a hook killed mid-move still loses it; save first, deliver from the outbox, and make every move read state first so a replay never repeats one.
-- A routing check on "the directory exists" (`core.recover`: `runs/<card>/` means an ad-hoc run) → it misroutes as soon as another kind writes there (issue cards' outboxes); key on the record file (`run.json`), not its directory.
+- A routing check on "the directory exists" (`intake.recover`: `runs/<card>/` means an ad-hoc run) → it misroutes as soon as another kind writes there (issue cards' outboxes); key on the record file (`run.json`), not its directory.
 
 ## automatic approvers (issue #2, 2026-10-08)
 
@@ -45,7 +45,7 @@
 
 ## proposal snapshots (issue #14, 2026-10-08)
 
-- A command the agent runs from its own shell, routed through the hook entry point (`hook propose`) → it reads stdin like a hook and hangs on the pane's tty until the 30 s timeout; exempt agent-run events (`done`, `propose`) from the stdin read in both `events.hook` and `runs.hook`.
+- A command the agent runs from its own shell, routed through the hook entry point (`hook propose`) → it reads stdin like a hook and hangs on the pane's tty until the 30 s timeout; exempt agent-run events (`done`, `propose`) from the stdin read in both `events.hook` and `adhoc.hook`.
 - A PreToolUse gate keyed on the tool payload alone (`tool_name` + `tool_input`) → PostToolUse carries the same payload, so the answered question's close was denied and its wait card stayed open; gate on the hook event (`notification` = PreToolUse here), not on the payload.
 
 ## actionable decisions (issue #17, 2026-10-08)
@@ -98,7 +98,7 @@
 ## finished runs with a vanished worktree (issue #33, 2026-10-16)
 
 - Cleanup found runs only through worktrees that still exist, and retired a topic only after a removal it made itself → a `done` run whose checkout vanished another way (#480) was never seen again, and the gateway's probe kept its topic open forever; reconcile from the durable records (conversation.json, launch.json, run.json) by path, not only from herdr's listing.
-- Wrapping an existing locked helper (`retire` takes `core.launch_lock`, non-blocking per open file) inside the same lock → the run refuses itself as "busy"; split the body out so one lock covers the recheck and the write.
+- Wrapping an existing locked helper (`retire` takes `launcher.launch_lock`, non-blocking per open file) inside the same lock → the run refuses itself as "busy"; split the body out so one lock covers the recheck and the write.
 
 ## design review (issue #36, 2026-10-16)
 
@@ -139,3 +139,7 @@
 - Using a stored outcome string as a state marker ("Sent ✓" picked out delivered send-backs) → rewording it for humans would have silently broken re-review; match outcomes through a constant that also accepts the old string (`decisions.SENT`).
 - Telegram's re-presentation after a restart cleared `partial`, so a human's answer to one question of several was lost on every gateway restart; keep the parts and present only the unanswered questions.
 - Giving an early design tap to the version's question only when one was open at scan time → a question asked and answered in the pane between two scans was never seen, so a later ask for the same version got the old tap; reconcile ended questions first, even when none is open.
+
+## clarify-code-organization (2026-10-19)
+
+- Moving functions between modules keyed by bare name → `launch`, `recover`, `relaunch`, `note` and `log` exist in both core and runs, so a name-keyed map rewrites intake's own `launch()` calls to `adhoc.launch`; key every move by (source module, name), and qualify only references that resolve to a module global (symtable), never locals that share the name (`run`, `plan`).

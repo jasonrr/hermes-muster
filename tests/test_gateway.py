@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from muster import config, core, decisions, gateway
+from muster import config, core, decisions, gateway, launcher
 from muster.channels import shared, telegram
 
 from tests import fake_hermes as fh
@@ -955,7 +955,7 @@ def test_build_free_text_becomes_a_feedback_request_that_the_next_scan_presents(
 
 
 def test_a_scan_retires_an_open_retry_whose_send_arrived_late_and_presents_nothing(tmp_path):
-    core.prompt_seen(tmp_path, {"prompt": "the revision"})
+    launcher.prompt_seen(tmp_path, {"prompt": "the revision"})
     rid = tap_request("feedback", "open", prompt_sha=hashlib.sha256(b"the revision").hexdigest(),
                       run={"branch": "b", "evidence_dir": str(tmp_path)})
     waiting = tap_request("feedback", "open", prompt_sha="0" * 64, run={"branch": "b", "evidence_dir": str(tmp_path)})

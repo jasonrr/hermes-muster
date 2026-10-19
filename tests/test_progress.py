@@ -2,7 +2,7 @@ import json
 import os
 import time
 
-from muster import config, core, progress
+from muster import config, launcher, progress
 
 NOW = 1_800_000_000.0
 L = "t_run1"
@@ -221,8 +221,8 @@ def test_tracked_skips_final_runs():
 def test_seen_at_returns_the_matching_records_time():
     directory = launched()
     received(directory, 1234)
-    assert core.seen_at(directory, "abc") == 1234 and core.seen(directory, "abc") is True
-    assert core.seen_at(directory, "zzz") is None and core.seen(directory, "zzz") is False
+    assert launcher.seen_at(directory, "abc") == 1234 and launcher.seen(directory, "abc") is True
+    assert launcher.seen_at(directory, "zzz") is None and launcher.seen(directory, "zzz") is False
 
 
 def test_a_recover_of_a_run_from_before_the_feature_starts_no_tracking():

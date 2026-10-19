@@ -12,6 +12,7 @@ import subprocess
 import pytest
 
 import muster.core as core
+import muster.launcher as launcher
 from muster import config
 
 HERMES = shutil.which("hermes") or os.path.expanduser("~/.local/bin/hermes")
@@ -86,7 +87,7 @@ def test_a_reason_after_double_dash_that_looks_like_a_flag_is_kept_whole(k):
 
 
 def test_a_launch_failure_blocks_with_kind_capability(k):
-    """core.setup_trouble's kind: a ready card blocks for a human, and the event carries the kind."""
+    """launcher.setup_trouble's kind: a ready card blocks for a human, and the event carries the kind."""
     card = new(k)["id"]
     k("block", "--kind", "capability", card, "Setup trouble, not a product decision: x.\nDetails: y")
     assert status(k, card) == "blocked"
@@ -140,16 +141,16 @@ def test_subscribe_reads_back_chat_user_type_profile_and_mode_from_the_real_cli(
 
 
 def test_recover_unblocks_a_launch_failure_once_and_a_later_ask_still_blocks(k, tmp_path, monkeypatch):
-    """core.recoverable/report_failure: a capability block, one unblock by recover, then the agent's
+    """launcher.recoverable/report_failure: a capability block, one unblock by recover, then the agent's
     needs_input block (another kind) still blocks; a second capability block would be triage, which is
     why recover comments instead of blocking. block_kind is read from the board db: show --json omits it."""
     card = new(k)["id"]
     k("block", "--kind", "capability", card, "The coding agent did not start")
-    assert core.block_kind(card) == "capability"
+    assert launcher.block_kind(card) == "capability"
     k("unblock", card)
     assert status(k, card) == "ready"
     k("block", "--kind", "needs_input", card, "The agent's session ended")
-    assert status(k, card) == "blocked" and core.block_kind(card) == "needs_input"
+    assert status(k, card) == "blocked" and launcher.block_kind(card) == "needs_input"
     again = new(k)["id"]
     k("block", "--kind", "capability", again, "one")
     k("unblock", again)

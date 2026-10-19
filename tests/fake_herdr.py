@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 
 import muster.core as core
+import muster.launcher as launcher
 
 
 def fail(argv, code):
@@ -41,12 +42,12 @@ class World:
 
     def worktree(self, clone, branch, path=None, owner=None, workspace=True):
         """A checkout made earlier, outside this launch (owner: the card its marker names)."""
-        path = str(path or Path(core.worktree_path(clone, branch)))
+        path = str(path or Path(launcher.worktree_path(clone, branch)))
         git_dir = self.tmp / "gitdirs" / Path(path).name
         git_dir.mkdir(parents=True, exist_ok=True)
         Path(path).mkdir(parents=True, exist_ok=True)
         if owner:
-            (git_dir / core.OWNER_FILE).write_text(json.dumps({"owner": owner, "branch": branch}))
+            (git_dir / launcher.OWNER_FILE).write_text(json.dumps({"owner": owner, "branch": branch}))
         self.worktrees[path] = {"branch": branch, "clone": str(clone), "git_dir": str(git_dir),
                                 "workspace": self.next_id("w") if workspace else None}
         self.branches[(str(clone), branch)] = self.branches.get((str(clone), branch), self.origin)
