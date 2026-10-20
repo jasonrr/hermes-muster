@@ -201,6 +201,9 @@ DESIGN_V1 = (files(1), r"^🟡 Design v1 ·.*Approve design v1")
 def test_design_approve(rig, subtests):
     card_id, top, held = to_design_card(rig, "d1", subtests)
     checkpoint_b(rig, subtests, "design v1", *DESIGN_V1)
+    # The restarted gateway is live, not just quiet: the card still answers the builder's held dialog.
+    rig.standin.block_action(APPROVER, CHANNEL, decision.message_id, button(rig, decision, "Approve design v1"))
+    assert answered(held)["hookSpecificOutput"]["decision"]["behavior"] == "allow"
     decision = card(rig)
     rig.standin.block_action(APPROVER, CHANNEL, decision.message_id, button(rig, decision, "Approve design v1"))
     got = answered(held)
@@ -246,6 +249,9 @@ def test_design_late_recommendation(rig, subtests):
     wait("the coordinator's turn has ended", lambda: not rig.director.scripts.get("l1"), 30)
     hold(5 + 3 * SCAN)
     checkpoint_b(rig, subtests, "design v1", *DESIGN_V1)
+    # The restarted gateway is live, not just quiet: the card still answers the builder's held dialog.
+    rig.standin.block_action(APPROVER, CHANNEL, decision.message_id, button(rig, decision, "Approve design v1"))
+    assert answered(held)["hookSpecificOutput"]["decision"]["behavior"] == "allow"
 
 
 def test_design_v2_while_v1_is_open(rig, subtests):
@@ -320,12 +326,13 @@ def test_pr_merge(rig, subtests):
     decision = card(rig)
     rig.standin.block_action(APPROVER, CHANNEL, decision.message_id, button(rig, decision, "Merge PR #7"))
     wait("the merge", lambda: merges(rig), 30)
+    hold(SCAN)  # a second merge, or a hit on the gh stub, would land here
     assert [e["argv"] for e in merges(rig)] == [["gh", "pr", "merge", PR, "--squash", "--match-head-commit", head]]
     assert "error" not in merges(rig)[0]  # answered by the world; the gh stub saw nothing
 
 
-def ephemeral(rig, text):
-    return [e for e in rig.standin.ephemerals(CHANNEL) if text in json.dumps(e, ensure_ascii=False)]
+def ephemeral(rig, user, pattern):
+    return [e for e in rig.standin.ephemerals(CHANNEL) if e.get("user") == user and re.search(pattern, str(e.get("text")))]
 
 
 def test_duplicate_tap(rig, subtests):
@@ -337,10 +344,11 @@ def test_duplicate_tap(rig, subtests):
     assert answered(held)["hookSpecificOutput"]["decision"]["behavior"] == "allow"
     settle(rig, decision, r"^✅ Approved\b")
     # slack.handle: "Already answered" while the request is open, ended(req) once it settled; both change nothing
-    wait("the second tap is told nothing changed", lambda: [
-        e for e in rig.standin.ephemerals(CHANNEL)
-        if re.search(r"Already answered|already ended\. Nothing was changed", str(e.get("text")))], 30)
-    assert len(prompts(rig)) == 1  # the brief; the approval went once, through the dialog
+    nothing = r"Already answered|already ended\. Nothing was changed"
+    wait("the second tap is told nothing changed", lambda: ephemeral(rig, APPROVER, nothing), 30)
+    hold(SCAN)
+    assert len(ephemeral(rig, APPROVER, nothing)) == 1 and len(rig.standin.ephemerals(CHANNEL)) == 1
+    assert re.search(r"^✅ Approved\b", message(rig, decision.message_id))  # the second tap did not re-settle it
 
 
 def test_non_approver_tap(rig, subtests):
@@ -348,7 +356,7 @@ def test_non_approver_tap(rig, subtests):
     decision = card(rig)
     before, edits = len(rig.entries()), decision.edits
     rig.standin.block_action(OTHER, CHANNEL, decision.message_id, button(rig, decision, "Approve design v1"))
-    wait("the non-approver is told", lambda: ephemeral(rig, "Not authorized"), 30)
+    wait("the non-approver is told", lambda: ephemeral(rig, OTHER, "^Not authorized$"), 30)
     hold(SCAN)
     assert len(rig.entries()) == before and held.poll() is None  # nothing journaled; the builder still waits
     assert card(rig).message_id == decision.message_id and card(rig).edits == edits
@@ -359,7 +367,7 @@ def channel_posts(rig):
 
 
 def test_restart_mid_review(rig, subtests):
-    _, top, _ = to_design_card(rig, "r1", subtests)
+    _, top, held = to_design_card(rig, "r1", subtests)
     decision = card(rig)
     posts = channel_posts(rig)
     rig.gw.stop()
@@ -371,3 +379,6 @@ def test_restart_mid_review(rig, subtests):
         assert [(c.response or {}).get("ts") for c in cards] == [decision.message_id]  # one card across both lives
     assert parent(rig).message_id == top.message_id and card(rig).message_id == decision.message_id
     checkpoint_b(rig, subtests, "design v1", *DESIGN_V1)
+    # The restarted gateway is live, not just quiet: the card still answers the builder's held dialog.
+    rig.standin.block_action(APPROVER, CHANNEL, decision.message_id, button(rig, decision, "Approve design v1"))
+    assert answered(held)["hookSpecificOutput"]["decision"]["behavior"] == "allow"
