@@ -81,7 +81,8 @@ notice the run stays in the main chat, and at worst one empty topic is left open
 
 ## Slack
 
-**Checked offline against a real Hermes gateway and Slack stand-in; not verified live.** The acceptance
+**Checked offline against a real Hermes gateway and Slack stand-in; not verified live.** The check is red
+today: Hermes's "🔍 … is reviewing" reply stays in the thread after the decision card. The acceptance
 harness (`tests/acceptance/`) runs Hermes's real gateway and Slack adapter against Hermes's own Slack stand-in,
 so Hermes's own messages (the "is reviewing" ping, the coordinator's tool bubble) are tested too. No run in a
 real Slack workspace has been recorded, so check it in yours before relying on it.

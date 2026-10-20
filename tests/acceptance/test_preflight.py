@@ -5,6 +5,8 @@ from pathlib import Path
 
 import pytest
 
+import os
+
 from tests.acceptance.conftest import REPO, Preflight, start
 
 
@@ -17,7 +19,8 @@ def test_rig_boots(rig):
 
 def test_preflight_accepts_valid_layout(rig):
     plugin = rig.hermes / "plugins" / "muster"
-    assert plugin.is_symlink() and plugin.resolve() == REPO.resolve() and not REPO.resolve().is_relative_to(rig.root)
+    under = Path(os.environ.get("MUSTER_UNDER_TEST") or REPO).resolve()  # the gate's --muster sets it
+    assert plugin.is_symlink() and plugin.resolve() == under and not under.is_relative_to(rig.root)
     for p in (rig.hermes, rig.user, Path(rig.settings["worktrees"]), rig.hermes / "plugin-data" / "muster"):
         assert p.resolve().is_relative_to(rig.root.resolve())
 

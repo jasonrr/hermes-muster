@@ -158,7 +158,7 @@ def hold(seconds):
     time.sleep(seconds)  # B must hold across scans, not just once: a late ping or bubble lands after the card
 
 
-def checkpoint_b(rig, subtests, decision, *patterns):
+def checkpoint_b(rig, subtests, decision, *patterns, recommends=1):
     """B: the human's decision is the parent's one live status, and the thread holds only the audit history: the
     full review and the files (#63), then the card. No "is reviewing" ping, no tool bubble (design §4)."""
     with subtests.test("B: the parent asks for the decision"):
@@ -166,7 +166,7 @@ def checkpoint_b(rig, subtests, decision, *patterns):
     with subtests.test("B: no stale ping or tool bubble in the thread"):
         expect_exactly(rig, *patterns)
     with subtests.test("B: the coordinator's recommend ran shimmed"):
-        assert recommended(rig) and all(m["patched"] for m in recommended(rig))
+        assert len(recommended(rig)) == recommends and all(m["patched"] for m in recommended(rig))
 
 
 def text_input(message):
@@ -201,6 +201,11 @@ DESIGN_V1 = (files(1), r"^🟡 Design v1 ·.*Approve design v1")
 def test_design_approve(rig, subtests):
     card_id, top, held = to_design_card(rig, "d1", subtests)
     checkpoint_b(rig, subtests, "design v1", *DESIGN_V1)
+    with subtests.test("the coordinator's tool bubble was shown, then removed"):  # cleanup ran, not just no bubble
+        shown_ = [(c.response or {}).get("ts") for c in rig.standin.calls_of("chat.postMessage")
+                  if "recommend-design" in json.dumps(c.params) and "terminal" in json.dumps(c.params)]
+        deleted = [c.params.get("ts") for c in rig.standin.calls_of("chat.delete")]
+        assert shown_ and all(ts in deleted for ts in shown_), (shown_, deleted)
     decision = card(rig)
     rig.standin.block_action(APPROVER, CHANNEL, decision.message_id, button(rig, decision, "Approve design v1"))
     got = answered(held)
@@ -257,7 +262,8 @@ def test_design_v2_while_v1_is_open(rig, subtests):
     with subtests.test("only v2's card has buttons"):
         assert {str(b["message_id"]) for b in rig.standin.buttons(CHANNEL)} == {card(rig).message_id}
         assert "Design v1" in message(rig, first.message_id) and card(rig).message_id != first.message_id
-    checkpoint_b(rig, subtests, "design v2", files(1), r"⏹ Ended · Design v1\b.*superseded by a newer design review", files(2), r"^🟡 Design v2 ·.*Approve design v2")
+    checkpoint_b(rig, subtests, "design v2", files(1), r"⏹ Ended · Design v1\b.*superseded by a newer design review",
+                 files(2), r"^🟡 Design v2 ·.*Approve design v2", recommends=2)
     held.kill()
 
 

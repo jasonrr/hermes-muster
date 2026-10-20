@@ -34,6 +34,13 @@ def test_the_verdict_from_the_report(tmp_path, bodies, report, want):
     assert gate.verdict(failed, blocked, gate.mismatches(json.dumps(GOOD), json.loads))[0] == want
 
 
+def test_a_run_without_lifecycle_tests_is_not_a_pass(tmp_path):
+    empty = tmp_path / "empty.xml"
+    empty.write_text('<testsuites><testsuite name="pytest" tests="1"><testcase classname="tests.acceptance.test_gate" '
+                     'name="t"/></testsuite></testsuites>')
+    assert gate.verdict(*gate.tests(empty, ""), []) == ("FAIL", ["failed: no lifecycle test ran"])
+
+
 def test_a_skip_names_its_reason():
     assert gate.verdict([], ["t0: skipped: HERMES_AGENT_DIR unset"], [])[1] == ["t0: skipped: HERMES_AGENT_DIR unset"]
 

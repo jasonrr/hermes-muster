@@ -27,8 +27,9 @@ SECRET = re.compile(r"xox[a-z]-\S+|xapp-\S+|gh[pousr]_\w+|github_pat_\w+")
 
 def tests(junit, report):
     """(failed, blocked): test ids, and "id: reason" lines, from pytest's junit XML and its -rA report."""
-    failed, blocked = [], []
+    failed, blocked, ran = [], [], 0
     for case in ET.parse(junit).iter("testcase"):
+        ran += "test_lifecycle" in (case.get("classname") or "")
         name = f"{case.get('classname')}::{case.get('name')}"
         if (bad := case.find("failure") if case.find("failure") is not None else case.find("error")) is not None:
             why = (bad.get("message") or "").strip().split("\n")[0][:160]  # an expected red reads apart from a crash
@@ -37,6 +38,8 @@ def tests(junit, report):
             kind = "xfail" if skipped.get("type") == "pytest.xfail" else "skipped"
             blocked.append(f"{name}: {kind}: {skipped.get('message')}")
     blocked += [f"{line.split(' ', 1)[1]}: xpass" for line in report.splitlines() if line.startswith("XPASS ")]
+    if not ran:  # no lifecycle test ran (exit 5, or the file stopped being collected): nothing was accepted
+        failed.append("no lifecycle test ran")
     return failed, blocked
 
 
