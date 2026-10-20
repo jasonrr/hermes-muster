@@ -72,6 +72,29 @@ Muster does, start with the [README](../README.md).
 The `hermes muster` commands do not exist under `plugins.isolation: host`, because Hermes then skips
 plugin CLI commands.
 
+### Before installing an update
+
+Run the acceptance gate against the checkout you are about to install, and install only on `PASS`:
+
+```bash
+HERMES_AGENT_DIR=~/.hermes/hermes-agent ~/.cache/muster-acceptance/venv/bin/python tests/acceptance/gate.py
+```
+
+`tests/acceptance/README.md` builds that interpreter once. `FAIL`, `BLOCKED` (a skip, xfail or xpass) and
+`CONFIG MISMATCH` all stop the install; the gate prints the reason or the differing key names. It reads only
+the display and Muster keys it checks from `config.yaml`.
+
+The gate expects Hermes to clean up the coordinator's tool-progress bubbles in Slack once a turn succeeds.
+That is one line in `config.yaml`, for you to add (it applies to every Slack turn, your own chats with your
+Hermes agent included):
+
+```yaml
+display:
+  platforms:
+    slack:
+      cleanup_progress: true
+```
+
 ## Configuration
 
 Settings go under `plugins.entries.muster.settings`. Three are required: `approver_login`, `approver_id`
