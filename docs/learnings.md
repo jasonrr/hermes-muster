@@ -148,3 +148,8 @@
 
 - Making a tap act at once (one-tap send-back) → requests already on screen were created under the old rules (their card never showed the feedback), so the new fast path would have sent text the human never saw; gate the new behavior on a field only new requests carry (`hints`) and keep the old confirmation for the rest.
 - A gateway test whose tap now reaches `decisions.run_of` or `obsolete` → it runs the real `hermes kanban` / `gh` CLI, which is slow enough to time out a 2 s wait; stub both in any test that drives a send-back through the gateway.
+
+## slack-working-and-review-order (2026-10-20)
+
+- A coordinator review woken by a kanban card in a Slack thread → Hermes posts its tool-activity bubble at the coordinator's first tool call, so Muster's finished review always lands below it (Slack orders replies by post time), and `display.platforms.slack.cleanup_progress` likely never fires for these turns (an authority-admitted wake replies through `session_ingress.deliver_response`, which skips the post-delivery callbacks); lead to the review from the thread parent instead of trying to reorder replies.
+- Adding a field to the Slack thread parent that appears after the status line was edited (the review's permalink) → `gateway.scan` runs `progress_pass` before it presents requests and `progress.due` only re-edits on new text, so the parent would never show it; refresh the parent where the field is saved.

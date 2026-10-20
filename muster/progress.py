@@ -29,6 +29,7 @@ from . import config, conversation, core, launcher
 QUIET = 15 * 60  # s without a tool before the message says no new activity was observed
 REFRESH = 5 * 60  # s between edits that only age the same state's times
 RETRY = 60  # s before a send or edit the platform refused is tried again
+WORKING = "Working · "  # the working state's line opens with this; a channel may mark it (Slack: a spinning emoji)
 
 
 def activity(ledger):
@@ -244,7 +245,7 @@ def state(ledger, now, waits, ref, archived):
             " · long tools can be quiet"), False
     if tool is None:
         return "received", f"Started {hm(seen)} · no tool activity yet", False
-    return "working", f"Working · last activity {ago(tool, now)}", False
+    return "working", f"{WORKING}last activity {ago(tool, now)}", False
 
 
 def due(saved, key, text, now):
