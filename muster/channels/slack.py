@@ -231,6 +231,14 @@ async def post_detail(req, meta):
     if url:
         req["detail"] = {**req["detail"], "url": str(url)}
         await asyncio.to_thread(decisions.update, req["id"], detail=req["detail"])
+        if meta:  # the status line was already edited this scan, before the review existed: now it can link it
+            ref = await asyncio.to_thread(conversation.load, req["ledger"])
+            if mine(ref) and ref.get("state") == "open" and not ref.get("resolved_at"):  # as show()
+                try:
+                    await T.client.chat_update(channel=ref["chat_id"], ts=ref["thread_id"],
+                                               text=await asyncio.to_thread(parent_line, ref, "running"))
+                except Exception as caught:  # noqa: BLE001 - cosmetic: the next status edit carries the link too
+                    log(f"{req['ledger']}: review link on the thread parent: {error_of(caught)}")
     return None
 
 
@@ -527,11 +535,26 @@ async def destination(req):
     return True, {"thread_id": ref["thread_id"]}
 
 
+def review_url(ledger):
+    """The permalink of the full review behind the run's open build or design decision (post_detail), or None."""
+    for req in decisions.open_requests():
+        found = req.get("detail") or {}
+        if req["ledger"] == ledger and req["status"] == "open" and req["kind"] in ("build", "design") and (
+                found.get("platform") == name and found.get("url")):
+            return found["url"]
+    return None
+
+
 def headline(ledger, state, name=None):
-    """A run as people scan the channel: its short title in bold, then `state`, then its issue as a native link
-    (mrkdwn). The title and state are escaped (shared.slack_text); the link comes from progress.identity."""
+    """A run as people scan the channel: its short title in bold, then `state`, then a native link to the open
+    decision's full review (it lands below the coordinator's activity, so the parent leads to it), then its issue
+    (mrkdwn). The title and state are escaped (shared.slack_text); the issue link comes from progress.identity."""
     title, url, label = progress.identity(ledger, name)
     tail = f"<{url}|{label}>" if url else shared.slack_text(label) if label != title else ""
+    review = review_url(ledger)
+    if review:
+        who = shared.slack_text(config.settings.get("coordinator_name") or "Coordinator")
+        tail = f"<{review}|{who}'s full review>" + (f" · {tail}" if tail else "")
     spin = ":diamond_spin: " if state.startswith(progress.WORKING) else ""  # the workspace's custom emoji, working only
     return f"*{shared.slack_text(title)}*\n{spin}{shared.slack_text(state)}" + (f" · {tail}" if tail else "")
 

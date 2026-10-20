@@ -963,9 +963,9 @@ def approval_ask(**fields):
                proposal=PLAN, **fields)
 
 
-def design_card():
+def design_card(**fields):
     labels = ["Approve design v2 (recommended)", "Send revisions to builder", "Leave pending"]
-    return decisions.create("design", "led1", run={"repo": "o/r", "issue": 7, "branch": "muster/7"}, proposal=PLAN,
+    return decisions.create("design", "led1", **fields, run={"repo": "o/r", "issue": 7, "branch": "muster/7"}, proposal=PLAN,
                             review="Fine.", feedback="Drop the cache.", actions=["approve", "send-back", "nothing"],
                             choices=[labels], questions=[{"text": "**Design v2 · Issue #7**\n**Coordinator recommends: "
                                                                   "approve**\n\nFine.", "header": "Design",
@@ -1075,6 +1075,29 @@ def test_five_parents_scan_without_opening_a_thread(monkeypatch):
         assert title.startswith("*") and len(title) <= 52 and "**" not in line
         assert "t_" not in line and "muster ·" not in line and "hermes-muster#" not in line
     assert sum("Needs your decision" in line for line in lines) == 1  # the one run that needs you stands out
+
+
+@pytest.mark.parametrize("make", [
+    lambda: build_request("Detail. " * 10, summary="Right.\nDeploy on merge: none."),
+    lambda: design_card(summary="Fine.")], ids=["pr-review", "design-review"])
+def test_an_open_review_is_linked_from_the_thread_parent_above_the_activity(threads, make):
+    """The review lands after the coordinator's activity (Hermes posts that at the first tool call), so the thread
+    parent, above every reply, links straight to it while the decision is open, and stops once it ends."""
+    thread = opened(threads)
+    launched(940, ledger="led1")
+    tick(threads)
+    req = make()
+    tick(threads)  # one scan: the status line goes to "your decision" first, then the review is posted
+    url = decisions.load(req["id"])["detail"]["url"]
+    detail, card = [p for p in threads.client.posts if p.get("thread_ts") == thread][-2:]
+    assert "full review" in detail["text"] and any(b["type"] == "actions" for b in card["blocks"])
+    parent = [u["text"] for u in threads.client.updates if u["ts"] == thread][-1]
+    assert "\n🟡 Your decision: " in parent and f"<{url}|Coordinator's full review>" in parent
+    tick(threads, progress.REFRESH)
+    assert f"<{url}|" in [u["text"] for u in threads.client.updates if u["ts"] == thread][-1]  # later edits keep it
+    decisions.transition(req["id"], ("open",), "stale", outcome="Ended")
+    tick(threads)
+    assert url not in [u["text"] for u in threads.client.updates if u["ts"] == thread][-1]
 
 
 def test_agent_markdown_links_cannot_ping_mention_or_disguise_a_link(channel):
