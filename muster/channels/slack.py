@@ -553,8 +553,7 @@ def headline(ledger, state, name=None):
     tail = f"<{url}|{label}>" if url else shared.slack_text(label) if label != title else ""
     review = review_url(ledger)
     if review:
-        who = shared.slack_text(config.settings.get("coordinator_name") or "Coordinator")
-        tail = f"<{review}|{who}'s full review>" + (f" · {tail}" if tail else "")
+        tail = f"<{review}|{shared.slack_text(decisions.who())}'s full review>" + (f" · {tail}" if tail else "")
     spin = ":diamond_spin: " if state.startswith(progress.WORKING) else ""  # the workspace's custom emoji, working only
     return f"*{shared.slack_text(title)}*\n{spin}{shared.slack_text(state)}" + (f" · {tail}" if tail else "")
 
