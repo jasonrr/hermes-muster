@@ -25,8 +25,8 @@ def test_preflight_accepts_valid_layout(rig):
 OUTSIDE = Path.home() / "muster-acc-should-not-exist"
 
 
-def no_scripts(rig):
-    (rig.user / ".local" / "bin" / "hermes").unlink()
+def no_script(name):
+    return lambda rig: (rig.user / ".local" / "bin" / name).unlink()
 
 
 @pytest.mark.parametrize("check, breaks, after", [
@@ -34,8 +34,10 @@ def no_scripts(rig):
     ("paths", lambda: {"settings": {"worktrees": str(OUTSIDE)}}, None),
     ("paths", lambda: {"plugin": REPO / "tests"}, None),
     ("channel", lambda: {"settings": {"notify_chat_id": "C0NOTALLOW"}}, None),
-    ("path-scripts", lambda: {}, no_scripts),
-], ids=["shim-off", "state-outside", "other-plugin", "channel", "no-wrapper"])
+    ("path-scripts", lambda: {}, no_script("hermes")),
+    ("path-scripts", lambda: {}, no_script("gh")),
+    ("identity", lambda: {"settings": {"notify_user_id": "U0000222"}}, None),
+], ids=["shim-off", "state-outside", "other-plugin", "channel", "no-wrapper", "no-gh-stub", "other-approver"])
 def test_a_broken_layout_aborts_in_preflight(make_rig, check, breaks, after):
     from tests.acceptance import hermes_kit as kit
 

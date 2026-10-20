@@ -9,6 +9,7 @@ failed check raises Preflight naming itself.
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -75,6 +76,11 @@ class Rig:
 
         return kit.hermetic_env(self.root / "home", dict(self.env))
 
+    def gw_config(self):
+        import hermes_yaml
+
+        return hermes_yaml.safe_load((self.hermes / "config.yaml").read_text())
+
     def entries(self):
         return [json.loads(line) for line in self.journal.read_text().splitlines()] if self.journal.exists() else []
 
@@ -87,19 +93,22 @@ class Rig:
                               timeout=timeout, cwd=self.root, check=False)
 
 
+KEEP = ("PYTHONPATH", "PYTHONDONTWRITEBYTECODE", "HOME", "PATH", "TMPDIR", "TZ", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY",
+        "no_proxy")
+
+
 def scripts(rig, py):
     """$HOME/.local/bin, first on PATH: the hermes wrapper (the production launcher's -I would drop the shim), and
     herdr and gh stubs that journal and refuse."""
     bin_ = rig.user / ".local" / "bin"
     bin_.mkdir(parents=True, exist_ok=True)
-    keep = ("PYTHONPATH", "HERMES_HOME", "HERMES_KANBAN_HOME", "PYTHONDONTWRITEBYTECODE", "HOME", "PATH",
-            "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "no_proxy")
     env = rig.child_env()
-    exports = "".join(f"export {k}='{env[k]}'\n" for k in sorted(env) if k.startswith("MUSTER_") or k in keep)
-    (bin_ / "hermes").write_text(f"#!/bin/sh\n{exports}exec '{py}' -m hermes_cli.main \"$@\"\n")
+    exports = "".join(f"export {k}={shlex.quote(v)}\n" for k, v in sorted(env.items())
+                      if k.startswith(("MUSTER_", "HERMES_", "SLACK_", "XDG_")) or k in KEEP)
+    (bin_ / "hermes").write_text(f"#!/bin/sh\n{exports}exec {shlex.quote(py)} -m hermes_cli.main \"$@\"\n")
     for name in ("herdr", "gh"):
-        (bin_ / name).write_text(f"#!/bin/sh\necho '{{\"stub\": \"{name}\", \"refused\": true}}' >> '{rig.journal}'\n"
-                                 "exit 97\n")
+        line = shlex.quote(json.dumps({"stub": name, "refused": True}))
+        (bin_ / name).write_text(f"#!/bin/sh\necho {line} >> {shlex.quote(str(rig.journal))}\nexit 97\n")
     for name in ("hermes", "herdr", "gh"):
         (bin_ / name).chmod(0o755)
 
@@ -111,7 +120,7 @@ def build(factory, settings=None, display=None, prepend=None, plugin=None):
 
     root = factory.mktemp("acc")
     user, clone, hermes = root / "user", root / "clones" / "demo", root / "home" / ".hermes"
-    for d in (user, clone, hermes / "plugins"):
+    for d in (user, clone, hermes / "plugins", root / "tmp"):
         d.mkdir(parents=True)
     subprocess.run(["git", "init", "-q", str(clone)], check=True)  # the world serves its remote
     (hermes / "plugins" / "muster").symlink_to(plugin or os.environ.get("MUSTER_UNDER_TEST") or REPO)
@@ -133,7 +142,7 @@ def build(factory, settings=None, display=None, prepend=None, plugin=None):
            "MUSTER_UNDER_TEST": under, "MUSTER_WORLD_SOCK": str(sock), "MUSTER_JOURNAL": str(root / "journal.jsonl"),
            "MUSTER_MARKERS": str(root / "markers"), "HERMES_KANBAN_HOME": str(hermes),
            "HTTPS_PROXY": DEAD, "HTTP_PROXY": DEAD, "NO_PROXY": NO_PROXY, "no_proxy": NO_PROXY, "PATH": f"{user / '.local/bin'}{os.pathsep}{path}",
-           "HOME": str(user), "PYTHONDONTWRITEBYTECODE": "1"}
+           "HOME": str(user), "TMPDIR": str(root / "tmp"), "PYTHONDONTWRITEBYTECODE": "1"}
     rig = Rig(root, user, settings, env, W.AcceptanceWorld(root, root / "journal.jsonl"), sock, driver, director, llm)
     config = {"plugins": {"enabled": ["muster"], "isolation": "in_process", "entries": {"muster": {"settings": settings}}},
               "display": display or DISPLAY, **driver.gateway_config()}
@@ -146,12 +155,12 @@ def build(factory, settings=None, display=None, prepend=None, plugin=None):
 def preflight_static(rig):
     """Before any child starts: every writable path under the root, the plugin's code the one pinned path outside,
     the channel allowlisted, the PATH scripts first, the stand-in's tokens, the dead proxy."""
-    root, env = rig.root.resolve(), rig.env
-    data = rig.hermes / "plugin-data" / "muster"
-    writable = {"HOME": env["HOME"], "HERMES_HOME": rig.hermes, "HERMES_KANBAN_HOME": env["HERMES_KANBAN_HOME"],
-                "worktrees": rig.settings["worktrees"], "data dir": data, "journal": env["MUSTER_JOURNAL"],
-                "markers": env["MUSTER_MARKERS"],
-                **{f"repo {r}": r.split("=", 1)[1] for r in rig.settings["repos"]}}
+    root, env, child = rig.root.resolve(), rig.env, rig.child_env()  # child: what the children actually get
+    writable = {k: child[k] for k in ("HOME", "HERMES_HOME", "HERMES_KANBAN_HOME", "XDG_STATE_HOME", "TMPDIR",
+                                      "MUSTER_JOURNAL", "MUSTER_MARKERS")}
+    writable.update({"worktrees": rig.settings["worktrees"],
+                     "data dir": Path(child["HERMES_HOME"]) / "plugin-data" / "muster",  # plugins/plugin_storage.py
+                     **{f"repo {r}": r.split("=", 1)[1] for r in rig.settings["repos"]}})
     for what, p in writable.items():
         if not Path(p).expanduser().resolve().is_relative_to(root):
             raise Preflight(f"paths: {what} {p} is outside the test root")
@@ -165,6 +174,11 @@ def preflight_static(rig):
                 raise Preflight(f"paths: {p} links outside the test root")
     if rig.settings["notify_chat_id"] not in ALLOWED:
         raise Preflight(f"channel: {rig.settings['notify_chat_id']} is not allowlisted")
+    slack = rig.gw_config()["platforms"]["slack"]["extra"]
+    if slack.get("allowed_channels") != [rig.settings["notify_chat_id"]]:
+        raise Preflight(f"channel: Hermes's Slack allowed_channels is {slack.get('allowed_channels')}")
+    if rig.settings["notify_user_id"] != APPROVER:
+        raise Preflight(f"identity: the approver is {rig.settings['notify_user_id']}, not the test user")
     for name in ("hermes", "herdr", "gh"):
         found = shutil.which(name, path=env["PATH"])
         if found != str(rig.user / ".local" / "bin" / name):
@@ -190,14 +204,15 @@ def preflight_dynamic(rig):
         kit.wait_until(gateway, "the gateway's muster loaded through the shim", timeout=15)
     except AssertionError:
         raise Preflight("gateway-marker: the gateway's muster left no shim marker") from None
-    before = len(rig.marks())
+    before = {m["pid"] for m in rig.marks()}
     done = rig.hermes_cli("muster", "recover", "nosuch")
-    if len(rig.marks()) <= before or not any("recover" in m["argv"] for m in rig.marks()):
+    if not any("recover" in m["argv"] and m["patched"] for m in rig.marks() if m["pid"] not in before):
         raise Preflight(f"canary: `hermes muster recover nosuch` left no marker (rc {done.returncode})")
     if rig.entries():
         raise Preflight(f"canary: the journal is not empty: {rig.entries()}")
     seen = [c.response for c in rig.standin.calls_of("auth.test")]
-    if not seen or any((r or {}).get("user_id") != "UBOT0001" or (r or {}).get("bot_id") != "B0STANDIN" for r in seen):
+    pinned = {"team_id": "T0STANDIN", "user_id": "UBOT0001", "bot_id": "B0STANDIN"}
+    if not seen or any({k: (r or {}).get(k) for k in pinned} != pinned for r in seen):
         raise Preflight(f"identity: auth.test answered {seen}")
     if re.search(r"slack\.com", rig.gw.log_path.read_text()):
         raise Preflight("no-real-slack: the gateway log names slack.com")
@@ -265,12 +280,7 @@ def pytest_runtest_makereport(item, call):
 
 def stop(rig):
     if rig.gw:
-        rig.gw.stop()
-        for pid in rig.gw.pids:
-            try:
-                os.kill(pid, 9)
-            except (ProcessLookupError, PermissionError):
-                pass
+        rig.gw.stop()  # SIGTERM, then SIGKILL, to the gateway's whole process group
     rig.llm.stop()
     rig.driver.stop()
     if rig.server:
@@ -290,9 +300,14 @@ def make_rig(tmp_path_factory, request):
 
     yield make
     for rig in rigs:
-        stop(rig)
+        try:
+            stop(rig)
+        except Exception as caught:  # noqa: BLE001 - every rig's children are stopped, whatever one raised
+            print(f"stopping {rig.root}: {caught!r}")
     for rig in rigs:
         assert not rig.world.unmodelled, f"muster reached a call the world does not model: {rig.world.unmodelled}"
+        log = rig.gw.log_path.read_text() if rig.gw.log_path.exists() else ""
+        assert "slack.com" not in log, "the gateway named slack.com during the run"  # the preflight's check, again
 
 
 @pytest.fixture
