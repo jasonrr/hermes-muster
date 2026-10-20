@@ -7,23 +7,21 @@
 - Tool activity is cleaned up after a successful turn.
 - V2 and V3: plan now, build later.
 
-**This version's changes:**
-- The plugin's code path is now explicitly allowed in preflight.
-- The live identity check requires the allowed workspace and denies production's bot, user and app.
+**v5:** corrected for #59 (§1, §4). No design change.
 
-This run writes only the design and the builder plan. A fresh builder implements the plan once Jason has approved the design. Approving research is not approval to code.
+This run writes only the design and the builder plan. A fresh builder implements the plan once Jason has approved the design.
 
 ## 1. Why Jason caught what tests missed (traced, read-only)
 
-- **No diamond.** `:diamond_spin:` exists in the workspace (emoji search). However, `muster/progress.py:247` still returns plain `Working · last activity …`. The unit tests check status text for each state, and none of them encoded the agreement to use the emoji.
+- **No diamond.** `:diamond_spin:` exists in the workspace, but at 007767e `progress.py:247` returned plain text. No test encoded the agreement.
 - **The stale review and tool activity come from three owners.** Thread `1792437076.603429` (run t_4e0f4a2d) shows them in this order:
-  1. 15:13:07 and 15:21:19: the "🔍 Ella is reviewing design v1 / PR #118" reply. Hermes's kanban notifier posts it. Its text is the summary that `events.review` and `adhoc.complete` set on a card subscribed with `notify+wake` (`core.subscribe`).
-  2. 15:13:09 and 15:21:24: the coordinator's tool-progress bubble. Hermes posts it during the woken turn. Production sets `display.tool_progress: all` globally, which overrides Slack's tier default of `off`, and sets `cleanup_progress: false`.
+  1. 15:13:07 and 15:21:19: the "🔍 Ella is reviewing …" reply. Hermes's notifier posts it, using the summary that `events.review` and `adhoc.complete` set on a `notify+wake` card.
+  2. 15:13:09 and 15:21:24: the coordinator's tool bubble. Hermes posts it during the woken turn. Production's global `display.tool_progress: all` overrides Slack's default of `off`.
   3. 15:14:19 and 15:22:45: Muster's full review, then its card.
 
   Muster never receives the message ids for items 1 and 2.
 
-  Muster's tests run its Slack code against `tests/fake_slack.py`. They also use `fake_hermes.Subs`, which records subscriptions but never posts a ping. So **no Hermes-generated message exists in any Muster test**. That is the gap.
+  Muster's tests use `fake_slack` and `fake_hermes.Subs`, which never posts a ping. So **no Hermes-generated message exists in any Muster test**. That is the gap.
 - **Sibling run t_5b73f25f merged as #59.**
   - It added the diamond, and a link from the parent to the review.
   - It does not retire the "is reviewing" reply or the bubble. Its learnings say `cleanup_progress` likely never fires for wake turns.
@@ -43,12 +41,12 @@ API read-back never proves animation or layout. A screenshot proves that the cus
 ## 3. Options
 
 - **A. Extend Muster's in-process fakes so they emit pings and bubbles. Rejected as the main layer.** We would have to write our own copy of Hermes's notifier and progress display, and the test would then validate itself. It stays honest only for Muster's own payload text, so V1 adds just the diamond assertions at that level.
-- **B. A real gateway in a child process. Recommended V1.** Hermes's own test kit already provides every piece:
-  - `GatewayUnderTest` and `hermetic_env` (`tests/e2e/core/platforms/_helpers.py`);
-  - `SlackStandin`, Hermes's local Slack Web API and Socket Mode server, which drives the **real** Slack adapter through `slack_shim/sitecustomize.py`. It keeps a `visible()` list of what a human sees after edits and deletes, and serves `conversations.replies`;
-  - `FakeLLMServer` with a `Director`, which scripts the coordinator's woken turn.
+- **B. A real gateway in a child process. Recommended V1.** Hermes's own test kit provides every piece:
+  - `GatewayUnderTest` and `hermetic_env`;
+  - `SlackStandin`, which drives the **real** Slack adapter and records what a human sees after edits and deletes;
+  - `FakeLLMServer` with a `Director`, which scripts the coordinator's turn.
 
-  Muster is loaded from this checkout as a real plugin. Muster adds one test module and an isolation shim. Hermes's own `tests/e2e/core/platforms/test_slack_contract.py` uses the same pattern.
+  Muster loads as a real plugin from the checkout. Hermes's own `test_slack_contract.py` uses the same pattern.
 - **C. A live channel served by a second gateway. Staged as V2.** It would prove real read-back, real Socket Mode delivery and real scopes. **Blocker:** it cannot share the production Slack app. Socket Mode spreads one app's events across all of that app's connections, so a test gateway would receive some of Jason's real taps. It needs a second Slack app.
 - **D. Playwright driving Slack's web client. Staged as V3, local only.** Playwright 1.63 and a cached Chromium are installed. This is the only way to check layout and real clicks. A bot cannot press its own buttons, and the Web API cannot press Block Kit buttons, so it needs a logged-in **human test identity**. Claude-in-Chrome works only interactively, not unattended.
 
@@ -86,20 +84,14 @@ Rules:
   - The lifecycle tests run only through the gate, or with `MUSTER_ACCEPTANCE=1`.
 - **Hermes's test kit is not a public API.** Every import from it is confined to one module, `tests/acceptance/hermes_kit.py`. Each import there names the Hermes file and line and the upstream ask. The ask, "ship the stand-ins as plugin test fixtures", is noted and not filed. A guard test fails loudly if the kit's shape changes.
   - This is a test-only reading of AGENTS.md: `muster/hermes_private.py` stays the only *production* module that touches private Hermes names.
-- **Isolation, in three layers.**
-  1. **Shim.** `tests/acceptance/shim/sitecustomize.py` wraps `muster.core.run` in every child process, whatever name Hermes loads the plugin under (matched by file path).
-     - `herdr`, `gh` and `git` are forwarded to one **world server** in the test process. It holds a stateful `AcceptanceWorld`, a subclass of the repo's own `tests/fake_herdr.World`, which already models herdr, git and `gh pr list`. Every call is journaled. An unmodelled call is refused.
-     - `hermes` runs for real, against the test home.
-     - Anything else is refused.
-     - Without a reachable world server, the shim refuses `herdr`, `gh` and `git` outright.
-  2. **PATH.** The test home's `~/.local/bin` holds three scripts:
-     - a `hermes` wrapper that runs the test interpreter, with the shim's environment written into the script itself, so it survives the terminal tool's environment sanitising;
-     - `herdr` and `gh` stubs that journal the call and exit 97.
+- **Isolation, in three layers** (plan Tasks 2 and 4 have the details):
+  1. **Shim.** It wraps `muster.core.run` in every child, matched by file path.
+     - `herdr`, `gh` and `git` go to a world server in the test process: an `AcceptanceWorld` built on the repo's stateful `tests/fake_herdr.World`, with every call journaled and unmodelled calls refused.
+     - `hermes` runs for real, against the test home. Anything else is refused.
+  2. **PATH.** The test `$HOME/.local/bin` holds a `hermes` wrapper, with the shim's environment written in, plus `herdr` and `gh` stubs that journal and exit 97. `prepare_env` puts this directory first. The production launcher's `-I` would drop the shim, so it must never be reached.
+  3. **No egress.** Children get a dead-port HTTP(S) proxy, with loopback exempt.
 
-     `core.prepare_env` puts `$HOME/.local/bin` first, and `HOME` is the test home, so these scripts win over `/opt/homebrew/bin`. The production `hermes` launcher runs Python with `-I`, which ignores the shim, so it must never be reached.
-  3. **No egress.** Children get `HTTPS_PROXY` and `HTTP_PROXY` pointing at a dead loopback port, with `NO_PROXY` set to loopback only. Any call to github.com or slack.com then fails fast.
-
-  The shim exists because `core.prepare_env` puts `/opt/homebrew/bin` near the front of PATH, where the real `herdr` and `gh` live. Without it, a tap could prompt a real builder pane or merge a real PR.
+  Without these layers, a tap could prompt a real builder pane or merge a real PR, because `prepare_env` reaches `/opt/homebrew/bin`.
 - **Tool-bubble rule (fails closed).** At each checkpoint, the thread's visible bot messages must equal an exact allow-list: the parent, the builder's question, the full review and the card. Any extra message fails the test. A positive control, with `cleanup_progress: false`, must detect the bubble.
 
 ### 5a. Fail-closed preflight (before any launch, hook or tap)
