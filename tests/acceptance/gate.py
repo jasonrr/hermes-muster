@@ -2,7 +2,7 @@
 display and muster settings are what the suite tested. One verdict; exit 0 only on PASS.
 
   PASS             every test passed and production's settings match
-  FAIL             anything failed
+  FAIL             anything failed, or pytest exited nonzero
   BLOCKED          a skip, xfail or xpass, each with its reason: a skip never counts as acceptance
   CONFIG MISMATCH  the differing key names only, never their values
 
@@ -62,7 +62,11 @@ def mismatches(text, load):
     return [k for k in want if seen[k] != want[k]]
 
 
-def verdict(failed, blocked, config):
+def verdict(failed, blocked, config, code=0):
+    """`code`: pytest's exit status. Nonzero is never a PASS, even when its report holds only passing cases (an
+    interrupted run, exit 2, or an internal error, exit 3, can write one)."""
+    if code and not failed:
+        return "FAIL", [f"failed: pytest exited {code} with no failed test in its report", *blocked]
     if failed:
         return "FAIL", [f"failed: {n}" for n in failed]
     if blocked:
@@ -98,7 +102,7 @@ def main(argv=None):
     except OSError:
         text = None
     config = mismatches(text, hermes_yaml.safe_load) if text is not None else ["config: unreadable"]
-    name, lines = verdict(failed, blocked, config)
+    name, lines = verdict(failed, blocked, config, done.returncode)
     print(name)
     for line in lines:
         print(f"  {line}")
