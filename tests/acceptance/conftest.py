@@ -262,6 +262,7 @@ def timeline(rig):
         for v in messages:
             first = " ".join(shown(v.text, v.extra.get("blocks") or []).split())[:120]
             out.append(f"- {v.message_id} edits={v.edits}{' DELETED' if v.deleted else ''} | {first}")
+    out += ["", "## ephemerals", *(f"- {e.get('user')}: {e.get('text')}" for e in rig.standin.ephemerals(CHANNEL))]
     out += ["", "## journal", *(json.dumps(e) for e in rig.entries()), "", "## markers",
             *(json.dumps(m) for m in rig.marks())]
     path = rig.root / "timeline.md"

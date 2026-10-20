@@ -10,7 +10,7 @@ import time
 
 from muster import launcher
 from tests.acceptance import hermes_kit as kit
-from tests.acceptance.conftest import APPROVER, CHANNEL, SCAN, shown
+from tests.acceptance.conftest import APPROVER, CHANNEL, OTHER, SCAN, shown
 
 
 def wait(what, pred, timeout):
@@ -322,3 +322,52 @@ def test_pr_merge(rig, subtests):
     wait("the merge", lambda: merges(rig), 30)
     assert [e["argv"] for e in merges(rig)] == [["gh", "pr", "merge", PR, "--squash", "--match-head-commit", head]]
     assert "error" not in merges(rig)[0]  # answered by the world; the gh stub saw nothing
+
+
+def ephemeral(rig, text):
+    return [e for e in rig.standin.ephemerals(CHANNEL) if text in json.dumps(e, ensure_ascii=False)]
+
+
+def test_duplicate_tap(rig, subtests):
+    _, _, held = to_design_card(rig, "t1", subtests)
+    decision = card(rig)
+    approve = button(rig, decision, "Approve design v1")
+    rig.standin.block_action(APPROVER, CHANNEL, decision.message_id, approve)
+    rig.standin.block_action(APPROVER, CHANNEL, decision.message_id, approve)
+    assert answered(held)["hookSpecificOutput"]["decision"]["behavior"] == "allow"
+    settle(rig, decision, r"^✅ Approved\b")
+    # slack.handle: "Already answered" while the request is open, ended(req) once it settled; both change nothing
+    wait("the second tap is told nothing changed", lambda: [
+        e for e in rig.standin.ephemerals(CHANNEL)
+        if re.search(r"Already answered|already ended\. Nothing was changed", str(e.get("text")))], 30)
+    assert len(prompts(rig)) == 1  # the brief; the approval went once, through the dialog
+
+
+def test_non_approver_tap(rig, subtests):
+    _, _, held = to_design_card(rig, "n1", subtests)
+    decision = card(rig)
+    before, edits = len(rig.entries()), decision.edits
+    rig.standin.block_action(OTHER, CHANNEL, decision.message_id, button(rig, decision, "Approve design v1"))
+    wait("the non-approver is told", lambda: ephemeral(rig, "Not authorized"), 30)
+    hold(SCAN)
+    assert len(rig.entries()) == before and held.poll() is None  # nothing journaled; the builder still waits
+    assert card(rig).message_id == decision.message_id and card(rig).edits == edits
+
+
+def channel_posts(rig):
+    return len([c for c in rig.standin.calls_of("chat.postMessage") if c.params.get("channel") == CHANNEL])
+
+
+def test_restart_mid_review(rig, subtests):
+    _, top, _ = to_design_card(rig, "r1", subtests)
+    decision = card(rig)
+    posts = channel_posts(rig)
+    rig.gw.stop()
+    rig.gw.start()
+    hold(5 + 5 + 3 * SCAN)  # a notifier tick after its 5 s start delay (kanban_watchers.py), then three scans
+    with subtests.test("nothing is reposted"):
+        assert channel_posts(rig) == posts  # Hermes's own shutdown notice goes elsewhere, not to the run's channel
+        cards = [c for c in rig.standin.calls_of("chat.postMessage") if "Approve design v1" in json.dumps(c.params)]
+        assert [(c.response or {}).get("ts") for c in cards] == [decision.message_id]  # one card across both lives
+    assert parent(rig).message_id == top.message_id and card(rig).message_id == decision.message_id
+    checkpoint_b(rig, subtests, "design v1", *DESIGN_V1)
