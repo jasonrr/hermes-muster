@@ -1028,3 +1028,16 @@ def test_an_issue_launch_asks_for_its_topic_before_subscribing_in_it(tmp_path, m
                                                                       real(card, ledger)))
     assert tick() == 0
     assert order[:2] == [("topic", "t_abc123", REPO, 397), ("subscribe", "t_abc123", "t_abc123")]
+
+
+def test_switch_mode_changes_each_matching_row_in_place(monkeypatch):
+    """Only the row key and the mode: Hermes updates that row's mode and keeps its user, chat type and cursor."""
+    rows = [{"platform": "slack", "chat_id": "C1", "thread_id": "171.5", "delivery_mode": "notify+wake"},
+            {"platform": "telegram", "chat_id": 4242, "thread_id": None, "delivery_mode": "notify+wake"},
+            {"platform": "slack", "chat_id": "C1", "thread_id": "", "delivery_mode": "notify"}]
+    seen = []
+    monkeypatch.setattr(core, "kanban", lambda *argv: json.dumps(rows) if argv[0] == "notify-list" else seen.append(argv))
+    core.switch_mode("t_1", "notify+wake", "wake")
+    assert seen == [
+        ("notify-subscribe", "t_1", "--platform", "slack", "--chat-id", "C1", "--thread-id", "171.5", "--delivery-mode", "wake"),
+        ("notify-subscribe", "t_1", "--platform", "telegram", "--chat-id", "4242", "--delivery-mode", "wake")]
