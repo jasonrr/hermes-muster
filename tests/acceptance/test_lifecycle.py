@@ -259,3 +259,66 @@ def test_design_v2_while_v1_is_open(rig, subtests):
         assert "Design v1" in message(rig, first.message_id) and card(rig).message_id != first.message_id
     checkpoint_b(rig, subtests, "design v2", files(1), r"⏹ Ended · Design v1\b.*superseded by a newer design review", files(2), r"^🟡 Design v2 ·.*Approve design v2")
     held.kill()
+
+
+PR = "https://github.com/demo/demo/pull/7"
+
+
+def to_pr_card(rig, token, subtests, choice, feedback=None):
+    """Launch, work, open PR #7 and end the turn (adhoc.verify completes the card); the coordinator's woken turn is
+    scripted to recommend on that head. Returns the card id once the decision card is up and three scans passed."""
+    card_id, brief = launch(rig, token)
+    works(rig, card_id, brief)
+    rig.world.pr = PR
+    head = rig.world.pr_record()["headRefOid"]
+    review, summary = rig.root / "review.md", rig.root / "summary.md"
+    review.write_text("The change is small and tested.\n")
+    summary.write_text("Small and tested.\nDeploy on merge: none.\n")
+    command = f"hermes muster recommend {card_id} --pr {PR} --head {head} --choice {choice} --review {review} " \
+              f"--summary {summary}"
+    if feedback:
+        (rig.root / "feedback.md").write_text(feedback)
+        command += f" --feedback {rig.root / 'feedback.md'}"
+    rig.director.script(token, kit.ToolCall("terminal", {"command": command}), kit.Text("[SILENT]"))
+    hook(rig, "stop", card_id, {"hook_event_name": "Stop"})
+    for agent in rig.world.agents.values():  # what herdr then reports for the pane: Claude's turn is over
+        agent["agent_status"] = "idle"
+    wait("the PR's decision card", lambda: card(rig), 60)
+    hold(3 * SCAN)
+    return card_id, head
+
+
+def build_files():
+    return r"^Full review · PR #7\b.*\[files: [\w-]+-pr-7-review-\w{7}\.md\]$"
+
+
+def merges(rig):
+    return [e for e in rig.entries() if e.get("argv", [])[:3] == ["gh", "pr", "merge"] or e.get("stub") == "gh"]
+
+
+def test_pr_leave_open(rig, subtests):
+    to_pr_card(rig, "p1", subtests, "nothing")
+    checkpoint_b(rig, subtests, "PR #7", build_files(), r"^🟡 PR #7 ·.*Leave PR open")
+    decision = card(rig)
+    rig.standin.block_action(APPROVER, CHANNEL, decision.message_id, button(rig, decision, "Leave PR open"))
+    settle(rig, decision, r"^⏸")
+    assert merges(rig) == []
+
+
+def test_pr_send_back(rig, subtests):
+    to_pr_card(rig, "p2", subtests, "send-back", feedback="Handle the empty title.\n")
+    checkpoint_b(rig, subtests, "PR #7", build_files(), r"^🟡 PR #7 ·.*Handle the empty title.*Send back")
+    decision = card(rig)
+    rig.standin.block_action(APPROVER, CHANNEL, decision.message_id, button(rig, decision, "Send back with this feedback"))
+    wait("the feedback reached the builder", lambda: len(prompts(rig)) == 2, 30)
+    assert "Handle the empty title" in prompts(rig)[1]["argv"][4] and merges(rig) == []
+
+
+def test_pr_merge(rig, subtests):
+    _, head = to_pr_card(rig, "p3", subtests, "merge")
+    checkpoint_b(rig, subtests, "PR #7", build_files(), r"^🟡 PR #7 ·.*Merge PR #7")
+    decision = card(rig)
+    rig.standin.block_action(APPROVER, CHANNEL, decision.message_id, button(rig, decision, "Merge PR #7"))
+    wait("the merge", lambda: merges(rig), 30)
+    assert [e["argv"] for e in merges(rig)] == [["gh", "pr", "merge", PR, "--squash", "--match-head-commit", head]]
+    assert "error" not in merges(rig)[0]  # answered by the world; the gh stub saw nothing
