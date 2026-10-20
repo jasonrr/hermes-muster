@@ -167,13 +167,15 @@ def checkpoint_b(rig, subtests, decision, files_pattern, card_pattern):
         assert recommended(rig) and all(m["patched"] for m in recommended(rig))
 
 
-def to_design_card(rig, token, **kwargs):
+def to_design_card(rig, token, subtests=None, **kwargs):
     """Launch, work (A: the diamond), propose v1 and ask; returns (card id, the parent, the held dialog) once the
     decision card is up and three scans have passed."""
     card_id, brief = launch(rig, token)
     works(rig, card_id, brief)
-    top = wait("A: the parent spins the diamond while the builder works", lambda: (
-        p := parent(rig)) and ":diamond_spin:" in p.text and "Working" in p.text and p, 30)
+    top = wait("the parent says the builder is working", lambda: (p := parent(rig)) and "Working ·" in p.text and p, 30)
+    if subtests:
+        with subtests.test("A: the parent spins the diamond while the builder works"):
+            assert ":diamond_spin: Working ·" in top.text, top.text
     held = propose(rig, card_id, token, **kwargs)
     wait("a decision card with buttons", lambda: card(rig), 60)
     hold(3 * SCAN)
@@ -184,7 +186,7 @@ DESIGN_V1 = (r"^Full review and design · Design v1", r"^🟡 Design v1 ·.*Appr
 
 
 def test_design_approve(rig, subtests):
-    card_id, top, held = to_design_card(rig, "d1")
+    card_id, top, held = to_design_card(rig, "d1", subtests)
     checkpoint_b(rig, subtests, "design v1", *DESIGN_V1)
     decision = card(rig)
     rig.standin.block_action(APPROVER, CHANNEL, decision.message_id, button(rig, decision, "Approve design v1"))
