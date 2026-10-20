@@ -832,9 +832,9 @@ def test_the_diamond_marks_the_working_state_and_no_other(key):
     ref = {"resolved_at": NOW} if key == "finished" else None
     got, line, _ = progress.state(P, NOW, waits, ref, key == "archived")
     assert got.split(":")[0] == key
-    shown = slack.parent_line({"ledger": P}, "running", line).split("\n")[1]
+    shown = slack.parent_line({"ledger": P}, "running", line)
     if key == "working":
-        assert shown.startswith(":diamond_spin: Working · last activity")
+        assert shown.split("\n")[1].startswith(":diamond_spin: Working · last activity")
     else:
         assert ":diamond_spin:" not in shown
 
