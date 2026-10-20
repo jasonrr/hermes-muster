@@ -169,3 +169,14 @@
 - Trusting Hermes's public `adapter.send_document` result → on a failed upload both the Slack and Telegram adapters post a "couldn't send file" notice and return that notice's `success=True`, so a caller would claim a file the human never got; Slack uploads through Bolt's `files_upload_v2` (it raises), Telegram through `hermes_private.send_document` with an `on_error` that returns the failure.
 - Expecting a permalink from `files_upload_v2` → `files.completeUploadExternal` answers only `{id, title}` per file; ask `files_info` for the permalink, and say "the files in this thread" without it.
 - Recording only which files a Telegram card got → a deleted topic remade by the repair re-presents the card in the new topic, which then said "the Markdown files above" over none; record the topic with the files and send them again when the card's topic differs.
+
+## slack-acceptance (2026-10-20)
+
+- Hermes's e2e harness gives the child gateway `HOME=<tmp>` and `HERMES_HOME=<tmp>/.hermes` → Hermes takes that for the native default home, gives it the bare `ai.hermes.gateway` label, finds the real account's plist (it reads `pwd`, not `HOME`) and refuses to start while production's gateway runs; give the child its own `HOME` apart from the gateway home.
+- A dead-port `HTTPS_PROXY` with loopback in `NO_PROXY` → Hermes's Slack adapter sets the proxy on its clients explicitly, even for a 127.0.0.1 stand-in, and skips it only when `NO_PROXY` names `slack.com`; list Slack's hosts there and lean on the stand-in's fake token for Slack egress.
+- The "slack-working-and-review-order" guess that `cleanup_progress` never fires for wake turns → wrong: against a real gateway the coordinator's bubble is posted and deleted within a second of its turn; the stale reply that stays is the notifier's "🔍 … is reviewing" ping, on both the design and the PR path.
+- A scripted builder that only proposes → Muster's card ends "the builder hasn't asked yet"; a real builder then asks with AskUserQuestion, and its held `PermissionRequest` hook is what receives the approval, so drive both hooks. Likewise set the fake pane idle after a `Stop` hook, or a send-back is refused as "the builder was busy".
+
+## stale-review-notices (2026-10-20)
+
+- A card subscribed `notify+wake` → Hermes's notifier posts its completion as a thread reply that Muster never gets an id for, so it can never be retired. For a notice the status message already carries, subscribe `wake` (Hermes still wakes the coordinator with the summary as handoff), and switch a long-lived card's mode in place with `notify-subscribe` naming only its row key and `--delivery-mode` (last-write-wins).

@@ -31,7 +31,7 @@ def board(tmp_path, monkeypatch):
     git_dir.mkdir()
     (git_dir / core.CARD_FILE).write_text(json.dumps(LINKS))
     state = {"cards": {"t_abc123": "ready"}, "blocks": {}, "keys": {}, "calls": [], "flaky": 0, "git_dir": git_dir,
-             "fail": {}, "mode": "notify+wake", "on_create": None, "head": "muster/397", "comments": {}, "bodies": {}}
+             "fail": {}, "mode": "notify+wake", "modes": {}, "on_create": None, "head": "muster/397", "comments": {}, "bodies": {}}
 
     def fake_run(argv):
         state["calls"].append(argv)
@@ -47,7 +47,8 @@ def board(tmp_path, monkeypatch):
             return json.dumps({"task": {"id": argv[5], "status": cards[argv[5]], "body": state["bodies"].get(argv[5])},
                                "comments": [{"author": "default", "body": b} for b in state["comments"].get(argv[5], [])]})
         if verb == "notify-list":
-            return json.dumps([{"chat_id": "4242", "user_id": "4242", "chat_type": "dm", "notifier_profile": "default", "delivery_mode": state["mode"]}])
+            return json.dumps([{"chat_id": "4242", "user_id": "4242", "chat_type": "dm", "notifier_profile": "default", "platform": "telegram",
+                                "delivery_mode": state["modes"].get(argv[5], "notify+wake")}])
         if state["flaky"]:
             state["flaky"] -= 1
             raise core.CommandError("hermes kanban --board: exit 1\ndatabase is locked")
@@ -66,7 +67,7 @@ def board(tmp_path, monkeypatch):
             state["bodies"].setdefault(card, argv[argv.index("--body") + 1])
             return json.dumps({"id": card, "status": cards[card]})
         if verb == "notify-subscribe":
-            state["mode"] = argv[argv.index("--delivery-mode") + 1]
+            state["mode"] = state["modes"][argv[5]] = argv[argv.index("--delivery-mode") + 1]
             return ""
         if verb == "comment":
             assert argv[5] == "--", argv  # the text is the agent's: it may start with "--"
@@ -195,6 +196,21 @@ def test_done_completes_with_one_readable_line_and_prints(board, monkeypatch, ca
     # stay on the card's body and its muster links comment.
     assert complete[complete.index("--summary") + 1] == progress.opened(PR)
     assert "card t_abc123 -> done" in capsys.readouterr().out
+
+
+def moves(state, card):
+    """The card's kanban moves in order, a subscription as its delivery mode."""
+    return [c[c.index("--delivery-mode") + 1] if c[4] == "notify-subscribe" else c[4] for c in state["calls"]
+            if c[:2] == ["hermes", "kanban"] and c[4] in ("notify-subscribe", "complete", "block") and card in c]
+
+
+def test_done_wakes_the_coordinator_without_a_ping_and_a_later_block_pings_again(board, monkeypatch):
+    """The completion's "PR opened · is reviewing" ping would stay in the thread after the decision card."""
+    assert done(PR) == 0
+    assert moves(board, "t_abc123") == ["wake", "complete"]
+    board["cards"]["t_abc123"] = "ready"  # say a reopened ledger: its block must ping the human again
+    assert hook(monkeypatch, "session-end", reason="logout") == 0
+    assert moves(board, "t_abc123") == ["wake", "complete", "notify+wake", "block"]
 
 
 def test_done_completes_a_blocked_ledger_directly_and_archives_an_open_wait(board, monkeypatch):
@@ -652,8 +668,8 @@ def test_each_proposal_version_wakes_the_coordinator_once_in_the_run_topic(board
     assert body.startswith(f"Design review; {core.REVIEW_CUE}. ledger t_abc123 | {head}\n")  # the pin, in the body
     assert body.endswith(first)  # the pinned text
     subscribe = next(c for c in board["calls"] if c[4:6] == ["notify-subscribe", "t_design1"])
-    # a ping first, as for a finished build: the coordinator's activity then lands under it, not an older message
-    assert subscribe[subscribe.index("--delivery-mode") + 1] == "notify+wake"
+    # no ping: the run's status message says the review started (progress.state); a ping would stay after the card
+    assert subscribe[subscribe.index("--delivery-mode") + 1] == "wake"
     assert completes(board, "t_design1") == ["🔍 Coordinator is reviewing design v1. Nothing to decide yet."]
     assert board["cards"]["t_design1"] == "done"
     assert propose(tmp_path, first) == 0  # the same version again: no second review
@@ -1090,7 +1106,7 @@ def test_an_unreported_failure_does_not_hold_a_later_wait(board, monkeypatch, tm
 
 def test_a_wait_card_and_a_review_card_subscribe_in_the_ledgers_conversation(board, monkeypatch, tmp_path):
     seen = []
-    monkeypatch.setattr(core, "subscribe", lambda card, ledger=None: seen.append((card, ledger)))
+    monkeypatch.setattr(core, "subscribe", lambda card, ledger=None, mode=None: seen.append((card, ledger)))
     assert hook(monkeypatch, "notification") == 0
     verified(monkeypatch, tmp_path, board)
     assert done(PR) == 0

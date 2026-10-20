@@ -255,8 +255,8 @@ def review(ledger, proposal, title=None):
     """Wake the coordinator to review this version (muster:escalation): one card per version, as decisions.rereview.
 
     Keyed by version and hash, so a replay or the same text proposed again finds the card done and wakes no one.
-    Delivery mode notify+wake, as a finished build's: the ping says the review started, and Hermes posts the
-    coordinator's activity under it rather than under an older message. The version's pin (heading) is in the body.
+    Delivery mode `wake`: the run's status message says the review started (progress.state), and a ping would stay
+    in the thread after the decision card. The version's pin (heading) is in the body.
     """
     head, n = heading(proposal), proposal["version"]
     who = config.settings.get("coordinator_name") or "Coordinator"
@@ -266,7 +266,7 @@ def review(ledger, proposal, title=None):
         "--idempotency-key", f"design:{ledger}:v{n}:{proposal['sha']}", "--created-by",
         core.CREATED_BY, "--json", "--", f"{title or ledger}: design v{n} review"))
     if card["status"] == "ready":
-        core.subscribe(card["id"], ledger)
+        core.subscribe(card["id"], ledger, mode="wake")
         core.kanban("complete", card["id"], "--summary", f"🔍 {who} is reviewing design v{n}. Nothing to decide yet.")
         expect(card["id"], "done", "design")
     return f"design: {head} review card {card['id']}"
@@ -405,6 +405,7 @@ def move(event, git_dir, link, detail, key, ask=None, proposal=None, bridged=Fal
     card = link["card"]
     now = status(card)
     if event == "session-end" and now == "ready":
+        core.switch_mode(card, "wake", "notify+wake")  # a completion that switched it, then failed: this block pings
         core.kanban("block", "--kind", "needs_input", card,
                     "The agent's session ended before it opened a pull request.")
         expect(card, "blocked", event)
@@ -412,7 +413,9 @@ def move(event, git_dir, link, detail, key, ask=None, proposal=None, bridged=Fal
     if event == "done":
         if now in ("ready", "blocked"):
             # One line: the board keeps a completion's first summary line only. The agent reports done
-            # right after opening its pull request; nothing here has merged or deployed it.
+            # right after opening its pull request; nothing here has merged or deployed it. No ping: the status
+            # message says the review started, and a ping would stay in the thread after the decision card.
+            core.switch_mode(card, "notify+wake", "wake")
             core.kanban("complete", card, "--summary",
                         progress.opened(detail))
             expect(card, "done", event)

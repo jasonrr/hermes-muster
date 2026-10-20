@@ -87,7 +87,8 @@ def last_event(card):
 
 
 def acked(card):
-    """True once every notify+wake subscription pinged the human and claimed the wake past the card's newest event.
+    """True once every notify+wake subscription pinged the human and claimed the wake past the card's newest event,
+    and every `wake` subscription claimed its wake (it sends no ping).
 
     No event found is not acked: the move happened, so a missing event means we cannot tell. The
     notifier delivers an archived card's pending events, then drops its subscriptions, so an archived
@@ -95,11 +96,11 @@ def acked(card):
     """
     want = last_event(card)
     subs = [s for s in json.loads(core.kanban("notify-list", card, "--json"))
-            if s.get("delivery_mode") == "notify+wake"]
+            if s.get("delivery_mode") in ("notify+wake", "wake")]
     if not subs:
         return events.status(card) == "archived"
-    return bool(want) and all(
-        s.get("last_event_id", 0) >= want and s.get("last_ping_event_id", 0) >= want for s in subs)
+    return bool(want) and all(s.get("last_event_id", 0) >= want and (
+        s["delivery_mode"] == "wake" or s.get("last_ping_event_id", 0) >= want) for s in subs)
 
 
 def note(card, path, entry, error):

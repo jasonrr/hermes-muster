@@ -29,7 +29,7 @@ PR = {"url": "https://github.com/o/r/pull/7", "state": "OPEN", "headRefOid": "ab
 @pytest.fixture
 def board(tmp_path, monkeypatch):
     """hermes, git, gh and herdr as the run sees them; hermes moves follow tests/test_kanban_contract.py."""
-    state = {"cards": {}, "blocks": {}, "keys": {}, "calls": [], "fail": {}, "down": False, "mode": "notify+wake", "events": {},
+    state = {"cards": {}, "blocks": {}, "keys": {}, "calls": [], "fail": {}, "down": False, "mode": "notify+wake", "modes": {}, "events": {},
              "seq": 0, "cursor": 0, "head": "abc", "dirty": "", "prs": [], "gh_fail": 0, "agent": "working", "agent_seq": 1,
              "created_at": {}, "kinds": {}, "comments": {}, "bodies": {}}
     monkeypatch.setattr(runs, "last_event", lambda card: state["events"].get(card, 0))
@@ -71,7 +71,8 @@ def board(tmp_path, monkeypatch):
         if verb == "notify-list":
             if cards[argv[5]] == "archived" or state.get("no_subs"):
                 return "[]"  # the notifier drops a card's subscriptions on archive
-            return json.dumps([{"chat_id": "4242", "user_id": "4242", "chat_type": "dm", "notifier_profile": "default", "delivery_mode": state["mode"],
+            return json.dumps([{"chat_id": "4242", "user_id": "4242", "chat_type": "dm", "notifier_profile": "default", "platform": "telegram",
+                                "delivery_mode": state["modes"].get(argv[5], "notify+wake"),
                                 "last_event_id": state["cursor"], "last_ping_event_id": state["cursor"]}])
         if verb == "create":
             key = argv[argv.index("--idempotency-key") + 1]
@@ -87,7 +88,7 @@ def board(tmp_path, monkeypatch):
             state["comments"].setdefault(argv[-2], []).append(text)
             return ""
         if verb == "notify-subscribe":
-            state["mode"] = argv[argv.index("--delivery-mode") + 1]
+            state["mode"] = state["modes"][argv[5]] = argv[argv.index("--delivery-mode") + 1]
             return ""
         # unblock: only a recover, once, of a launch-failure block (see the contract test)
         assert verb in ("block", "archive", "complete", "unblock"), argv
@@ -187,6 +188,35 @@ def test_a_verified_pr_completes_the_ledger_with_run_pr_pane_links(board, run1, 
     assert complete[5:7] == [CARD, "--summary"]
     assert complete[7] == progress.opened(PR["url"])
     assert not (run1 / "muster-wait").exists()
+
+
+def moves(state, card):
+    """The card's kanban moves in order, a subscription as its delivery mode."""
+    return [c[c.index("--delivery-mode") + 1] if c[4] == "notify-subscribe" else c[4] for c in state["calls"]
+            if c[:2] == ["hermes", "kanban"] and c[4] in ("notify-subscribe", "complete", "block") and card in c]
+
+
+@pytest.mark.parametrize("state, want", [("OPEN", ["wake", "complete"]), ("MERGED", ["complete"])])
+def test_an_open_pr_completes_the_ledger_without_a_ping(board, run1, monkeypatch, state, want):
+    """"PR opened · is reviewing" would stay in the thread after the decision card; "Merged" is no review notice."""
+    board["prs"] = [PR | {"state": state}]
+    fire(monkeypatch, "stop")
+    assert moves(board, CARD) == want
+
+
+def test_a_session_end_block_after_a_wake_ledger_pings_again(board, run1, monkeypatch):
+    board["modes"][CARD] = "wake"  # a completion that switched the ledger, then failed
+    fire(monkeypatch, "session-end", reason="logout")
+    assert moves(board, CARD) == ["notify+wake", "block"]
+
+
+@pytest.mark.parametrize("mode, cursor, ping, want", [
+    ("wake", 5, 0, True), ("wake", 4, 0, False), ("notify+wake", 5, 0, False), ("notify+wake", 5, 5, True)])
+def test_a_wake_subscription_is_acked_without_a_ping(monkeypatch, mode, cursor, ping, want):
+    monkeypatch.setattr(runs, "last_event", lambda card: 5)
+    monkeypatch.setattr(core, "kanban", lambda *argv: json.dumps(
+        [{"delivery_mode": mode, "last_event_id": cursor, "last_ping_event_id": ping}]))
+    assert runs.acked(CARD) is want
 
 
 def test_duplicate_delivery_completes_once(board, run1, monkeypatch):
@@ -925,7 +955,7 @@ def test_a_revised_pull_request_after_a_send_back_makes_a_ready_for_re_review_ca
     assert [c[5:] for c in calls(revised, "complete")] == [["t_wait1", "--summary",
                                                            f"🔍 PR #7 updated · Coordinator is re-reviewing it. Nothing "
                                                            f"to decide yet; nothing is merged or deployed. {PR['url']}"]]
-    assert revised["mode"] == "notify+wake"
+    assert revised["modes"]["t_wait1"] == "wake"  # no ping: the status message says the re-review started
     assert revised["cards"][CARD] == "done" and calls(revised, "block") == [] and revised["comments"] == {}
     assert decisions.load(open_build)["status"] == "stale"
     assert [json.loads(p.read_text())["ack"] for p in runs.sent(CARD)] == ["t_wait1"]

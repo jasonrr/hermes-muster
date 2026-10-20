@@ -157,8 +157,8 @@ Your Hermes agent cannot answer the builder's question itself.
 
 ### Build review and merge
 
-When the pull request is ready, the ping says "PR #<n> opened · <coordinator> is reviewing. No action
-needed". Your Hermes agent reads the diff, the surrounding code, the checks, the builder's review log and
+When the pull request is ready, the run's status message says "<coordinator> is reviewing PR #<n> · nothing
+to decide yet" (no separate ping). Your Hermes agent reads the diff, the surrounding code, the checks, the builder's review log and
 the production note, and records one recommendation: merge, send back, or nothing. You get its full
 review, then a decision card whose summary (at most 900 characters) states what a merge deploys.
 
@@ -175,8 +175,8 @@ review, then a decision card whose summary (at most 900 characters) states what 
   **Retry**.
 
 **Re-review.** After a send-back, the builder pushes a revision (an issue builder runs `hook done` again).
-Once the pull request is clean and non-draft at a new head, you get "PR #<n> revised" and a new
-recommendation. Buttons on older recommendations answer "stale".
+Once the pull request is clean and non-draft at a new head, the status message says your agent is
+reviewing it again, and you get a new recommendation. Buttons on older recommendations answer "stale".
 
 ## Cards
 
@@ -190,7 +190,9 @@ Each run is tracked on Muster's Hermes kanban board.
 - **Cleanup warnings:** see [cleanup](#cleanup).
 
 Cards that should reach you are subscribed `notify+wake`: the gateway pings you, then gives your Hermes
-agent a turn. Your Hermes agent never types into a pane on its own, answers the builder, moves a card or
+agent a turn. Review starts are subscribed `wake` (a turn, no ping), since the status message already says the
+review started: the review cards, and the ledger once it completes with an open pull request. A ledger that
+blocks is switched back to `notify+wake` first, so a block always pings. Your Hermes agent never types into a pane on its own, answers the builder, moves a card or
 merges; it tells you what happened and recommends. The one exception is a message you ask it to send to a
 running agent, which it delivers with `herdr agent prompt`. Its instructions are the skills `muster:escalation`,
 `muster:review-standard` and `muster:dispatch`.

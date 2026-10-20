@@ -193,6 +193,15 @@ def subscribe(card, ledger=None, mode="notify+wake"):
         conversation.add_card(ledger, card)
 
 
+def switch_mode(card, old, new):
+    """Each of the card's `old` subscriptions in `new` delivery mode, in place: Hermes keeps one row per (card, platform,
+    chat, thread), and a notify-subscribe naming only that key and the mode changes only the mode."""
+    for sub in json.loads(kanban("notify-list", card, "--json")):
+        if sub.get("delivery_mode") == old:
+            kanban("notify-subscribe", card, "--platform", sub["platform"], "--chat-id", str(sub["chat_id"]),
+                   *(["--thread-id", str(sub["thread_id"])] if sub.get("thread_id") else []), "--delivery-mode", new)
+
+
 def gh_config_dir():
     """The bot's gh config dir, absolute: herdr --env is not shell-expanded."""
     return Path(config.settings["gh_config_dir"]).expanduser()
