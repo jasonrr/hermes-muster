@@ -300,10 +300,12 @@ async def post_detail(req, chat, meta):
 
 async def attach(req, chat, meta):
     """A build or design card's documents as Telegram files in the run's topic, each saved on the request once it
-    arrives: a re-presentation after a restart sends only what is missing, and a failure is saved, so the card says so
-    and nothing claims a file the human did not get."""
-    found = req.get("detail") or {}
-    sent, failed = list(found.get("files") or []) if found.get("platform") == name else [], None
+    arrives with the topic it went to: a re-presentation after a restart sends only what is missing, one in a new topic
+    (a deleted one remade) sends them all again there, and a failure is saved, so the card says so and nothing claims
+    a file the human did not get."""
+    found, thread = req.get("detail") or {}, (meta or {}).get("thread_id")
+    here = found.get("platform") == name and found.get("thread") == thread
+    sent, failed = list(found.get("files") or []) if here else [], None
     if sent and not found.get("failed") and not found.get("pending"):
         return  # every file arrived on an earlier boot
     docs = []
@@ -318,7 +320,7 @@ async def attach(req, chat, meta):
                     failed = res.error or "send failed"  # redacted by hermes_private
                     break
                 sent.append(fname)  # saved per file, pending until the last: a restart sends only what is missing
-                req["detail"] = {"platform": name, "files": sent, "pending": True}
+                req["detail"] = {"platform": name, "thread": thread, "files": sent, "pending": True}
                 await asyncio.to_thread(decisions.update, req["id"], detail=req["detail"])
     except ValueError as caught:  # a changed or missing proposal: muster's own words, no path
         failed = str(caught)
@@ -329,7 +331,7 @@ async def attach(req, chat, meta):
         return  # nothing to attach (a card that shows its whole review)
     if failed:
         log(f"request {req['id']}: documents not attached: {failed}")
-    req["detail"] = {"platform": name, "files": sent, **({"failed": failed[:200]} if failed else {})}
+    req["detail"] = {"platform": name, "thread": thread, "files": sent, **({"failed": failed[:200]} if failed else {})}
     await asyncio.to_thread(decisions.update, req["id"], detail=req["detail"])
 
 

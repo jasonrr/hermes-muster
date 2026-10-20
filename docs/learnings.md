@@ -158,3 +158,4 @@
 
 - Trusting Hermes's public `adapter.send_document` result → on a failed upload both the Slack and Telegram adapters post a "couldn't send file" notice and return that notice's `success=True`, so a caller would claim a file the human never got; Slack uploads through Bolt's `files_upload_v2` (it raises), Telegram through `hermes_private.send_document` with an `on_error` that returns the failure.
 - Expecting a permalink from `files_upload_v2` → `files.completeUploadExternal` answers only `{id, title}` per file; ask `files_info` for the permalink, and say "the files in this thread" without it.
+- Recording only which files a Telegram card got → a deleted topic remade by the repair re-presents the card in the new topic, which then said "the Markdown files above" over none; record the topic with the files and send them again when the card's topic differs.
