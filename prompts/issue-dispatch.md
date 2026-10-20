@@ -13,7 +13,8 @@ govern you, so follow them.
 4. This issue is a $kind. Work it by the rules under "How to work" below.
 5. Never push to $base, merge, approve, deploy or force-push. Never edit `.github/`, CI,
    deployment config, secrets, lockfiles or agent-instruction files (CLAUDE.md, AGENTS.md,
-   `.claude/`). Add no new dependency and no attribution trailer to commits or the pull request.
+   `.claude/`). Add no new dependency. Do not include Claude attribution, AI-generated attribution,
+   or AI co-author trailers (including `Co-Authored-By: Claude`) in any commit message or pull request.
 6. The result is exactly one pull request against $base whose body ends with the line
    `Closes #$number`. Then run: `$hermes muster hook done <the pull request URL>`
 
