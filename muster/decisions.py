@@ -222,7 +222,7 @@ def rereview(ledger, run=None):
         + core.PROVENANCE, "--idempotency-key", f"review:{ledger}:{head}", "--created-by", core.CREATED_BY, "--json",
         "--", f"{short(run)}: {progress.pr_name(pr['url'])} revised"))
     if card["status"] == "ready":
-        core.subscribe(card["id"], ledger)
+        core.subscribe(card["id"], ledger, mode="wake")  # no ping: the status message says the re-review started
         core.kanban("complete", card["id"], "--summary", f"🔍 {progress.pr_name(pr['url'])} updated · {who()} is "
                     f"re-reviewing it. Nothing to decide yet; nothing is merged or deployed. {pr['url']}")
         events.expect(card["id"], "done", "rereview")

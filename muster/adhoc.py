@@ -74,6 +74,8 @@ def complete(run, pr):
         # Provenance stays on the card's links comment and in run.json.
         summary = (f"Merged: {pr['url']} (not checked live)" if pr["state"] == "MERGED"
                    else progress.opened(pr["url"]))
+        if pr["state"] != "MERGED":  # no ping: the status message says the review started (as events.move done)
+            core.switch_mode(card, "notify+wake", "wake")
         core.kanban("complete", card, "--summary", summary)
         events.expect(card, "done", "complete")
     events.close_wait(runs.run_dir(card), "complete")
@@ -131,6 +133,7 @@ def deliver(run, entry):
     # session-end: the agent is gone without a finished pull request.
     events.close_wait(directory, event)
     if ledger == "ready":
+        core.switch_mode(card, "wake", "notify+wake")  # a completion that switched it, then failed: this block pings
         core.kanban("block", "--kind", "needs_input", card,
                     f"The agent's session ended without a finished pull request: {why}.")
         events.expect(card, "blocked", event)

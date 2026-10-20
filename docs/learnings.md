@@ -176,3 +176,7 @@
 - A dead-port `HTTPS_PROXY` with loopback in `NO_PROXY` → Hermes's Slack adapter sets the proxy on its clients explicitly, even for a 127.0.0.1 stand-in, and skips it only when `NO_PROXY` names `slack.com`; list Slack's hosts there and lean on the stand-in's fake token for Slack egress.
 - The "slack-working-and-review-order" guess that `cleanup_progress` never fires for wake turns → wrong: against a real gateway the coordinator's bubble is posted and deleted within a second of its turn; the stale reply that stays is the notifier's "🔍 … is reviewing" ping, on both the design and the PR path.
 - A scripted builder that only proposes → Muster's card ends "the builder hasn't asked yet"; a real builder then asks with AskUserQuestion, and its held `PermissionRequest` hook is what receives the approval, so drive both hooks. Likewise set the fake pane idle after a `Stop` hook, or a send-back is refused as "the builder was busy".
+
+## stale-review-notices (2026-10-20)
+
+- A card subscribed `notify+wake` → Hermes's notifier posts its completion as a thread reply that Muster never gets an id for, so it can never be retired. For a notice the status message already carries, subscribe `wake` (Hermes still wakes the coordinator with the summary as handoff), and switch a long-lived card's mode in place with `notify-subscribe` naming only its row key and `--delivery-mode` (last-write-wins).
