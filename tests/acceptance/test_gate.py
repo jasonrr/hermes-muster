@@ -128,11 +128,12 @@ def test_main_fails_a_clean_report_from_a_failed_pytest(tmp_path, monkeypatch, c
 
     def run(argv, **kwargs):
         junit(tmp_path / "out", *CLEAN).replace(next(a for a in argv if a.startswith("--junitxml=")).split("=", 1)[1])
-        return type("Done", (), {"stdout": "", "returncode": code})()
+        return type("Done", (), {"stdout": "!!! KeyboardInterrupt !!!\nxoxb-SECRET\n", "returncode": code})()
 
     monkeypatch.setattr(gate.subprocess, "run", run)
     assert gate.main([]) == 1
-    assert capsys.readouterr().out.startswith("FAIL\n  failed: pytest exited")
+    out = capsys.readouterr().out
+    assert out.startswith("FAIL\n  failed: pytest exited") and "KeyboardInterrupt" in out and "SECRET" not in out
 
 
 def test_all_passing_with_matching_config_is_the_one_pass(tmp_path, monkeypatch, capsys):

@@ -106,6 +106,8 @@ def main(argv=None):
     print(name)
     for line in lines:
         print(f"  {line}")
+    if done.returncode and not failed:  # the report does not say why: pytest's own last words do
+        print("  pytest's output ended:\n" + re.sub(r"(?m)^", "    ", SECRET.sub("[redacted]", done.stdout[-2000:])))
     return 0 if name == "PASS" else 1
 
 
