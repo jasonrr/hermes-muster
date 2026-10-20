@@ -22,6 +22,7 @@ DISPLAY = {"tool_progress": "all", "tool_progress_grouping": "accumulate", "inte
            "cleanup_progress": False, "platforms": {"slack": {"cleanup_progress": True}}}
 MUSTER = {"notify_platform": "slack", "notify_topics": True}
 REPO = Path(__file__).resolve().parents[2]
+SECRET = re.compile(r"xox[a-z]-\S+|xapp-\S+|gh[pousr]_\w+|github_pat_\w+")
 
 
 def tests(junit, report):
@@ -29,8 +30,9 @@ def tests(junit, report):
     failed, blocked = [], []
     for case in ET.parse(junit).iter("testcase"):
         name = f"{case.get('classname')}::{case.get('name')}"
-        if case.find("failure") is not None or case.find("error") is not None:
-            failed.append(name)
+        if (bad := case.find("failure") if case.find("failure") is not None else case.find("error")) is not None:
+            why = (bad.get("message") or "").strip().split("\n")[0][:160]  # an expected red reads apart from a crash
+            failed.append(f"{name}: {SECRET.sub('[redacted]', why)}")
         elif (skipped := case.find("skipped")) is not None:
             kind = "xfail" if skipped.get("type") == "pytest.xfail" else "skipped"
             blocked.append(f"{name}: {kind}: {skipped.get('message')}")

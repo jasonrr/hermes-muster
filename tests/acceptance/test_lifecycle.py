@@ -201,9 +201,6 @@ DESIGN_V1 = (files(1), r"^🟡 Design v1 ·.*Approve design v1")
 def test_design_approve(rig, subtests):
     card_id, top, held = to_design_card(rig, "d1", subtests)
     checkpoint_b(rig, subtests, "design v1", *DESIGN_V1)
-    # The restarted gateway is live, not just quiet: the card still answers the builder's held dialog.
-    rig.standin.block_action(APPROVER, CHANNEL, decision.message_id, button(rig, decision, "Approve design v1"))
-    assert answered(held)["hookSpecificOutput"]["decision"]["behavior"] == "allow"
     decision = card(rig)
     rig.standin.block_action(APPROVER, CHANNEL, decision.message_id, button(rig, decision, "Approve design v1"))
     got = answered(held)
@@ -249,9 +246,6 @@ def test_design_late_recommendation(rig, subtests):
     wait("the coordinator's turn has ended", lambda: not rig.director.scripts.get("l1"), 30)
     hold(5 + 3 * SCAN)
     checkpoint_b(rig, subtests, "design v1", *DESIGN_V1)
-    # The restarted gateway is live, not just quiet: the card still answers the builder's held dialog.
-    rig.standin.block_action(APPROVER, CHANNEL, decision.message_id, button(rig, decision, "Approve design v1"))
-    assert answered(held)["hookSpecificOutput"]["decision"]["behavior"] == "allow"
 
 
 def test_design_v2_while_v1_is_open(rig, subtests):

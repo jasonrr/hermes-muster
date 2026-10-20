@@ -71,6 +71,7 @@ def test_the_gate_never_prints_a_secret(tmp_path, monkeypatch, capsys):
     assert gate.main([]) == 1
     out = capsys.readouterr()
     assert out.out.startswith("FAIL") and "SECRET" not in out.out + out.err
+    assert "failed: tests.acceptance.test_lifecycle::t0: [redacted] in a log" in out.out  # why, not just which
 
 
 def test_without_the_hermes_checkout_the_gate_is_blocked(monkeypatch, capsys):
