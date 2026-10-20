@@ -22,10 +22,12 @@ on the question's own message.
 - **Permission prompts** with the command, **Allow once** and **Deny**. You can deny with a message, which
   the builder is told. There is no "allow for the session". An unanswered prompt is denied after at most
   10 minutes.
-- **Design approvals:** your Hermes agent's review, the full design, and **Approve design**,
-  **Send revisions to builder** or **Leave pending**.
-- **Build reviews:** your Hermes agent's review, its recommendation, and **Merge**, **Review feedback…**
-  or **Leave PR open**.
+- **Design approvals:** your Hermes agent's summary and any revisions, and **Approve design**,
+  **Send revisions to builder** or **Leave pending**. The full review and the whole design arrive just above
+  as Markdown files named for the version (`<task>-design-v3-review.md`, `<task>-design-v3.md`).
+- **Build reviews:** your Hermes agent's summary, its recommendation and any feedback, and **Merge**,
+  **Review feedback…** or **Leave PR open**. The full review arrives above as `<task>-pr-9-review-<commit>.md`.
+  If a file cannot be attached, the card says so and still works.
 
 You can also answer any question in the pane; the first answer wins. After you answer, each message is
 edited to say what happened, such as "Answer sent to the builder" or "Answered in the pane". "Sent" means
@@ -83,7 +85,8 @@ Slack workspace has been recorded, so check it in yours before relying on it.
 ### Slack setup
 
 1. Hermes owns the Slack app and its tokens (`SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`); Muster reads no Slack
-   secret. In the app's settings, turn on **Interactivity**, which Socket Mode needs for buttons.
+   secret. In the app's settings, turn on **Interactivity**, which Socket Mode needs for buttons. The
+   decision files need the `files:write` scope (and `files:read` for their link), both in Hermes's manifest.
 2. Invite the bot to the channel.
 3. Set `notify_platform: slack`, `notify_chat_id: C…` (the channel), `notify_user_id` (one or more member
    ids `U…`, separated by commas) and `notify_chat_type: group`. Slack has no DM fallback.

@@ -153,3 +153,8 @@
 
 - A coordinator review woken by a kanban card in a Slack thread → Hermes posts its tool-activity bubble at the coordinator's first tool call, so Muster's finished review always lands below it (Slack orders replies by post time), and `display.platforms.slack.cleanup_progress` likely never fires for these turns (an authority-admitted wake replies through `session_ingress.deliver_response`, which skips the post-delivery callbacks); lead to the review from the thread parent instead of trying to reorder replies.
 - Adding a field to the Slack thread parent that appears after the status line was edited (the review's permalink) → `gateway.scan` runs `progress_pass` before it presents requests and `progress.due` only re-edits on new text, so the parent would never show it; refresh the parent where the field is saved.
+
+## markdown-decision-attachments (2026-10-20)
+
+- Trusting Hermes's public `adapter.send_document` result → on a failed upload both the Slack and Telegram adapters post a "couldn't send file" notice and return that notice's `success=True`, so a caller would claim a file the human never got; Slack uploads through Bolt's `files_upload_v2` (it raises), Telegram through `hermes_private.send_document` with an `on_error` that returns the failure.
+- Expecting a permalink from `files_upload_v2` → `files.completeUploadExternal` answers only `{id, title}` per file; ask `files_info` for the permalink, and say "the files in this thread" without it.

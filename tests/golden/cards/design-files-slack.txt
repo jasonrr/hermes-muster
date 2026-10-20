@@ -1,0 +1,26 @@
+│ Full review and design · Design v1 · Make Muster docs a manual
+│ 📎 make-muster-docs-a-manual-design-v1-review.md
+│ 📎 make-muster-docs-a-manual-design-v1.md
+│
+│ *🟡 Design v1 · Make Muster docs a manual*
+│ *Ella recommends sending it back with these revisions:*
+│ > Keep the launcher and intake in one module until the split is needed.
+│
+│ *Why*
+│ It splits Muster into three parts: intake reads GitHub issues and starts runs, the launcher starts
+│ and recovers coding agents, and delivery carries their events to you. Nothing changes in behavior.
+│ - Limit: imports move, so open branches may need a rebase.
+│
+│ *What each button does*
+│ • Send back with these revisions: sends the revisions above to the builder.
+│ • Approve design v1: sends your approval to the builder, which then implements it. You review the
+│ pull request before anything merges.
+│ • Leave pending: the builder keeps waiting.
+│
+│ ⤷ <https://example.slack.com/files/F1|Full review and design>
+│
+│ [ Send back with these revisions ]*  [ Approve design v1 ]  [ Leave pending ]
+│
+│ Add to the revisions: [ … ]
+│ (Enter sends it back with your words added to the revisions; start with replace: to send only
+│ yours.)
