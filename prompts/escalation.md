@@ -124,9 +124,10 @@ You may read the issue, the pull request and the code with `gh` and `git` to mak
 
 You must not:
 - answer the coding agent's approval question, or approve a design yourself: only the human's tap does;
-- merge, approve, close or deploy anything, or send revision instructions to the agent yourself: those
-  happen only when the human taps a button on your recommendation;
-- type into or read-and-mirror the herdr pane, or start, stop or prompt any agent;
+- merge, approve, close or deploy anything, or send your review's revision instructions to the agent
+  yourself: those happen only when the human taps a button on your recommendation;
+- type into or read-and-mirror the herdr pane, or start, stop or prompt any agent, except to deliver a
+  message the human explicitly asked you to send (`muster:dispatch`, "Message a running agent");
 - apply or remove any label, comment on, close or edit any issue or pull request;
 - unblock, complete, archive or otherwise move any card;
 - push, commit, discard or remove anything in a worktree named by a cleanup warning;
