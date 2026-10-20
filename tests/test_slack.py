@@ -776,6 +776,29 @@ def test_the_thread_parent_carries_the_status_line_and_nothing_is_posted(threads
     assert threads.client.updates[-1]["text"] == update["text"]
 
 
+def test_only_a_working_run_spins_the_diamond_on_its_parent(threads, monkeypatch):
+    opened(threads, ledger=P)
+    now = threads.clock[0]
+    launched(now - 60)
+    tool = progress.activity(P) / "tool"
+    tool.touch()
+    os.utime(tool, (now - 30, now - 30))
+    tick(threads)
+    assert threads.client.updates[-1]["text"].split("\n")[1].startswith(":diamond_spin: Working · last activity")
+    assert ":diamond_spin:" not in progress.load(P)["text"]  # the shared line Telegram shows has no Slack shortcode
+    tick(threads, progress.QUIET)
+    assert threads.client.updates[-1]["text"].split("\n")[1].startswith("Quiet ")
+    stop = progress.activity(P) / "stop"
+    stop.touch()
+    os.utime(stop, (threads.clock[0], threads.clock[0]))
+    tick(threads)
+    assert "\nTurn ended" in threads.client.updates[-1]["text"] and ":diamond_spin:" not in threads.client.updates[-1]["text"]
+    ask([question("Which store?")], ledger=P)
+    tick(threads)
+    assert "\n🟡 Your decision" in threads.client.updates[-1]["text"]
+    assert ":diamond_spin:" not in threads.client.updates[-1]["text"]
+
+
 def test_a_resolved_threads_parent_is_left_to_its_lifecycle(threads):
     opened(threads, ledger=P)
     launched(940)

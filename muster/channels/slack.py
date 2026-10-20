@@ -532,7 +532,8 @@ def headline(ledger, state, name=None):
     (mrkdwn). The title and state are escaped (shared.slack_text); the link comes from progress.identity."""
     title, url, label = progress.identity(ledger, name)
     tail = f"<{url}|{label}>" if url else shared.slack_text(label) if label != title else ""
-    return f"*{shared.slack_text(title)}*\n{shared.slack_text(state)}" + (f" · {tail}" if tail else "")
+    spin = ":diamond_spin: " if state.startswith(progress.WORKING) else ""  # the workspace's custom emoji, working only
+    return f"*{shared.slack_text(title)}*\n{spin}{shared.slack_text(state)}" + (f" · {tail}" if tail else "")
 
 
 def parent_line(ref, status, line=None):
