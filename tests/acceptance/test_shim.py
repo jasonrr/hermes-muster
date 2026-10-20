@@ -62,7 +62,8 @@ def test_the_shim_routes_each_command_and_journals_it_in_order(tmp_path):
     server = W.serve(world, sock)
     try:
         out = child(tmp_path, [["git", "-C", "/c", "remote", "get-url", "origin"], ["bash", "-c", "true"],
-                               ["hermes", "kanban"], ["gh", "api", "repos/x"]], sock)
+                               ["hermes", "kanban"], ["gh", "api", "repos/x"],
+                               ["git", "-C", "/nowhere", "rev-parse", "--abbrev-ref", "HEAD"]], sock)
     finally:
         server.shutdown()
         server.server_close()
@@ -73,9 +74,10 @@ def test_the_shim_routes_each_command_and_journals_it_in_order(tmp_path):
     assert out["bash true"].startswith("CommandError: acceptance shim: refused bash")
     assert out["hermes kanban"] == "real hermes kanban\n"
     assert out["gh repos/x"] == "CommandError: unmodelled: gh api repos/x"
-    assert world.unmodelled == [["gh", "api", "repos/x"]]
+    assert out["git HEAD"].startswith("CommandError: unmodelled: git -C /nowhere rev-parse: TypeError")  # fake raised
+    assert world.unmodelled == [["gh", "api", "repos/x"], ["git", "-C", "/nowhere", "rev-parse", "--abbrev-ref", "HEAD"]]
     assert [(e["argv"][0], "refused" in e, "error" in e) for e in journal(tmp_path)] == [
-        ("git", False, False), ("bash", True, False), ("gh", False, True)]
+        ("git", False, False), ("bash", True, False), ("gh", False, True), ("git", False, True)]
     markers = [json.loads(p.read_text()) for p in (tmp_path / "markers").iterdir()]
     assert len(markers) == 1 and markers[0]["patched"] is True
 

@@ -27,6 +27,7 @@ def append(path, entry):
 def ask_world(argv):
     """({"stdout": …} or {"error": …}) from the world server, one connection per call."""
     with socket.socket(socket.AF_UNIX) as conn:
+        conn.settimeout(60)  # a dead world thread is a refusal, never a hang
         conn.connect(os.environ["MUSTER_WORLD_SOCK"])
         conn.sendall(json.dumps(argv).encode())
         conn.shutdown(socket.SHUT_WR)

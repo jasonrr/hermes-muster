@@ -34,7 +34,9 @@ class AcceptanceWorld(fake_herdr.World):
 
     def dispatch(self, argv):
         if argv[:3] == ["gh", "pr", "list"]:  # launcher.py:156 (none yet), adhoc.py:53 (verify)
-            return json.dumps([self.pr_record()] if self.pr else [])
+            record = self.pr_record() if self.pr else None
+            same = record and argv[argv.index("--head") + 1] == record["headRefName"]
+            return json.dumps([record] if same else [])
         if argv[:3] == ["gh", "pr", "view"] and self.pr and argv[3] == self.pr:  # decisions.py:249, events.py:540
             fields = argv[argv.index("--json") + 1].split(",")
             return json.dumps({k: v for k, v in self.pr_record().items() if k in fields})
@@ -44,10 +46,7 @@ class AcceptanceWorld(fake_herdr.World):
             return ORIGIN + "\n"
         if argv[:1] == ["git"] and argv[3:] == ["rev-parse", "HEAD"]:  # adhoc.py:50
             return self.head(argv[2]) + "\n"
-        try:
-            return super().dispatch(argv)
-        except AssertionError:
-            return None
+        return super().dispatch(argv)
 
 
 def short_sock():
@@ -71,6 +70,9 @@ def serve(world, sock_path):
                     entry["stdout"] = out
             except core.CommandError as caught:
                 entry["error"] = str(caught)
+            except Exception as caught:  # noqa: BLE001 - the fake's own asserts: a call it does not model
+                world.unmodelled.append(argv)
+                entry["error"] = f"unmodelled: {' '.join(argv[:4])}: {caught!r}"
             with open(world.journal, "a", encoding="utf-8") as out:
                 out.write(json.dumps(entry) + "\n")
             self.wfile.write(json.dumps({k: v for k, v in entry.items() if k != "argv"}).encode())
