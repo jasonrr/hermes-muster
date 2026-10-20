@@ -304,8 +304,9 @@ async def attach(req, chat, meta):
     and nothing claims a file the human did not get."""
     found = req.get("detail") or {}
     sent, failed = list(found.get("files") or []) if found.get("platform") == name else [], None
-    if sent and not found.get("failed"):
+    if sent and not found.get("failed") and not found.get("pending"):
         return  # every file arrived on an earlier boot
+    docs = []
     try:
         docs = [(fname, text) for fname, text in shared.documents(req) if fname not in sent]
         with tempfile.TemporaryDirectory() as tmp:
@@ -314,16 +315,22 @@ async def attach(req, chat, meta):
                 await asyncio.to_thread(Path(path).write_text, text, encoding="utf-8")
                 res = await hermes_private.send_document(T.adapter, chat, path, fname, shared.caption(req), meta)
                 if not res.success:
-                    raise RuntimeError(res.error or "send failed")
-                sent.append(fname)
-                req["detail"] = {"platform": name, "files": sent}
+                    failed = res.error or "send failed"  # redacted by hermes_private
+                    break
+                sent.append(fname)  # saved per file, pending until the last: a restart sends only what is missing
+                req["detail"] = {"platform": name, "files": sent, "pending": True}
                 await asyncio.to_thread(decisions.update, req["id"], detail=req["detail"])
-    except Exception as caught:  # noqa: BLE001 - a refused upload, a changed proposal, a full disk: said on the card
-        failed = str(caught) or type(caught).__name__
+    except ValueError as caught:  # a changed or missing proposal: muster's own words, no path
+        failed = str(caught)
+    except OSError as caught:  # the temporary file: its text would name a local path
+        failed = f"{type(caught).__name__} on the gateway host"
+        log(f"request {req['id']}: documents not attached: {caught}")
+    if not (docs or failed or found.get("failed")):
+        return  # nothing to attach (a card that shows its whole review)
+    if failed:
         log(f"request {req['id']}: documents not attached: {failed}")
-    if failed or found.get("failed"):  # a new failure, or an earlier one this try made good
-        req["detail"] = {"platform": name, "files": sent, **({"failed": failed[:200]} if failed else {})}
-        await asyncio.to_thread(decisions.update, req["id"], detail=req["detail"])
+    req["detail"] = {"platform": name, "files": sent, **({"failed": failed[:200]} if failed else {})}
+    await asyncio.to_thread(decisions.update, req["id"], detail=req["detail"])
 
 
 async def present(req, meta, questions):

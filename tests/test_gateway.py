@@ -2244,8 +2244,18 @@ def test_telegram_never_lets_a_local_write_failure_hide_the_card(hermes, monkeyp
     monkeypatch.setattr(telegram.Path, "write_text", full)
     run(gateway.scan())
     assert not telegram.T.adapter.documents
-    assert sent()[-1]["text"].endswith("⚠️ Full review and design could not be attached ([Errno 28] No space left on "
-                                       "device). Ask Coordinator in this thread for it.")
+    assert sent()[-1]["text"].endswith("⚠️ Full review and design could not be attached (OSError on the gateway host). "
+                                       "Ask Coordinator in this thread for it.")
+
+
+def test_telegram_sends_a_file_a_crash_left_unsent(hermes, monkeypatch):
+    req = tg_design()
+    decisions.update(req["id"], detail={"platform": "telegram", "files": ["fix-it-design-v2-review.md"], "pending": True})
+    run(gateway.scan())  # a boot that died after the first file
+    assert [d["filename"] for d in telegram.T.adapter.documents] == ["fix-it-design-v2.md"]
+    assert decisions.load(req["id"])["detail"] == {"platform": "telegram",
+                                                   "files": ["fix-it-design-v2-review.md", "fix-it-design-v2.md"]}
+    telegram.release(req["id"])
 
 
 def test_telegram_shows_an_upload_error_redacted(hermes, monkeypatch):
@@ -2303,3 +2313,16 @@ def test_telegram_points_the_approval_at_the_review_and_a_restart_never_brings_i
     monkeypatch.setattr(gateway, "BOOT", "boot2")
     run(gateway.scan())
     assert [m["cid"] for m in sent()] == [f"mu{d['id']}q0"]  # the review again; the covered question stays retired
+
+
+def test_telegram_attaches_nothing_to_a_build_card_that_shows_its_whole_review(hermes):
+    labels = ["Merge PR #9", "Leave PR open"]
+    req = decisions.create("build", "led1", run={"repo": "o/r", "issue": 7, "branch": "b", "title": "Fix it"},
+                           pr="https://github.com/o/r/pull/9", head="b" * 40, review="Right.\nDeploy on merge: none.",
+                           summary=None, actions=["merge", "nothing"], choices=[labels],
+                           questions=[{"text": "**PR #9 · Fix it**\nRight.\nDeploy on merge: none.", "header": "Build",
+                                       "multi": False, "options": [{"label": x, "description": ""} for x in labels]}])
+    run(gateway.scan())
+    assert not telegram.T.adapter.documents and "detail" not in decisions.load(req["id"])
+    assert "the message above" not in sent()[-1]["text"] and "Markdown files" not in sent()[-1]["text"]
+    telegram.release(req["id"])
