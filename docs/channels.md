@@ -27,7 +27,9 @@ on the question's own message.
   as Markdown files named for the version (`<task>-design-v3-review.md`, `<task>-design-v3.md`).
 - **Build reviews:** your Hermes agent's summary, its recommendation and any feedback, and **Merge**,
   **Review feedback…** or **Leave PR open**. The full review arrives above as `<task>-pr-9-review-<commit>.md`.
-  If a file cannot be attached, the card says so and still works.
+  If a file cannot be attached, the card says so and still works. On Slack the card ends with a short row,
+  `📎 Full review · Design v3`, linking each file. Slack has no setting an app can use to collapse a file's
+  preview; you can hide previews of uploaded files under Preferences → Messages & media.
 
 You can also answer any question in the pane; the first answer wins. After you answer, each message is
 edited to say what happened, such as "Answer sent to the builder" or "Answered in the pane". "Sent" means

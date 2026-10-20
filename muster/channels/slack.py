@@ -144,8 +144,9 @@ def link(req):
     """The link to the request's full texts (shared.detail, shared.documents) when it has one, Slack's own permalink;
     while the card is open, a line saying they could not be attached (shared.attach_line)."""
     found = req.get("detail") or {}
-    url, failed = found.get("url"), shared.attach_line(req)
-    text = (shared.slack_text(failed) if failed else f"<{url}|{shared.detail_label(req)}>" if url
+    url, failed, row = found.get("url"), shared.attach_line(req), found.get("links")
+    text = (shared.slack_text(failed) if failed else "📎 " + " · ".join(f"<{u}|{label}>" for label, u in row) if row
+            else f"<{url}|{shared.detail_label(req)}>" if url
             else f"{shared.detail_label(req)}: the Markdown files in this thread" if found.get("files") else None)
     return [{"type": "context", "elements": [{"type": "mrkdwn", "text": text}]}] if text else []
 
@@ -260,16 +261,17 @@ async def attach(req, meta):
         req["detail"] = {"platform": name, "files": [], "failed": why[:200]}
         await asyncio.to_thread(decisions.update, req["id"], detail=req["detail"])
         return None
-    first = (res.get("files") or [{}])[0].get("id")
-    req["detail"] = {"platform": name, "files": [fname for fname, _ in docs], "id": first}
+    ids = [f.get("id") for f in res.get("files") or []]
+    req["detail"] = {"platform": name, "files": [fname for fname, _ in docs], "id": ids[0] if ids else None}
     await asyncio.to_thread(decisions.update, req["id"], detail=req["detail"])
-    try:  # files.completeUploadExternal answers {id, title} only: the permalink is the file's own
-        url = (await T.client.files_info(file=first))["file"].get("permalink")
+    urls = []
+    try:  # files.completeUploadExternal answers {id, title} only: each permalink is the file's own
+        for file in ids:
+            urls.append(str((await T.client.files_info(file=file))["file"]["permalink"]))
     except Exception as caught:  # noqa: BLE001 - the card still says the files are in the thread
-        log(f"permalink of file {first}: {error_of(caught)}")
-        url = None
-    if url:
-        req["detail"] = {**req["detail"], "url": str(url)}
+        log(f"permalink of a file of request {req['id']}: {error_of(caught)}")
+    if urls and len(urls) == len(docs):  # the card's link row: one short link per file
+        req["detail"] = {**req["detail"], "url": urls[0], "links": list(zip(shared.labels(req, docs), urls))}
         await asyncio.to_thread(decisions.update, req["id"], detail=req["detail"])
         await link_parent(req, meta)
     return None

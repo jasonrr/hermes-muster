@@ -908,7 +908,7 @@ def test_a_long_review_is_one_markdown_file_and_the_card_keeps_its_deploy_caveat
     assert shown.startswith("*PR #9 · Fix it*\n*Coordinator recommends: merge*")  # native bold, no ** left
     assert "**" not in shown
     link = next(b for b in card["blocks"] if b["type"] == "context")["elements"][0]["text"]
-    assert link == f"<https://example.slack.com/files/U1/{detail_ts(req)}/x.md|Full review>"
+    assert link == f"📎 <https://example.slack.com/files/U1/{detail_ts(req)}/x.md|Full review>"
     assert channel.client.order.index("files_upload_v2") < channel.client.order.index("chat_postMessage")
     assert card["text"] == "PR #9 · Fix it\nCoordinator recommends: merge"  # notification text: the lead, not the review
     asyncio.run(gateway.scan())
@@ -924,6 +924,11 @@ def test_a_design_card_attaches_the_pinned_design_and_the_review(channel):
         ("issue-7-design-v2-review.md", "Fine."), ("issue-7-design-v2.md", PLAN_TEXT)]
     assert upload["initial_comment"] == "Full review and design · Design v2 · Issue #7"
     assert decisions.load(req["id"])["detail"]["files"] == ["issue-7-design-v2-review.md", "issue-7-design-v2.md"]
+    card = channel.client.posts[-1]
+    row = [e["text"] for b in card["blocks"] if b["type"] == "context" for e in b["elements"]]
+    first = decisions.load(req["id"])["detail"]["id"]  # the upload's file ids, in order: F<n>0, F<n>1
+    url = "https://example.slack.com/files/U1/{}/x.md"
+    assert row == [f"📎 <{url.format(first)}|Full review> · <{url.format(first[:-1] + '1')}|Design v2>"]  # one row
 
 
 def edited_plan(channel):

@@ -187,7 +187,9 @@ def test_decisions_with_their_markdown_files_on_both_platforms(cards):
     names = [fname for fname, _ in docs]
     assert docs[1][1] == "# Plan 1\nSplit intake, launcher, delivery." and docs[0][1] == "Small and right."
     files = "\n".join(f"│ 📎 {fname}" for fname in names)
-    slack_req = {**req, "detail": {"platform": "slack", "files": names, "url": "https://example.slack.com/files/F1"}}
+    slack_req = {**req, "detail": {"platform": "slack", "files": names, "url": "https://example.slack.com/files/F1",
+                                   "links": [["Full review", "https://example.slack.com/files/F1"],
+                                             ["Design v1", "https://example.slack.com/files/F2"]]}}
     cards.shown["design-files-slack"] = f"│ {shared.caption(req)}\n{files}\n│\n" + flat(slack.blocks(slack_req, 0))
     tg_req = {**req, "detail": {"platform": "telegram", "files": names}}
     buttons = "\n".join(f"│ [ {label} ]" for label in [*telegram.buttons(tg_req, 0), "✏️ Other (type answer)"])

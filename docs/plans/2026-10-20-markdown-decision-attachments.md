@@ -111,3 +111,12 @@ Its *documents* are the files this plan attaches. A `feedback` request keeps tod
 8. `test_revisions_and_what_each_button_does_survive...` gets a summary; the SUMMARY_MAX comment and refusal text
    are updated. Tests rewritten: test_slack.py:900, :937 (feedback detail stays), :1091, :1110;
    test_gateway.py:2156.
+
+## Added during the build (Jason's request): a compact Slack presentation
+Slack offers no way to collapse a shared file's preview: `files.completeUploadExternal` takes only the channel or
+thread, `initial_comment` and `blocks`, and an upload with no channel "will remain private … not actually shared
+anywhere" (Slack docs), so a private upload plus a permalink is no proof the channel can open it, and a live check
+was not authorized. Kept: one shared upload in the run's thread (channel members can open and download the files,
+as with any file shared there). Added: the card's link row, `📎 Full review · Design v2`, one permalink per file
+(`files_info`), so the card itself leads to each document. Each viewer can hide uploaded-file previews in Slack's own
+preferences (Messages & media → "Show images and files uploaded to Slack"); muster changes no setting.

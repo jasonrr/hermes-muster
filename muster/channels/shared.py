@@ -104,6 +104,13 @@ def documents(req):
         (f"{slug}-design-v{n}.md", plan)]
 
 
+def labels(req, docs):
+    """Each document's short name for a link row: a design card's last file is the design, every other the review."""
+    n = (req.get("proposal") or {}).get("version")
+    return [f"Design v{n}" if req["kind"] == "design" and i == len(docs) - 1 else "Full review"
+            for i in range(len(docs))]
+
+
 def detail_label(req):
     if req["kind"] == "design":
         return "Full review and design" if req.get("summary") else "Full design"

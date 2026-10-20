@@ -17,7 +17,8 @@
 │ pull request before anything merges.
 │ • Leave pending: the builder keeps waiting.
 │
-│ ⤷ <https://example.slack.com/files/F1|Full review and design>
+│ ⤷ 📎 <https://example.slack.com/files/F1|Full review> · <https://example.slack.com/files/F2|Design
+│ v1>
 │
 │ [ Send back with these revisions ]*  [ Approve design v1 ]  [ Leave pending ]
 │
