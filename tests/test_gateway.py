@@ -2235,6 +2235,44 @@ def test_telegram_says_a_failed_document_and_a_restart_sends_only_the_missing_on
     telegram.release(req["id"])
 
 
+def test_telegram_never_lets_a_local_write_failure_hide_the_card(hermes, monkeypatch):
+    tg_design()
+
+    def full(*a, **kw):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(telegram.Path, "write_text", full)
+    run(gateway.scan())
+    assert not telegram.T.adapter.documents
+    assert sent()[-1]["text"].endswith("⚠️ Full review and design could not be attached ([Errno 28] No space left on "
+                                       "device). Ask Coordinator in this thread for it.")
+
+
+def test_telegram_shows_an_upload_error_redacted(hermes, monkeypatch):
+    tg_design()
+
+    async def refused(label, path, chat_id, reply_to, metadata, media_key, build_kwargs, on_error):
+        return await on_error(RuntimeError("POST https://api.telegram.org/bot123456:AAH-SECRET/sendDocument failed"))
+
+    monkeypatch.setattr(telegram.T.adapter, "_send_local_file", refused)
+    run(gateway.scan())
+    assert "AAH-SECRET" not in sent()[-1]["text"] and "api.telegram.org/bot*/sendDocument" in sent()[-1]["text"]
+
+
+def test_telegram_does_not_reread_the_design_once_every_file_arrived(hermes, monkeypatch):
+    from muster import events
+    req = tg_design()
+    run(gateway.scan())
+    (events.proposals("led1") / "v2.md").write_text("edited after delivery")
+    telegram.release(req["id"])
+    monkeypatch.setattr(gateway, "S", gateway.State())
+    monkeypatch.setattr(gateway, "BOOT", "boot2")
+    run(gateway.scan())
+    assert len(telegram.T.adapter.documents) == 2 and "failed" not in decisions.load(req["id"])["detail"]
+    assert sent()[-1]["text"].endswith("Full review and design: the Markdown files above.")
+    telegram.release(req["id"])
+
+
 def test_telegram_keeps_the_detail_message_of_a_request_made_before_documents(hermes):
     req = tg_design()
     decisions.update(req["id"], detail={"platform": "telegram", "id": "77"})

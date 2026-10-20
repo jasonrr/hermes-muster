@@ -118,3 +118,8 @@ def test_the_telegram_file_send_shell_send_document_relies_on_is_unchanged():
     source = ast.get_source_segment((HERMES / "plugins/platforms/telegram/adapter.py").read_text(), shell)
     assert "return await on_error(e)" in source  # a failure is what on_error returns, never a notice's receipt
     assert 'getattr(self._bot, f"send_{media_key}")' in source  # "document" sends Bot.send_document
+
+
+def test_the_redactor_send_document_uses_still_takes_force():
+    assert params("agent/redact.py", "redact_sensitive_text")[0][0] == "text"
+    assert "force" in params("agent/redact.py", "redact_sensitive_text")[1]

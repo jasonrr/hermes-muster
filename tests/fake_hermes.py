@@ -444,7 +444,10 @@ def install(monkeypatch):
     constants.ParseMode = SimpleNamespace(HTML="HTML", MARKDOWN_V2="MarkdownV2")
     agent, i18n = types.ModuleType("agent"), types.ModuleType("agent.i18n")
     agent.i18n, i18n.t = i18n, t
-    for name, mod in (("telegram.constants", constants), ("agent", agent), ("agent.i18n", i18n), ("tools", tools), ("tools.clarify_gateway", clarify), ("tools.approval", approval),
+    redact = types.ModuleType("agent.redact")  # Hermes's redactor, for a bot token in a transport error
+    redact.redact_sensitive_text = lambda text, force=False: __import__("re").sub(r"bot\d+:[\w-]+", "bot***", text)
+    agent.redact = redact
+    for name, mod in (("telegram.constants", constants), ("agent", agent), ("agent.i18n", i18n), ("agent.redact", redact), ("tools", tools), ("tools.clarify_gateway", clarify), ("tools.approval", approval),
                       ("tools.approval_gateway_wait", wait), ("telegram", telegram),
                       ("telegram.ext", ext)):
         monkeypatch.setitem(sys.modules, name, mod)

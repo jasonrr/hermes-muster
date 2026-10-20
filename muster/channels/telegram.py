@@ -304,25 +304,23 @@ async def attach(req, chat, meta):
     and nothing claims a file the human did not get."""
     found = req.get("detail") or {}
     sent, failed = list(found.get("files") or []) if found.get("platform") == name else [], None
+    if sent and not found.get("failed"):
+        return  # every file arrived on an earlier boot
     try:
         docs = [(fname, text) for fname, text in shared.documents(req) if fname not in sent]
-    except ValueError as caught:  # a changed proposal: said on the card
-        docs, failed = [], str(caught)
-    with tempfile.TemporaryDirectory() as tmp:
-        for fname, text in docs:
-            path = os.path.join(tmp, fname)
-            await asyncio.to_thread(Path(path).write_text, text)
-            try:
+        with tempfile.TemporaryDirectory() as tmp:
+            for fname, text in docs:
+                path = os.path.join(tmp, fname)
+                await asyncio.to_thread(Path(path).write_text, text, encoding="utf-8")
                 res = await hermes_private.send_document(T.adapter, chat, path, fname, shared.caption(req), meta)
-            except Exception as caught:  # noqa: BLE001
-                res = SimpleNamespace(success=False, error=str(caught))
-            if not res.success:
-                failed = res.error or "send failed"
-                log(f"request {req['id']}: document {fname} not attached: {failed}")
-                break
-            sent.append(fname)
-            req["detail"] = {"platform": name, "files": sent}
-            await asyncio.to_thread(decisions.update, req["id"], detail=req["detail"])
+                if not res.success:
+                    raise RuntimeError(res.error or "send failed")
+                sent.append(fname)
+                req["detail"] = {"platform": name, "files": sent}
+                await asyncio.to_thread(decisions.update, req["id"], detail=req["detail"])
+    except Exception as caught:  # noqa: BLE001 - a refused upload, a changed proposal, a full disk: said on the card
+        failed = str(caught) or type(caught).__name__
+        log(f"request {req['id']}: documents not attached: {failed}")
     if failed or found.get("failed"):  # a new failure, or an earlier one this try made good
         req["detail"] = {"platform": name, "files": sent, **({"failed": failed[:200]} if failed else {})}
         await asyncio.to_thread(decisions.update, req["id"], detail=req["detail"])
