@@ -94,7 +94,10 @@ def documents(req):
         name = f"{slug}-pr-{str(req.get('pr') or '').rstrip('/').rsplit('/', 1)[-1]}-review-{req['head'][:7]}.md"
         return [(name, req["review"])] if req.get("summary") else []
     n, sha = req["proposal"]["version"], req["proposal"]["sha"]
-    plan = (events.proposals(req["ledger"]) / f"v{n}.md").read_text()
+    try:
+        plan = (events.proposals(req["ledger"]) / f"v{n}.md").read_text()
+    except OSError:  # the reason names no local path: it is shown on the card
+        raise ValueError(f"Design v{n} is not saved") from None
     if hashlib.sha256(plan.encode()).hexdigest()[:12] != sha:
         raise ValueError(f"Design v{n} changed after it was reviewed")
     return ([(f"{slug}-design-v{n}-review.md", req["review"])] if req.get("summary") else []) + [

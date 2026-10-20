@@ -141,10 +141,13 @@ def body(req, n):
 
 
 def link(req):
-    """The link to the request's detail message (shared.detail), when it has one: Slack's own permalink."""
-    url = (req.get("detail") or {}).get("url")
-    return [{"type": "context", "elements": [{"type": "mrkdwn", "text": f"<{url}|{shared.detail_label(req)}>"}]}] \
-        if url else []
+    """The link to the request's full texts (shared.detail, shared.documents) when it has one, Slack's own permalink;
+    while the card is open, a line saying they could not be attached (shared.attach_line)."""
+    found = req.get("detail") or {}
+    url, failed = found.get("url"), shared.attach_line(req)
+    text = (shared.slack_text(failed) if failed else f"<{url}|{shared.detail_label(req)}>" if url
+            else f"{shared.detail_label(req)}: the Markdown files in this thread" if found.get("files") else None)
+    return [{"type": "context", "elements": [{"type": "mrkdwn", "text": text}]}] if text else []
 
 
 # A decision card's input: its label, and its hint (shown unless `button_hints` is off). Enter there sends it back,
@@ -199,7 +202,7 @@ def blocks(req, n):
 
 async def post(blocks_, text, meta=None):
     """One message in the channel (in the run's thread with meta); returns its ts."""
-    # no unfurl: a card links its full review, posted just above it, and Slack would show that review a second time
+    # no unfurl: a card links its full texts, posted just above it, and Slack would show them a second time
     res = await T.client.chat_postMessage(channel=chat(), text=shared.slack_text(text), blocks=blocks_,
                                           unfurl_links=False, unfurl_media=False,
                                           **({"thread_ts": meta["thread_id"]} if meta else {}))
@@ -207,14 +210,19 @@ async def post(blocks_, text, meta=None):
 
 
 async def post_detail(req, meta):
-    """The request's detail message (shared.detail), posted once, above its card; its permalink goes on the card.
-    Saved before the permalink is asked, so a lost permalink never posts it twice. Returns a failure, or None."""
+    """The request's full texts, posted once, above its card: a build or design card's documents (attach), else its
+    detail message, whose permalink goes on the card. Saved before the permalink is asked, so a lost permalink never
+    posts it twice. Returns None: the card still goes out, a missing detail never hides the decision."""
+    if (req.get("detail") or {}).get("platform") == name:
+        return None  # posted already, or (a request made before documents) its detail message was
+    if req["kind"] in ("build", "design"):
+        return await attach(req, meta)
     text = shared.detail(req)
-    if not text or (req.get("detail") or {}).get("platform") == name:
+    if not text:
         return None
     blocks_, ts = sections(text), None
     try:
-        for i in range(0, len(blocks_), BLOCKS_MAX):  # a review and a plan can pass one message's 50 blocks
+        for i in range(0, len(blocks_), BLOCKS_MAX):  # a long send-back can pass one message's 50 blocks
             sent = await post(blocks_[i:i + BLOCKS_MAX], shared.plain(text.split("\n", 1)[0])[:300], meta)
             ts = ts or sent
     except Exception as caught:  # noqa: BLE001 - the card still goes out: a missing detail never hides the decision
@@ -231,15 +239,53 @@ async def post_detail(req, meta):
     if url:
         req["detail"] = {**req["detail"], "url": str(url)}
         await asyncio.to_thread(decisions.update, req["id"], detail=req["detail"])
-        if meta:  # the status line was already edited this scan, before the review existed: now it can link it
-            ref = await asyncio.to_thread(conversation.load, req["ledger"])
-            if mine(ref) and ref.get("state") == "open" and not ref.get("resolved_at"):  # as show()
-                try:
-                    await T.client.chat_update(channel=ref["chat_id"], ts=ref["thread_id"],
-                                               text=await asyncio.to_thread(parent_line, ref, "running"))
-                except Exception as caught:  # noqa: BLE001 - cosmetic: the next status edit carries the link too
-                    log(f"{req['ledger']}: review link on the thread parent: {error_of(caught)}")
     return None
+
+
+async def attach(req, meta):
+    """A build or design card's documents as Markdown files, in one upload, in the run's thread above the card. A
+    failure is saved on the request, so the card says so and nothing claims the files arrived (a Slack card is never
+    presented again, so neither is the upload)."""
+    try:
+        docs = shared.documents(req)
+        if not docs:
+            return None
+        res = await T.client.files_upload_v2(
+            channel=chat(), initial_comment=shared.slack_text(shared.caption(req)),
+            file_uploads=[{"content": text, "filename": fname, "title": fname} for fname, text in docs],
+            **({"thread_ts": meta["thread_id"]} if meta else {}))
+    except Exception as caught:  # noqa: BLE001 - a refused upload or a changed proposal: said on the card
+        why = error_of(caught)
+        log(f"request {req['id']}: documents not attached: {why}")
+        req["detail"] = {"platform": name, "files": [], "failed": why[:200]}
+        await asyncio.to_thread(decisions.update, req["id"], detail=req["detail"])
+        return None
+    first = (res.get("files") or [{}])[0].get("id")
+    req["detail"] = {"platform": name, "files": [fname for fname, _ in docs], "id": first}
+    await asyncio.to_thread(decisions.update, req["id"], detail=req["detail"])
+    try:  # files.completeUploadExternal answers {id, title} only: the permalink is the file's own
+        url = (await T.client.files_info(file=first))["file"].get("permalink")
+    except Exception as caught:  # noqa: BLE001 - the card still says the files are in the thread
+        log(f"permalink of file {first}: {error_of(caught)}")
+        url = None
+    if url:
+        req["detail"] = {**req["detail"], "url": str(url)}
+        await asyncio.to_thread(decisions.update, req["id"], detail=req["detail"])
+        await link_parent(req, meta)
+    return None
+
+
+async def link_parent(req, meta):
+    """The status line was already edited this scan, before the review existed: now it can link it."""
+    if not meta:
+        return
+    ref = await asyncio.to_thread(conversation.load, req["ledger"])
+    if mine(ref) and ref.get("state") == "open" and not ref.get("resolved_at"):  # as show()
+        try:
+            await T.client.chat_update(channel=ref["chat_id"], ts=ref["thread_id"],
+                                       text=await asyncio.to_thread(parent_line, ref, "running"))
+        except Exception as caught:  # noqa: BLE001 - cosmetic: the next status edit carries the link too
+            log(f"{req['ledger']}: review link on the thread parent: {error_of(caught)}")
 
 
 async def present(req, meta, questions):
