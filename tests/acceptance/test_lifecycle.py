@@ -60,15 +60,17 @@ def replies(rig):
 
 def audit(rig):
     """The thread's replies as the human reads them. The stand-in shows each file of one upload as its own message
-    (tests/fakes/platforms/slack_standin.py:418-430; Slack shows one), so one upload's files are one entry here."""
+    (tests/fakes/platforms/slack_standin.py:418-430; Slack shows one), so one upload's files are one entry here,
+    its file names listed: a duplicate or extra file still shows."""
     got, upload = [], None
     for v in replies(rig):
-        text = shown(v.text, v.extra.get("blocks") or [])
+        text, title = shown(v.text, v.extra.get("blocks") or []), v.extra.get("title")
         if v.extra.get("file_id") and upload == text:
+            got[-1] += f", {title}"
             continue
         upload = text if v.extra.get("file_id") else None
-        got.append(text)
-    return got
+        got.append(f"{text} [files: {title}" if upload else text)
+    return [g + "]" if "[files: " in g else g for g in got]
 
 
 def expect_exactly(rig, *patterns):
@@ -89,7 +91,7 @@ def button(rig, message, label):
                 if str(b["message_id"]) == message.message_id and b["text"]["text"] == label)
 
 
-def propose(rig, card_id, token, version=1, choice="approve", feedback=None):
+def propose(rig, card_id, token, version=1, choice="approve", feedback=None, ask=True, final=None):
     """The builder proposes a design; the coordinator's woken turn is scripted to recommend on it."""
     plan = rig.root / f"plan-v{version}.md"
     plan.write_text(f"# Plan v{version}\nBuild the page in two steps.\n")
@@ -102,9 +104,9 @@ def propose(rig, card_id, token, version=1, choice="approve", feedback=None):
     if feedback:
         (rig.root / "feedback.md").write_text(feedback)
         command += f" --feedback {rig.root / 'feedback.md'}"
-    rig.director.script(token, kit.ToolCall("terminal", {"command": command}), kit.Text("[SILENT]"))
+    rig.director.script(token, kit.ToolCall("terminal", {"command": command}), final or kit.Text("[SILENT]"))
     hook(rig, "propose", card_id, None, str(plan))
-    return asks(rig, card_id, version)
+    return asks(rig, card_id, version) if ask else None
 
 
 def asks(rig, card_id, version):
@@ -119,9 +121,9 @@ def asks(rig, card_id, version):
     held = subprocess.Popen([str(rig.user / ".local/bin/hermes"), "muster", "hook", "permission", "--card", card_id],
                             env=rig.child_env(), stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
                             cwd=rig.root)
+    rig.held.append(held)
     held.stdin.write(json.dumps({"hook_event_name": "PermissionRequest", **tool}))
     held.stdin.close()
-    rig.held.append(held)
     return held
 
 
@@ -136,8 +138,8 @@ def recommended(rig):
 
 
 def message(rig, mid):
-    v = next(v for v in rig.standin.visible(CHANNEL) if v.message_id == mid)
-    return shown(v.text, v.extra.get("blocks") or [])
+    v = next((v for v in rig.standin.visible(CHANNEL) if v.message_id == mid and not v.deleted), None)
+    return shown(v.text, v.extra.get("blocks") or []) if v else ""
 
 
 def settle(rig, decision, pattern, timeout=30):
@@ -156,15 +158,21 @@ def hold(seconds):
     time.sleep(seconds)  # B must hold across scans, not just once: a late ping or bubble lands after the card
 
 
-def checkpoint_b(rig, subtests, decision, files_pattern, card_pattern):
+def checkpoint_b(rig, subtests, decision, *patterns):
     """B: the human's decision is the parent's one live status, and the thread holds only the audit history: the
     full review and the files (#63), then the card. No "is reviewing" ping, no tool bubble (design §4)."""
     with subtests.test("B: the parent asks for the decision"):
         assert f"🟡 Your decision: {decision}" in parent(rig).text
     with subtests.test("B: no stale ping or tool bubble in the thread"):
-        expect_exactly(rig, files_pattern, card_pattern)
+        expect_exactly(rig, *patterns)
     with subtests.test("B: the coordinator's recommend ran shimmed"):
         assert recommended(rig) and all(m["patched"] for m in recommended(rig))
+
+
+def text_input(message):
+    """The card's typed-answer box, as a block_action for it: Enter in the box sends its value (slack.py:194-197)."""
+    block = next(b for b in message.extra["blocks"] if b["type"] == "input")
+    return {"action_id": block["element"]["action_id"], "block_id": block["block_id"], "type": "plain_text_input"}
 
 
 def to_design_card(rig, token, subtests=None, **kwargs):
@@ -182,7 +190,12 @@ def to_design_card(rig, token, subtests=None, **kwargs):
     return card_id, top, held
 
 
-DESIGN_V1 = (r"^Full review and design · Design v1", r"^🟡 Design v1 ·.*Approve design v1")
+def files(version):
+    """The upload above a design card: the design and its review, once each (#63)."""
+    return rf"^Full review and design · Design v{version}\b.*\[files: [\w-]+-design-v{version}-review\.md, [\w-]+-design-v{version}\.md\]$"
+
+
+DESIGN_V1 = (files(1), r"^🟡 Design v1 ·.*Approve design v1")
 
 
 def test_design_approve(rig, subtests):
@@ -195,7 +208,8 @@ def test_design_approve(rig, subtests):
     assert answer.startswith("Approve: the human approved Proposal v1 "), got
     settle(rig, decision, r"^✅ Approved\b.*The builder received your approval of design v1")
     assert len(prompts(rig)) == 1  # the brief only: the approval went back through the held dialog, once
-    assert ":diamond_spin: Working" in parent(rig).text and parent(rig).message_id == top.message_id
+    wait("the parent is back to working", lambda: ":diamond_spin: Working" in parent(rig).text, 3 * SCAN)
+    assert parent(rig).message_id == top.message_id
 
 
 def test_bubble_rule_detects(make_rig):
@@ -207,6 +221,41 @@ def test_bubble_rule_detects(make_rig):
     assert any("terminal" in entry and "recommend-design" in entry for entry in audit(rig)), audit(rig)
     try:
         expect_exactly(rig, *DESIGN_V1)
-    except AssertionError:
+    except AssertionError as caught:
+        assert "recommend-design" in str(caught), caught  # the rule saw the bubble, not just something else
         return
     raise AssertionError("the bubble rule passed a thread with a tool bubble in it")
+
+
+def test_design_send_back(rig, subtests):
+    _, top, held = to_design_card(rig, "s1", subtests, choice="revise", feedback="Split step 2 in two.\n")
+    checkpoint_b(rig, subtests, "design v1", files(1), r"^🟡 Design v1 ·.*Split step 2 in two.*Send back")
+    decision = card(rig)
+    rig.standin.block_action(APPROVER, CHANNEL, decision.message_id, {**text_input(decision), "value": "Tighten section 2"})
+    answer = answered(held)["hookSpecificOutput"]["decision"]["updatedInput"]["answers"]["Approve design v1?"]
+    assert "Tighten section 2" in answer, answer
+    settle(rig, decision, r"^↩️ Revisions sent")
+    wait("the parent says the feedback reached the builder", lambda: "↩️ Feedback delivered" in parent(rig).text, 30)
+    assert len(prompts(rig)) == 1 and parent(rig).message_id == top.message_id
+
+
+def test_design_late_recommendation(rig, subtests):
+    """The coordinator's turn ends about 5 s after its card is up: nothing it leaves behind may land after B."""
+    slow = kit.Text("[SILENT]" + " " * 160, chunk_chars=8, delay_per_chunk=0.25)
+    to_design_card(rig, "l1", subtests, final=slow)
+    wait("the coordinator's turn has ended", lambda: not rig.director.scripts.get("l1"), 30)
+    hold(5 + 3 * SCAN)
+    checkpoint_b(rig, subtests, "design v1", *DESIGN_V1)
+
+
+def test_design_v2_while_v1_is_open(rig, subtests):
+    card_id, _, _ = to_design_card(rig, "v1", subtests, ask=False)
+    first = card(rig)
+    held = propose(rig, card_id, "v1", version=2)
+    wait("v2's card", lambda: (c := card(rig)) and c.message_id != first.message_id, 60)
+    hold(3 * SCAN)
+    with subtests.test("only v2's card has buttons"):
+        assert {str(b["message_id"]) for b in rig.standin.buttons(CHANNEL)} == {card(rig).message_id}
+        assert "Design v1" in message(rig, first.message_id) and card(rig).message_id != first.message_id
+    checkpoint_b(rig, subtests, "design v2", files(1), r"⏹ Ended · Design v1\b.*superseded by a newer design review", files(2), r"^🟡 Design v2 ·.*Approve design v2")
+    held.kill()

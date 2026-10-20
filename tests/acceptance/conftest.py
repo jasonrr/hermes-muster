@@ -282,6 +282,7 @@ def pytest_runtest_makereport(item, call):
 def stop(rig):
     for held in rig.held:
         held.kill()
+        held.wait()
     if rig.gw:
         rig.gw.stop()  # SIGTERM, then SIGKILL, to the gateway's whole process group
     rig.llm.stop()
