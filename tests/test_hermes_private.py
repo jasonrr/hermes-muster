@@ -108,3 +108,18 @@ def test_send_labelled_clarify_still_matches_hermess_send_clarify():
         assert shape in clarify, f"send_clarify changed ({shape}): hermes_private.send_labelled_clarify is stale"
     # the clarify_id -> session_key dict send_labelled_clarify writes; annotation style (Dict/dict) is irrelevant
     assert re.search(r"self\._clarify_state: [Dd]ict\[str, str\] = \{\}", source)
+
+
+def test_the_telegram_file_send_shell_send_document_relies_on_is_unchanged():
+    tree = ast.parse((HERMES / "plugins/platforms/telegram/adapter.py").read_text())
+    shell = next(n for n in ast.walk(tree) if isinstance(n, ast.AsyncFunctionDef) and n.name == "_send_local_file")
+    assert [a.arg for a in shell.args.args] == ["self", "label", "path", "chat_id", "reply_to", "metadata", "media_key",
+                                               "build_kwargs", "on_error"]
+    source = ast.get_source_segment((HERMES / "plugins/platforms/telegram/adapter.py").read_text(), shell)
+    assert "return await on_error(e)" in source  # a failure is what on_error returns, never a notice's receipt
+    assert 'getattr(self._bot, f"send_{media_key}")' in source  # "document" sends Bot.send_document
+
+
+def test_the_redactor_send_document_uses_still_takes_force():
+    assert params("agent/redact.py", "redact_sensitive_text")[0][0] == "text"
+    assert "force" in params("agent/redact.py", "redact_sensitive_text")[1]

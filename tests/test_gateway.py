@@ -2153,24 +2153,148 @@ def test_a_remade_topic_gets_one_new_status_message(forum, monkeypatch):
     assert [where for _, _, where in statuses(forum.adapter)].count(new) == 1
 
 
-def test_telegram_posts_a_reviews_whole_text_once_above_a_plain_text_card(hermes, monkeypatch):
-    review = "Paragraph. " * 800  # longer than one Telegram message: Hermes's send splits it
+TG_PLAN = "# Design v2\n\nDrop the cache.\n\n## Builder plan\n\n1. Delete cache.py.\n"
+
+
+def tg_design(ledger="led1"):
+    from muster import events
+    events.proposals(ledger).mkdir(parents=True, exist_ok=True)
+    (events.proposals(ledger) / "v2.md").write_text(TG_PLAN)
+    pin = {"version": 2, "sha": __import__("hashlib").sha256(TG_PLAN.encode()).hexdigest()[:12]}
+    labels = ["Approve design v2", "Send back with these revisions", "Leave pending"]
+    return decisions.create("design", ledger, run={"repo": "o/r", "issue": 7, "branch": "b", "title": "Fix it"},
+                            proposal=pin, review="Full review. " * 400, summary="Approve: small and right.",
+                            feedback=None, actions=["approve", "send-back", "nothing"], choices=[labels],
+                            questions=[{"text": "**🟡 Design v2 · Fix it**\n**Coordinator recommends approving it.**"
+                                                "\n\nApprove: small and right.", "header": "Design", "multi": False,
+                                        "options": [{"label": x, "description": ""} for x in labels]}])
+
+
+def test_telegram_attaches_a_reviews_whole_text_once_above_a_plain_text_card(hermes, monkeypatch):
+    review = "Paragraph. " * 800  # longer than one Telegram message
     labels = ["Merge PR (recommended)", "Leave PR open"]
     req = decisions.create("build", "led1", run={"repo": "o/r", "issue": 7, "branch": "b", "title": "Fix it"},
-                           pr="https://github.com/o/r/pull/9", review=review.strip(),
+                           pr="https://github.com/o/r/pull/9", head="b" * 40, review=review.strip(),
                            summary="Right.\nDeploy on merge: unknown.", actions=["merge", "nothing"], choices=[labels],
                            questions=[{"text": "**PR #9 · Fix it**\n**Coordinator recommends: merge**\n\nRight.\n"
                                                "Deploy on merge: unknown.", "header": "Build", "multi": False,
                                        "options": [{"label": x, "description": ""} for x in labels]}])
     run(gateway.scan())
-    [(_, detail, _)] = telegram.T.adapter.notes
-    assert detail.startswith("**Coordinator's full review · PR #9 · Fix it**") and review.strip() in detail
+    (doc,) = telegram.T.adapter.documents
+    assert doc["filename"] == f"fix-it-pr-9-review-{'b' * 7}.md" and doc["text"] == review.strip()
+    assert doc["caption"] == "Full review · PR #9 · Fix it" and doc["kind"] == "document"
+    assert not telegram.T.adapter.notes  # no inline dump
     (msg,) = sent()
     assert "**" not in msg["text"] and "Deploy on merge: unknown." in msg["text"]
-    assert "Full text: the message above." in msg["text"]
-    monkeypatch.setattr(gateway, "S", gateway.State())  # a restart presents the card again, never the detail
+    assert msg["text"].endswith("Full review: the Markdown files above.")
+    telegram.release(req["id"])  # the first boot's prompt dies with it
+    monkeypatch.setattr(gateway, "S", gateway.State())  # a restart presents the card again, never the file
+    monkeypatch.setattr(gateway, "BOOT", "boot2")
     run(gateway.scan())
-    assert len(telegram.T.adapter.notes) == 1 and decisions.load(req["id"])["detail"]["platform"] == "telegram"
+    assert len(telegram.T.adapter.documents) == 1 and len(sent()) == 2
+    telegram.release(req["id"])
+
+
+def test_telegram_attaches_a_design_and_its_review_in_the_runs_topic(hermes, forum, monkeypatch):
+    thread = opened(forum)
+    req = tg_design()
+    run(gateway.scan())
+    docs = telegram.T.adapter.documents
+    assert [(d["filename"], d["thread"]) for d in docs] == [("fix-it-design-v2-review.md", thread),
+                                                             ("fix-it-design-v2.md", thread)]
+    assert docs[1]["text"] == TG_PLAN and docs[0]["text"] == "Full review. " * 400
+    assert sent()[-1]["thread"] == thread
+    assert sent()[-1]["text"].endswith("Full review and design: the Markdown files above.")
+    assert decisions.load(req["id"])["detail"] == {"platform": "telegram", "thread": thread,
+                                                   "files": ["fix-it-design-v2-review.md", "fix-it-design-v2.md"]}
+    telegram.release(req["id"])
+    monkeypatch.setattr(gateway, "S", gateway.State())  # a restart in the same topic: the card again, no file again
+    monkeypatch.setattr(gateway, "BOOT", "boot2")
+    run(gateway.scan())
+    assert len(docs) == 2 and sent()[-1]["thread"] == thread
+    assert sent()[-1]["text"].endswith("Full review and design: the Markdown files above.")
+    telegram.release(req["id"])
+
+
+def test_telegram_says_a_failed_document_and_a_restart_sends_only_the_missing_one(hermes, monkeypatch):
+    req = tg_design()
+    telegram.T.adapter.documents = []
+    real = telegram.T.adapter._send_local_file
+
+    async def second_fails(*a, **kw):  # the review arrives, the design is refused
+        telegram.T.adapter.fail_documents = len(telegram.T.adapter.documents)
+        return await real(*a, **kw)
+
+    monkeypatch.setattr(telegram.T.adapter, "_send_local_file", second_fails)
+    run(gateway.scan())
+    assert [d["filename"] for d in telegram.T.adapter.documents] == ["fix-it-design-v2-review.md"]
+    assert sent()[-1]["text"].endswith("⚠️ Full review and design could not be attached (Request Entity Too Large). "
+                                       "Ask Coordinator in this thread for it.")
+    monkeypatch.setattr(telegram.T.adapter, "_send_local_file", real)
+    telegram.release(req["id"])  # the first boot's prompt dies with it
+    monkeypatch.setattr(gateway, "S", gateway.State())  # a restart presents the card again
+    monkeypatch.setattr(gateway, "BOOT", "boot2")
+    run(gateway.scan())
+    assert [d["filename"] for d in telegram.T.adapter.documents] == ["fix-it-design-v2-review.md",
+                                                                     "fix-it-design-v2.md"]  # only the missing one
+    assert sent()[-1]["text"].endswith("Full review and design: the Markdown files above.")
+    assert "failed" not in decisions.load(req["id"])["detail"]
+    telegram.release(req["id"])
+
+
+def test_telegram_never_lets_a_local_write_failure_hide_the_card(hermes, monkeypatch):
+    tg_design()
+
+    def full(*a, **kw):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(telegram.Path, "write_text", full)
+    run(gateway.scan())
+    assert not telegram.T.adapter.documents
+    assert sent()[-1]["text"].endswith("⚠️ Full review and design could not be attached (OSError on the gateway host). "
+                                       "Ask Coordinator in this thread for it.")
+
+
+def test_telegram_sends_a_file_a_crash_left_unsent(hermes, monkeypatch):
+    req = tg_design()
+    decisions.update(req["id"], detail={"platform": "telegram", "files": ["fix-it-design-v2-review.md"], "pending": True})
+    run(gateway.scan())  # a boot that died after the first file
+    assert [d["filename"] for d in telegram.T.adapter.documents] == ["fix-it-design-v2.md"]
+    assert decisions.load(req["id"])["detail"] == {"platform": "telegram", "thread": None,
+                                                   "files": ["fix-it-design-v2-review.md", "fix-it-design-v2.md"]}
+    telegram.release(req["id"])
+
+
+def test_telegram_shows_an_upload_error_redacted(hermes, monkeypatch):
+    tg_design()
+
+    async def refused(label, path, chat_id, reply_to, metadata, media_key, build_kwargs, on_error):
+        return await on_error(RuntimeError("POST https://api.telegram.org/bot123456:AAH-SECRET/sendDocument failed"))
+
+    monkeypatch.setattr(telegram.T.adapter, "_send_local_file", refused)
+    run(gateway.scan())
+    assert "AAH-SECRET" not in sent()[-1]["text"] and "api.telegram.org/bot*/sendDocument" in sent()[-1]["text"]
+
+
+def test_telegram_does_not_reread_the_design_once_every_file_arrived(hermes, monkeypatch):
+    from muster import events
+    req = tg_design()
+    run(gateway.scan())
+    (events.proposals("led1") / "v2.md").write_text("edited after delivery")
+    telegram.release(req["id"])
+    monkeypatch.setattr(gateway, "S", gateway.State())
+    monkeypatch.setattr(gateway, "BOOT", "boot2")
+    run(gateway.scan())
+    assert len(telegram.T.adapter.documents) == 2 and "failed" not in decisions.load(req["id"])["detail"]
+    assert sent()[-1]["text"].endswith("Full review and design: the Markdown files above.")
+    telegram.release(req["id"])
+
+
+def test_telegram_keeps_the_detail_message_of_a_request_made_before_documents(hermes):
+    req = tg_design()
+    decisions.update(req["id"], detail={"platform": "telegram", "id": "77"})
+    run(gateway.scan())
+    assert not telegram.T.adapter.documents and sent()[-1]["text"].endswith("Full text: the message above.")
 
 
 def test_telegram_points_the_approval_at_the_review_and_a_restart_never_brings_it_back(hermes, monkeypatch):
@@ -2196,3 +2320,70 @@ def test_telegram_points_the_approval_at_the_review_and_a_restart_never_brings_i
     monkeypatch.setattr(gateway, "BOOT", "boot2")
     run(gateway.scan())
     assert [m["cid"] for m in sent()] == [f"mu{d['id']}q0"]  # the review again; the covered question stays retired
+
+
+def test_telegram_attaches_nothing_to_a_build_card_that_shows_its_whole_review(hermes):
+    labels = ["Merge PR #9", "Leave PR open"]
+    req = decisions.create("build", "led1", run={"repo": "o/r", "issue": 7, "branch": "b", "title": "Fix it"},
+                           pr="https://github.com/o/r/pull/9", head="b" * 40, review="Right.\nDeploy on merge: none.",
+                           summary=None, actions=["merge", "nothing"], choices=[labels],
+                           questions=[{"text": "**PR #9 · Fix it**\nRight.\nDeploy on merge: none.", "header": "Build",
+                                       "multi": False, "options": [{"label": x, "description": ""} for x in labels]}])
+    run(gateway.scan())
+    assert not telegram.T.adapter.documents and "detail" not in decisions.load(req["id"])
+    assert "the message above" not in sent()[-1]["text"] and "Markdown files" not in sent()[-1]["text"]
+    telegram.release(req["id"])
+
+
+def recreated(forum):
+    """The run's topic is deleted and remade (as test_a_deleted_topic_then_an_agent_prompt_lands_in_a_new_topic):
+    the open requests are presented again in the new topic. Returns (old, new)."""
+    old = conversation.load("led1")["thread_id"]
+    forum.bot.deleted.add(int(old))
+    q = ask()
+    tick(forum, 0)
+    update = fh.update(42, GROUP_CHAT, data=f"cl:mu{q['id']}q0:0", thread=None, mid=forum.adapter.sent[-1]["mid"])
+    with pytest.raises(fh.ApplicationHandlerStop):
+        run(telegram.guard(update, None))
+    tick(forum, 0, n=3)
+    new = conversation.load("led1")["thread_id"]
+    assert new != old and conversation.load("led1")["repaired"] == new
+    return old, new
+
+
+@pytest.mark.parametrize("partial", [False, True], ids=["complete", "partial"])
+def test_telegram_sends_the_files_again_in_a_recreated_topic(forum, monkeypatch, partial):
+    old = opened(forum, cards=["led1"])
+    req = tg_design()
+    if partial:  # the design was refused before the topic went
+        forum.adapter.fail_documents = 0
+        real = forum.adapter._send_local_file
+
+        async def second_fails(*a, **kw):
+            forum.adapter.fail_documents = len(forum.adapter.documents)
+            return await real(*a, **kw)
+
+        monkeypatch.setattr(forum.adapter, "_send_local_file", second_fails)
+    tick(forum, 0)
+    assert {d["thread"] for d in forum.adapter.documents} == {old}
+    if partial:
+        monkeypatch.setattr(forum.adapter, "_send_local_file", real)
+    before = len(forum.adapter.documents)
+    _, new = recreated(forum)
+    here = [d["filename"] for d in forum.adapter.documents[before:] if d["thread"] == new]
+    assert here == ["fix-it-design-v2-review.md", "fix-it-design-v2.md"]  # both, in the topic the card is in
+    card = [s for s in forum.adapter.sent if s["thread"] == new and s["cid"] == f"mu{req['id']}q0"][-1]
+    assert card["text"].endswith("Full review and design: the Markdown files above.")
+    assert decisions.load(req["id"])["detail"]["thread"] == new
+    telegram.release(req["id"])
+
+
+def test_telegram_says_files_it_could_not_send_to_a_recreated_topic(forum):
+    opened(forum, cards=["led1"])
+    req = tg_design()
+    tick(forum, 0)
+    forum.adapter.fail_documents = 2
+    _, new = recreated(forum)
+    card = [s for s in forum.adapter.sent if s["thread"] == new and s["cid"] == f"mu{req['id']}q0"][-1]
+    assert "could not be attached" in card["text"] and "the Markdown files above" not in card["text"]
+    telegram.release(req["id"])

@@ -175,3 +175,30 @@ def test_the_builders_approval_question_while_the_design_is_reviewed(cards):
     cards.shown["design-reviewing-question"] = flat(slack.blocks(ask, 0))
     compare(cards.shown)
     assert "Nothing to decide yet" in cards.shown["design-reviewing-question"]
+
+
+def test_decisions_with_their_markdown_files_on_both_platforms(cards):
+    """The sample messages a design decision posts: its files (names and the line above them), then its card, as each
+    channel renders it; and the card when the files could not be attached."""
+    from muster.channels import telegram
+
+    req = cards.design("revise", REVISIONS)
+    docs = shared.documents(req)
+    names = [fname for fname, _ in docs]
+    assert docs[1][1] == "# Plan 1\nSplit intake, launcher, delivery." and docs[0][1] == "Small and right."
+    files = "\n".join(f"│ 📎 {fname}" for fname in names)
+    slack_req = {**req, "detail": {"platform": "slack", "files": names, "url": "https://example.slack.com/files/F1",
+                                   "links": [["Full review", "https://example.slack.com/files/F1"],
+                                             ["Design v1", "https://example.slack.com/files/F2"]]}}
+    cards.shown["design-files-slack"] = f"│ {shared.caption(req)}\n{files}\n│\n" + flat(slack.blocks(slack_req, 0))
+    tg_req = {**req, "detail": {"platform": "telegram", "files": names}}
+    buttons = "\n".join(f"│ [ {label} ]" for label in [*telegram.buttons(tg_req, 0), "✏️ Other (type answer)"])
+    cards.shown["design-files-telegram"] = (
+        "\n".join(f"│ 📎 {fname} · caption: {shared.caption(req)}" for fname in names) + "\n│\n"
+        + "\n".join(f"│ {line}".rstrip() for line in telegram.render(tg_req, 0).split("\n")) + "\n" + buttons + "\n")
+    failed = {**req, "detail": {"platform": "slack", "files": [], "failed": "missing_scope"}}
+    cards.shown["design-files-failed-slack"] = flat(slack.blocks(failed, 0))
+    compare(cards.shown)
+    assert names == ["make-muster-docs-a-manual-design-v1-review.md", "make-muster-docs-a-manual-design-v1.md"]
+    for name in ("design-files-slack", "design-files-telegram"):
+        assert "> " + REVISIONS in cards.shown[name] and "Small and right." not in cards.shown[name]

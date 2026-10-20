@@ -1,5 +1,5 @@
 """The slice of Slack the channel touches: Bolt's AsyncWebClient (chat_postMessage / chat_update /
-chat_postEphemeral / chat_getPermalink), an AsyncApp holding it, the plugin context's Slack registrations, and block_actions bodies
+chat_postEphemeral / chat_getPermalink / files_upload_v2 / files_info), an AsyncApp holding it, the plugin context's Slack registrations, and block_actions bodies
 shaped as Slack sends them. A failure is an ApiError carrying `.response["error"]`, as slack_sdk's SlackApiError."""
 
 
@@ -11,7 +11,7 @@ class ApiError(Exception):
 
 class Client:
     def __init__(self, order=None):
-        self.posts, self.updates, self.ephemerals = [], [], []
+        self.posts, self.updates, self.ephemerals, self.uploads = [], [], [], []
         self.fail = {}  # method -> [error or None, ...]: the next calls raise these (None: succeeds), in order
         self.order = order if order is not None else []
         self.count = 0
@@ -37,6 +37,17 @@ class Client:
     async def chat_getPermalink(self, channel, message_ts):
         self._call("chat_getPermalink", {}, [])
         return {"ok": True, "channel": channel, "permalink": f"https://example.slack.com/archives/{channel}/p{message_ts}"}
+
+
+    async def files_upload_v2(self, **kw):
+        """As slack_sdk: files.completeUploadExternal's answer, only {id, title} per file (no permalink)."""
+        self._call("files_upload_v2", kw, self.uploads)
+        return {"ok": True, "files": [{"id": f"F{self.count}{i}", "title": f["title"]}
+                                      for i, f in enumerate(kw["file_uploads"])]}
+
+    async def files_info(self, file):
+        self._call("files_info", {}, [])
+        return {"ok": True, "file": {"id": file, "permalink": f"https://example.slack.com/files/U1/{file}/x.md"}}
 
 
 class App:
