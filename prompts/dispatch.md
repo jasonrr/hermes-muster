@@ -52,16 +52,17 @@ needed. Muster has no mid-run command because herdr already delivers; a saved no
 delivery.
 
 1. Find the target: the run's ledger (`muster links` comment) or wait card names the pane and worktree. Check it
-   with `herdr agent get <pane>`: the pane must still hold that run's agent session with that worktree as its
-   `cwd`. If it does not, or the pane is gone, tell the human what you found; never pick another target.
+   with `herdr agent get <pane>`: the pane must still hold an agent session (`agent_session` is set) whose `cwd`
+   is that worktree. If it does not, or the pane is gone, tell the human what you found; never pick another
+   target.
 2. Send the message as one line, the human's words JSON-encoded:
 
    ```bash
    herdr agent prompt <pane> "Message from the human, sent at their request. Decode the JSON string and do it: $(python3 -c 'import json,sys; print(json.dumps(sys.stdin.read().strip()))' < <message file>)"
    ```
 
-3. `agent_prompted` means herdr submitted it, nothing more: not that the agent read, acknowledged, implemented or
-   finished it. Tell the human that. Do not read or mirror the pane to confirm; the run reports itself.
+3. A result of type `agent_prompted` means herdr submitted it, nothing more: not that the agent read,
+   acknowledged, implemented or finished it. Tell the human that. Do not read or mirror the pane to confirm; the run reports itself.
 4. Any other result is the blocker: report it as herdr gave it (`agent_blocked` means the agent is waiting on a
    question; the human answers that question's own message). Never interrupt, restart, send keys or launch a
    duplicate run to force delivery.

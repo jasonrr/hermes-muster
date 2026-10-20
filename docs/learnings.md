@@ -158,3 +158,8 @@
 
 - Muster's tests used `fake_slack` plus `fake_hermes.Subs`, which records subscriptions but posts no ping → Hermes-owned messages (the notify+wake "🔍 is reviewing" ping, the coordinator's tool-progress bubble) existed in no test, so a stale review line and a leftover bubble passed every suite. Test the thread with Hermes's real gateway and Slack adapter against its own stand-in, and assert the exact visible set of messages.
 - An isolation stub for `herdr` or `gh` placed earlier on PATH → `core.prepare_env` prepends `$HOME/.local/bin:/opt/homebrew/bin`, where the real binaries live, and the production `hermes` launcher runs `python3 -I`, which drops `PYTHONPATH` and so any sitecustomize shim. Intercept at `core.run`, and put the wrappers in the test `$HOME/.local/bin`.
+
+## human-directed-agent-messages (2026-10-20)
+
+- A blanket "never prompt any agent" in a skill, written to keep review feedback behind the human's tap → the coordinator read it as "no mid-run delivery exists" and refused a message the human asked for; scope a prohibition to the thing it guards (its own feedback, approvals) and name the allowed path.
+- zsh's `echo` turns a JSON `\n` escape back into a newline → check single-line encoded text with `printf '%s'`, not `echo`.
