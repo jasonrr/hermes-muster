@@ -799,6 +799,46 @@ def test_only_a_working_run_spins_the_diamond_on_its_parent(threads, monkeypatch
     assert ":diamond_spin:" not in threads.client.updates[-1]["text"]
 
 
+NOW = 1_800_000_000.0
+
+
+def at(kind, t, text=""):
+    file = progress.activity(P) / kind
+    file.write_text(text)
+    os.utime(file, (t, t))
+
+
+# The design's lifecycle rule (slack-acceptance §4): the diamond spins only while the builder works. Each state is
+# built from its evidence, as progress.state reads it, then rendered as the thread parent shows it.
+STATES = {
+    "working": lambda: at("tool", NOW - 30),
+    "quiet": lambda: at("tool", NOW - progress.QUIET - 60),
+    "received": lambda: None,
+    "launched": lambda: (config.data_dir() / "intake" / P / "prompt-seen.jsonl").unlink(),  # no receipt yet
+    "turn": lambda: (at("tool", NOW - 300), at("stop", NOW - 60)),
+    "ended": lambda: (at("stop", NOW - 300), at("end", NOW - 60)),
+    "reviewing": lambda: at("proposal", NOW - 60, "v1"),
+    "review": lambda: at("review", NOW - 60, "https://github.com/o/r/pull/9"),
+    "reviewed": lambda: (at("review", NOW - 120, "https://github.com/o/r/pull/9"), at("recommended", NOW - 60)),
+    "revision": lambda: at("revision", NOW - 60),
+}
+
+
+@pytest.mark.parametrize("key", [*STATES, "waiting", "finished", "archived"])
+def test_the_diamond_marks_the_working_state_and_no_other(key):
+    launched(NOW - 600)
+    STATES.get(key, lambda: None)()
+    waits = [(NOW - 60, "design v1")] if key == "waiting" else []
+    ref = {"resolved_at": NOW} if key == "finished" else None
+    got, line, _ = progress.state(P, NOW, waits, ref, key == "archived")
+    assert got.split(":")[0] == key
+    shown = slack.parent_line({"ledger": P}, "running", line).split("\n")[1]
+    if key == "working":
+        assert shown.startswith(":diamond_spin: Working · last activity")
+    else:
+        assert ":diamond_spin:" not in shown
+
+
 def test_a_resolved_threads_parent_is_left_to_its_lifecycle(threads):
     opened(threads, ledger=P)
     launched(940)
