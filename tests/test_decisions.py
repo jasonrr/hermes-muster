@@ -1319,7 +1319,7 @@ def test_a_long_review_without_a_summary_is_refused_so_no_card_carries_it_whole(
 
 def test_a_cards_documents_are_the_pinned_proposal_and_the_whole_review(world, tmp_path, capsys):
     from muster.channels import shared
-    s1, s2 = save_versions("plan one", "# Plan two\n\nDesign, then the builder's plan.\n")
+    _, s2 = save_versions("plan one", "# Plan two\n\nDesign, then the builder's plan.\n")
     args = design_args(tmp_path, f"v2:{s2}", "approve")
     (tmp_path / "sum.md").write_text("Approve.")
     args.summary = str(tmp_path / "sum.md")

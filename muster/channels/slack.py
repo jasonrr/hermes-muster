@@ -582,11 +582,12 @@ async def destination(req):
 
 
 def review_url(ledger):
-    """The permalink of the full review behind the run's open build or design decision (post_detail), or None."""
+    """The permalink of the full review behind the run's open build or design decision (post_detail), or None. Without
+    a summary a card attaches no review (shared.documents): its first file is the design, not a review."""
     for req in decisions.open_requests():
         found = req.get("detail") or {}
         if req["ledger"] == ledger and req["status"] == "open" and req["kind"] in ("build", "design") and (
-                found.get("platform") == name and found.get("url")):
+                found.get("platform") == name and found.get("url")) and (req.get("summary") or "files" not in found):
             return found["url"]
     return None
 

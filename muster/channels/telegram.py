@@ -22,8 +22,11 @@ calls `telegram_factory` when the Telegram adapter connects.
 import asyncio
 import contextlib
 import json
+import os
 import re
+import tempfile
 import threading
+from pathlib import Path
 from types import SimpleNamespace
 
 from .. import config, conversation, core, decisions, hermes_private, progress
@@ -266,7 +269,10 @@ async def outcome(req):
 def render(req, n):
     """Plain text: Hermes's clarify prompt HTML-escapes it, so muster's `**` markers would show (shared.plain)."""
     q = req["questions"][n]
-    detail = ["Full text: the message above."] if (req.get("detail") or {}).get("platform") == name else []
+    found = req.get("detail") or {}
+    failed = shared.attach_line(req)
+    detail = ([failed] if failed else [f"{shared.detail_label(req)}: the Markdown files above."] if found.get("files")
+              else ["Full text: the message above."] if found.get("platform") == name else [])
     how = ["Several: tap Other and type the numbers, e.g. 1,3" if q.get("multi")
            else "Your own words: tap Other, or reply to this message."] if shared.hints(req) else []
     return shared.plain(shared.render(req, n, cap=CAP, label_max=LABEL_MAX, tail=[*how, *detail]))
@@ -276,6 +282,52 @@ def buttons(req, n):
     return shared.buttons(req, n, label_max=LABEL_MAX, number_multi=True)
 
 
+async def post_detail(req, chat, meta):
+    """The request's full texts, once, above its card: a build or design card's documents (attach), else its detail
+    message (Hermes formats and splits it). The card still goes out: a missing detail never hides the decision."""
+    found = req.get("detail") or {}
+    if req["kind"] in ("build", "design") and not (found.get("platform") == name and "files" not in found):
+        return await attach(req, chat, meta)  # (a request made before documents keeps its detail message)
+    text = shared.detail(req)
+    if text and found.get("platform") != name:
+        res = await T.adapter.send(chat, text, metadata=meta)
+        if res.success:
+            req["detail"] = {"platform": name, "id": str(res.message_id)}
+            await asyncio.to_thread(decisions.update, req["id"], detail=req["detail"])
+        else:
+            log(f"request {req['id']}: detail message: {res.error}")
+
+
+async def attach(req, chat, meta):
+    """A build or design card's documents as Telegram files in the run's topic, each saved on the request once it
+    arrives: a re-presentation after a restart sends only what is missing, and a failure is saved, so the card says so
+    and nothing claims a file the human did not get."""
+    found = req.get("detail") or {}
+    sent, failed = list(found.get("files") or []) if found.get("platform") == name else [], None
+    try:
+        docs = [(fname, text) for fname, text in shared.documents(req) if fname not in sent]
+    except ValueError as caught:  # a changed proposal: said on the card
+        docs, failed = [], str(caught)
+    with tempfile.TemporaryDirectory() as tmp:
+        for fname, text in docs:
+            path = os.path.join(tmp, fname)
+            await asyncio.to_thread(Path(path).write_text, text)
+            try:
+                res = await hermes_private.send_document(T.adapter, chat, path, fname, shared.caption(req), meta)
+            except Exception as caught:  # noqa: BLE001
+                res = SimpleNamespace(success=False, error=str(caught))
+            if not res.success:
+                failed = res.error or "send failed"
+                log(f"request {req['id']}: document {fname} not attached: {failed}")
+                break
+            sent.append(fname)
+            req["detail"] = {"platform": name, "files": sent}
+            await asyncio.to_thread(decisions.update, req["id"], detail=req["detail"])
+    if failed or found.get("failed"):  # a new failure, or an earlier one this try made good
+        req["detail"] = {"platform": name, "files": sent, **({"failed": failed[:200]} if failed else {})}
+        await asyncio.to_thread(decisions.update, req["id"], detail=req["detail"])
+
+
 async def present(req, meta, questions):
     """Each question given as a Hermes clarify prompt, with a waiter thread for its answer."""
     rid, loop = req["id"], asyncio.get_running_loop()
@@ -283,14 +335,7 @@ async def present(req, meta, questions):
     from tools import clarify_gateway
 
     chat = core.notify_target()["chat_id"]
-    text = shared.detail(req)
-    if text and (req.get("detail") or {}).get("platform") != name:  # once, above the card; Hermes formats and splits it
-        res = await T.adapter.send(chat, text, metadata=meta)
-        if res.success:
-            req["detail"] = {"platform": name, "id": str(res.message_id)}
-            await asyncio.to_thread(decisions.update, rid, detail=req["detail"])
-        else:  # the card still goes out: a missing detail never hides the decision
-            log(f"request {rid}: detail message: {res.error}")
+    await post_detail(req, chat, meta)
     for n in questions:
         q = req["questions"][n]
         cid, choices = f"mu{rid}q{n}", req["choices"][n]
