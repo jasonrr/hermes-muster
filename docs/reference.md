@@ -190,8 +190,9 @@ Each run is tracked on Muster's Hermes kanban board.
 - **Cleanup warnings:** see [cleanup](#cleanup).
 
 Cards that should reach you are subscribed `notify+wake`: the gateway pings you, then gives your Hermes
-agent a turn. Your Hermes agent never types into a pane, answers the builder, moves a card or merges; it
-tells you what happened and recommends. Its instructions are the skills `muster:escalation`,
+agent a turn. Your Hermes agent never types into a pane on its own, answers the builder, moves a card or
+merges; it tells you what happened and recommends. The one exception is a message you ask it to send to a
+running agent, which it delivers with `herdr agent prompt`. Its instructions are the skills `muster:escalation`,
 `muster:review-standard` and `muster:dispatch`.
 
 ## Recovery

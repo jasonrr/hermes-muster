@@ -55,7 +55,8 @@ delivery.
    with `herdr agent get <pane>`: the pane must still hold an agent session (`agent_session` is set) whose `cwd`
    is that worktree. If it does not, or the pane is gone, tell the human what you found; never pick another
    target.
-2. Send the message as one line, the human's words JSON-encoded:
+2. Write the human's words to a file with your file tool or a quoted heredoc (`<<'EOF'`), never `echo`, so
+   nothing in them is expanded. Send them as one line, JSON-encoded:
 
    ```bash
    herdr agent prompt <pane> "Message from the human, sent at their request. Decode the JSON string and do it: $(python3 -c 'import json,sys; print(json.dumps(sys.stdin.read().strip()))' < <message file>)"
