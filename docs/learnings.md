@@ -153,3 +153,8 @@
 
 - A coordinator review woken by a kanban card in a Slack thread → Hermes posts its tool-activity bubble at the coordinator's first tool call, so Muster's finished review always lands below it (Slack orders replies by post time), and `display.platforms.slack.cleanup_progress` likely never fires for these turns (an authority-admitted wake replies through `session_ingress.deliver_response`, which skips the post-delivery callbacks); lead to the review from the thread parent instead of trying to reorder replies.
 - Adding a field to the Slack thread parent that appears after the status line was edited (the review's permalink) → `gateway.scan` runs `progress_pass` before it presents requests and `progress.due` only re-edits on new text, so the parent would never show it; refresh the parent where the field is saved.
+
+## slack-acceptance-design (2026-10-20)
+
+- Muster's tests used `fake_slack` plus `fake_hermes.Subs`, which records subscriptions but posts no ping → Hermes-owned messages (the notify+wake "🔍 is reviewing" ping, the coordinator's tool-progress bubble) existed in no test, so a stale review line and a leftover bubble passed every suite. Test the thread with Hermes's real gateway and Slack adapter against its own stand-in, and assert the exact visible set of messages.
+- An isolation stub for `herdr` or `gh` placed earlier on PATH → `core.prepare_env` prepends `$HOME/.local/bin:/opt/homebrew/bin`, where the real binaries live, and the production `hermes` launcher runs `python3 -I`, which drops `PYTHONPATH` and so any sitecustomize shim. Intercept at `core.run`, and put the wrappers in the test `$HOME/.local/bin`.
