@@ -50,3 +50,28 @@ def test_a_broken_layout_aborts_in_preflight(make_rig, check, breaks, after):
     assert rig.entries() == []
     assert rig.standin.calls_of("chat.postMessage") == []
     assert not OUTSIDE.exists()
+
+
+def test_timeline_order_and_redaction(tmp_path):
+    import time
+    import types
+
+    from slack_sdk import WebClient
+
+    from tests.acceptance import conftest, hermes_kit as kit
+
+    standin = kit.SlackStandin()
+    standin.start()
+    try:
+        client = WebClient(token=standin.bot_token, base_url=standin.api_base)
+        parent = client.chat_postMessage(channel=conftest.CHANNEL, text="parent line")["ts"]
+        client.chat_postMessage(channel=conftest.CHANNEL, thread_ts=parent, text="reply with xoxb-SECRET-1 inside")
+        rig = conftest.Rig(tmp_path, tmp_path, {}, {}, None, tmp_path / "s", types.SimpleNamespace(standin=standin),
+                           None, None, started=time.monotonic())
+        text = conftest.timeline(rig).read_text()
+    finally:
+        standin.stop()
+    calls = [line for line in text.splitlines() if "chat.postMessage" in line]
+    assert len(calls) == 2 and "parent line" in calls[0] and "reply with [redacted] inside" in calls[1]
+    assert f"### thread {parent}" in text and text.count("### thread") == 1
+    assert "SECRET" not in text and "xoxb" not in text

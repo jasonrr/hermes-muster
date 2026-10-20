@@ -218,6 +218,51 @@ def start(rig):
     return rig
 
 
+SECRET = re.compile(r"xox[a-z]-\S+|xapp-\S+")
+
+
+def shown(text, blocks):
+    """A message as text, its blocks flattened the way test_cards renders them."""
+    from tests.test_cards import flat
+
+    return (text or "") + ("\n" + flat(blocks) if blocks else "")
+
+
+def timeline(rig):
+    """root/timeline.md: every chat write in order, then what a human sees per thread, then the journal and the
+    markers. Tokens are redacted. Returns the path."""
+    out = ["# Timeline", "", "## chat.* calls"]
+    for c in rig.standin.calls_of("chat.postMessage", "chat.update", "chat.delete"):
+        p, r = c.params, c.response if isinstance(c.response, dict) else {}
+        first = " ".join(shown(p.get("text"), p.get("blocks") or []).split())[:80]
+        out.append(f"+{c.at - rig.started:7.2f}s {c.method:16} ts={p.get('ts') or r.get('ts')} "
+                   f"thread={p.get('thread_ts')} | {first}")
+    out += ["", f"## visible({CHANNEL})"]
+    threads = {}
+    for v in rig.standin.visible(CHANNEL):
+        threads.setdefault(v.extra.get("thread_ts") or v.message_id, []).append(v)
+    for parent, messages in threads.items():
+        out.append(f"### thread {parent}")
+        for v in messages:
+            first = " ".join(shown(v.text, v.extra.get("blocks") or []).split())[:120]
+            out.append(f"- {v.message_id} edits={v.edits}{' DELETED' if v.deleted else ''} | {first}")
+    out += ["", "## journal", *(json.dumps(e) for e in rig.entries()), "", "## markers",
+            *(json.dumps(m) for m in rig.marks())]
+    path = rig.root / "timeline.md"
+    path.write_text(SECRET.sub("[redacted]", "\n".join(out)) + "\n")
+    return path
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item, call):
+    report = (yield).get_result()
+    if report.when == "call" and report.failed:
+        for rig in getattr(item, "rigs", []):
+            path = timeline(rig)
+            tail = "\n".join(path.read_text().splitlines()[-60:])
+            report.sections.append(("timeline", f"{path}\n{tail}"))
+
+
 def stop(rig):
     if rig.gw:
         rig.gw.stop()
@@ -235,9 +280,9 @@ def stop(rig):
 
 
 @pytest.fixture
-def make_rig(tmp_path_factory):
+def make_rig(tmp_path_factory, request):
     """make_rig(**breaks) → an unstarted rig, stopped at teardown; start(rig) runs both preflights."""
-    rigs = []
+    rigs = request.node.rigs = []
 
     def make(**kwargs):
         rigs.append(build(tmp_path_factory, **kwargs))
