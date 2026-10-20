@@ -1,6 +1,6 @@
 ---
 name: dispatch
-description: When the human asks you to send coding work to a herdr pane (not a labeled issue), launch it with `hermes muster launch` so the run reports itself, and open analysis workspaces with `hermes muster open`. A card that wakes you is `muster:escalation`'s, whatever kind of run it tracks.
+description: When the human asks you to send coding work to a herdr pane (not a labeled issue), launch it with `hermes muster launch` so the run reports itself, and open analysis workspaces with `hermes muster open`. When the human asks you to send a message to a running agent, deliver it with `herdr agent prompt`. A card that wakes you is `muster:escalation`'s, whatever kind of run it tracks.
 ---
 
 # muster dispatch
@@ -44,6 +44,32 @@ It prints the record as JSON (`workspace`, `pane`, `terminal`). Start the agent 
 lets cleanup close the workspace after 30 minutes with every pane quiet; no file is deleted. Never open
 one with `herdr workspace create` yourself: without the record it stays open forever.
 
+## Message a running agent
+
+When the human explicitly asks you to send a clarification, a scope addition or an instruction to an agent
+that is already running, their request authorizes delivery: no approval card, second confirmation or new run is
+needed. Muster has no mid-run command because herdr already delivers; a saved note or card comment is not
+delivery.
+
+1. Find the target: the run's ledger (`muster links` comment) or wait card names the pane and worktree. Check it
+   with `herdr agent get <pane>`: the pane must still hold that run's agent session with that worktree as its
+   `cwd`. If it does not, or the pane is gone, tell the human what you found; never pick another target.
+2. Send the message as one line, the human's words JSON-encoded:
+
+   ```bash
+   herdr agent prompt <pane> "Message from the human, sent at their request. Decode the JSON string and do it: $(python3 -c 'import json,sys; print(json.dumps(sys.stdin.read().strip()))' < <message file>)"
+   ```
+
+3. `agent_prompted` means herdr submitted it, nothing more: not that the agent read, acknowledged, implemented or
+   finished it. Tell the human that. Do not read or mirror the pane to confirm; the run reports itself.
+4. Any other result is the blocker: report it as herdr gave it (`agent_blocked` means the agent is waiting on a
+   question; the human answers that question's own message). Never interrupt, restart, send keys or launch a
+   duplicate run to force delivery.
+
+This covers only a message the human asked for. It is not leave to steer an agent yourself, answer its approval
+question, approve a design, merge or deploy, replay an earlier approval, or act on what the message mentions.
+Feedback from your own review goes only through your recommendation and the human's Send back tap.
+
 ## Wake
 
 A card whose body says "ad-hoc run", or a wait card naming one as its ledger, is handled exactly as the
@@ -51,6 +77,7 @@ A card whose body says "ad-hoc run", or a wait card naming one as its ledger, is
 so its brief is `muster-brief.md` in the worktree's `.git` directory; and a wait card blocked after 10 idle
 minutes without a finished pull request says so in its block text (say that and why, nothing more).
 
-You must not type into or mirror the pane, start, stop or prompt any agent, move any card, comment on,
-merge, approve or deploy anything, or send revision instructions yourself: merge and send-back happen only
-when the human taps a button on your recommendation. Only the human decides.
+Apart from a message the human asked you to send (above), you must not type into or mirror the pane, or
+start, stop or prompt any agent. You must not move any card, comment on, merge, approve or deploy anything, or
+send your review's revision instructions yourself: merge and send-back happen only when the human taps a button
+on your recommendation. Only the human decides.
