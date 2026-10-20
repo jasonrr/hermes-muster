@@ -19,6 +19,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.acceptance.gate import DISPLAY  # the display the suite runs with, which the gate checks production has
+
 if os.environ.get("MUSTER_ACCEPTANCE") != "1":  # the ordinary suite never shows a green run that skipped these
     collect_ignore_glob = ["test_lifecycle.py", "test_preflight.py", "test_kit.py"]
 
@@ -32,8 +34,6 @@ DEAD = "http://127.0.0.1:9"
 # egress rests on the stand-in redirect and the stand-in's fake token (checked below). Jason chose this 2026-10-20.
 NO_PROXY = "127.0.0.1,localhost,slack.com,files.slack.com,wss-primary.slack.com"
 SCAN = 2  # muster/channels/shared.py:14, the gateway's scan period
-DISPLAY = {"tool_progress": "all", "tool_progress_grouping": "accumulate", "interim_assistant_messages": True,
-           "cleanup_progress": False, "platforms": {"slack": {"cleanup_progress": True}}}
 
 
 class Preflight(Exception):
