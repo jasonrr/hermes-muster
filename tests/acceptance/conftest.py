@@ -53,6 +53,7 @@ class Rig:
     llm: object
     gw: object = None
     server: object = None
+    held: list = field(default_factory=list)  # the builder's held PermissionRequest hooks, killed at teardown
     started: float = field(default_factory=time.monotonic)
 
     @property
@@ -279,6 +280,8 @@ def pytest_runtest_makereport(item, call):
 
 
 def stop(rig):
+    for held in rig.held:
+        held.kill()
     if rig.gw:
         rig.gw.stop()  # SIGTERM, then SIGKILL, to the gateway's whole process group
     rig.llm.stop()
