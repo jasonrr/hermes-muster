@@ -5,6 +5,8 @@ see jasonrr/hermes-muster#20. tests/test_hermes_private.py fails loudly when
 a shape here changes.
 """
 
+from types import SimpleNamespace
+
 
 def await_approval(session_key, notify, command, request_id):
     """Queue a Hermes approval and block until it is answered, withdrawn or `approvals.timeout` passes.
@@ -59,3 +61,28 @@ async def send_labelled_clarify(adapter, chat_id, text, labels, clarify_id, sess
     # metadata (a run topic's thread_id) is routed exactly as send_clarify routes it (adapter.py:4290)
     return await adapter._send_prompt("send_clarify", chat_id, metadata, build, parse_mode=ParseMode.HTML,
                                       thread_id=adapter._metadata_thread_id(metadata))
+
+
+async def send_document(adapter, chat_id, path, name, caption, metadata=None):
+    """A local file as a Telegram document in the run's topic, with a failure reported as a failure.
+
+    Hermes's public `send_document` (plugins/platforms/telegram/adapter.py:5363) answers a failed upload by posting a
+    "couldn't send file" notice and returning that notice's result, success included, so muster could not tell a
+    delivered file from a failed one, and would claim documents the human never got. This goes through the same send
+    shell (`_send_local_file`, adapter.py:5341: existence check, open, topic routing and retry in `_send_media`) with
+    an `on_error` that returns the failure instead of the notice. Wanted upstream: `send_document` reporting a failed
+    upload as `success=False` (the notice may still post). The failure text is redacted with Hermes's public
+    `agent.redact.redact_sensitive_text`, since muster shows it on the card.
+    """
+    async def failed(caught):  # redacted as Hermes redacts its Telegram errors (adapter.py:30): they reach the chat
+        try:
+            from agent.redact import redact_sensitive_text
+
+            error = redact_sensitive_text(str(caught), force=True) or type(caught).__name__
+        except Exception:  # noqa: BLE001 - as Hermes: never show an unredacted error
+            error = "<telegram error redacted>"
+        return SimpleNamespace(success=False, message_id=None, error=error)
+
+    return await adapter._send_local_file(
+        "File", path, chat_id, None, metadata, "document",
+        lambda f: {"document": f, "filename": name, "caption": caption[:1024]}, failed)

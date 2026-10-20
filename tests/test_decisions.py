@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import re
 import threading
 
 import pytest
@@ -1271,12 +1272,14 @@ def test_revisions_and_what_each_button_does_survive_a_cap_that_cuts_the_review(
     from muster.channels import shared
     s1, s2 = save_versions("plan one", "plan two")
     args = design_args(tmp_path, f"v2:{s2}", "revise", "DROP THE CACHE")
-    (tmp_path / "review.md").write_text("Long review. " * 500)  # no --summary: the card is the review
+    (tmp_path / "review.md").write_text("Long review. " * 500)
+    (tmp_path / "sum.md").write_text("Long reason. " * 69)  # a summary at the limit, on a tight cap
+    args.summary = str(tmp_path / "sum.md")
     assert decisions.recommend_design(args) == 0
     req = decisions.load(capsys.readouterr().out.strip())
-    text = shared.render(req, 0, cap=3500, label_max=64, tail=["x"])  # Telegram's cap
+    text = shared.render(req, 0, cap=1200, label_max=64, tail=["x"])
     assert "> DROP THE CACHE" in text and "• Approve design v2: sends your approval" in text
-    assert shared.detail(req).count("Long review.") == 500  # the cut review is whole above the card
+    assert shared.documents(req)[0][1].count("Long review.") == 500  # the cut reason's review is whole in its file
 
 
 def test_a_concurrent_step_that_gave_this_reply_is_not_mistaken_for_a_human_answer(world):
@@ -1300,3 +1303,38 @@ def test_an_abandoned_ask_with_an_undelivered_part_does_not_block_a_later_tap(wo
     rid = design({"action": "approve"})
     decisions.execute(rid)
     assert state(rid)[0] == "executing"  # waits for the builder to ask again
+
+
+def test_a_long_review_without_a_summary_is_refused_so_no_card_carries_it_whole(world, tmp_path, capsys):
+    long = "x" * (decisions.SUMMARY_MAX + 1)
+    assert decisions.recommend(rec_args(tmp_path, review=long)) == 1
+    assert "--summary" in capsys.readouterr().err
+    s1, = save_versions("plan one")
+    args = design_args(tmp_path, f"v1:{s1}")
+    (tmp_path / "review.md").write_text(long)
+    assert decisions.recommend_design(args) == 1
+    assert "--summary" in capsys.readouterr().err
+    assert decisions.recommend(rec_args(tmp_path, review="x" * decisions.SUMMARY_MAX)) == 0  # short: the card holds it
+
+
+def test_a_cards_documents_are_the_pinned_proposal_and_the_whole_review(world, tmp_path, capsys):
+    from muster.channels import shared
+    _, s2 = save_versions("plan one", "# Plan two\n\nDesign, then the builder's plan.\n")
+    args = design_args(tmp_path, f"v2:{s2}", "approve")
+    (tmp_path / "sum.md").write_text("Approve.")
+    args.summary = str(tmp_path / "sum.md")
+    assert decisions.recommend_design(args) == 0
+    design = decisions.load(capsys.readouterr().out.strip())
+    slug = re.sub(r"[^a-z0-9]+", "-", shared.title(design).lower()).strip("-")[:40]
+    assert shared.documents(design) == [(f"{slug}-design-v2-review.md", "Small and right."),
+                                        (f"{slug}-design-v2.md", "# Plan two\n\nDesign, then the builder's plan.\n")]
+    assert shared.detail(design) is None  # no inline dump: the files carry it
+    (events.proposals("t_1") / "v2.md").write_text("changed after the review")
+    with pytest.raises(ValueError, match="Design v2"):
+        shared.documents(design)  # a changed file is never sent under the reviewed version's name
+    assert decisions.recommend(rec_args(tmp_path, review="Detail. " * 300, summary="Right.\nDeploy on merge: none.")) == 0
+    build = decisions.load(capsys.readouterr().out.strip())
+    assert shared.documents(build) == [(f"{slug}-pr-9-review-{HEAD[:7]}.md", ("Detail. " * 300).strip())]
+    decisions.transition(build["id"], ("open",), "stale")
+    assert decisions.recommend(rec_args(tmp_path, review="Short.")) == 0  # no summary: the card is the review
+    assert shared.documents(decisions.load(capsys.readouterr().out.strip())) == []

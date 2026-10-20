@@ -5,6 +5,8 @@ gateway through it.
 """
 
 import asyncio
+import hashlib
+import re
 import time
 
 from .. import config, conversation, core, decisions, events, progress
@@ -69,31 +71,67 @@ def fallback(req, n):
     return (first if req["kind"] != "question" or decisions.approval_slot(req) == n else f"{title(req)}: {first}")[:300]
 
 
-DETAIL_OVER = 3000  # characters of a review or send-back past which its whole text also gets its own message
+DETAIL_OVER = 3000  # characters of a send-back past which its whole text also gets its own message
 
 
 def detail(req):
-    """The whole text behind a decision card, posted once as its own message just above it: the review (with the
-    plan's full text, for a plan), or a send-back too long for one message. None when the card itself holds it all."""
-    kind, review, run = req["kind"], req.get("review") or "", req.get("run") or {}
-    if kind in ("build", "design") and review and (req.get("summary") or len(review) > DETAIL_OVER):
-        who = config.settings.get("coordinator_name") or "Coordinator"
-        if kind == "build":
-            return f"**{who}'s full review · {progress.pr_name(req.get('pr'))} · {title(req)}**\n\n{review}"
-        n = (req.get("proposal") or {}).get("version")
-        try:
-            plan = (events.proposals(req["ledger"]) / f"v{n}.md").read_text().strip()
-        except OSError:
-            plan = ""
-        return (f"**{who}'s full review · Design v{n} · {title(req)}**\n\n{review}"
-                + (f"\n\n**Design v{n}, full text**\n\n{plan}" if plan else ""))
-    if kind == "feedback" and len(req.get("feedback") or "") > DETAIL_OVER:
+    """The whole text of a send-back too long for one message, posted once as its own message just above its card,
+    else None. A build or design card's full texts are files instead (documents)."""
+    if req["kind"] == "feedback" and len(req.get("feedback") or "") > DETAIL_OVER:
         return f"**Feedback, full text · {progress.pr_name(req.get('pr'))} · {title(req)}**\n\n{req['feedback']}"
     return None
 
 
+def documents(req):
+    """A build or design card's full texts as Markdown files, [(file name, text)], posted once above the card: the
+    coordinator's review when the card shows its summary (otherwise the card holds the whole, short review), and a
+    design's proposal exactly as saved. Names carry the version, or the reviewed head, so no file passes for another.
+    Raises ValueError when the saved proposal no longer has the card's pinned hash."""
+    if req["kind"] not in ("build", "design"):
+        return []
+    slug = re.sub(r"[^a-z0-9]+", "-", title(req).lower()).strip("-")[:40].strip("-") or "run"
+    if req["kind"] == "build":
+        name = f"{slug}-pr-{str(req.get('pr') or '').rstrip('/').rsplit('/', 1)[-1]}-review-{req['head'][:7]}.md"
+        return [(name, req["review"])] if req.get("summary") else []
+    n, sha = req["proposal"]["version"], req["proposal"]["sha"]
+    try:
+        plan = (events.proposals(req["ledger"]) / f"v{n}.md").read_text()
+    except OSError:  # the reason names no local path: it is shown on the card
+        raise ValueError(f"Design v{n} is not saved") from None
+    if hashlib.sha256(plan.encode()).hexdigest()[:12] != sha:
+        raise ValueError(f"Design v{n} changed after it was reviewed")
+    return ([(f"{slug}-design-v{n}-review.md", req["review"])] if req.get("summary") else []) + [
+        (f"{slug}-design-v{n}.md", plan)]
+
+
+def labels(req, docs):
+    """Each document's short name for a link row: a design card's last file is the design, every other the review."""
+    n = (req.get("proposal") or {}).get("version")
+    return [f"Design v{n}" if req["kind"] == "design" and i == len(docs) - 1 else "Full review"
+            for i in range(len(docs))]
+
+
 def detail_label(req):
-    return {"design": "Full review and design", "build": "Full review"}.get(req["kind"], "Full text")
+    if req["kind"] == "design":
+        return "Full review and design" if req.get("summary") else "Full design"
+    return {"build": "Full review"}.get(req["kind"], "Full text")
+
+
+def caption(req):
+    """The line the documents are posted under."""
+    n = (req.get("proposal") or {}).get("version")
+    subject = f"Design v{n}" if req["kind"] == "design" else progress.pr_name(req.get("pr"))
+    return f"{detail_label(req)} · {subject} · {title(req)}"
+
+
+def attach_line(req):
+    """While the card is open, the line saying its documents could not be attached, else None: a missing file is never
+    silent, and the decision still goes out."""
+    failed = (req.get("detail") or {}).get("failed")
+    if not failed or req["status"] != "open":
+        return None
+    who = config.settings.get("coordinator_name") or "Coordinator"
+    return f"⚠️ {detail_label(req)} could not be attached ({failed}). Ask {who} in this thread for it."
 
 
 DECISIONS = ("build", "design", "feedback")  # cards whose text decisions writes, outcome first once they end

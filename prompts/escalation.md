@@ -69,7 +69,7 @@ On a wake:
        merge: unknown".
      Verify merge state with `gh`; verify installation and runtime activation separately. GitHub does not prove what is installed or executing locally.
    - Write the card's summary to a second file (at most 900 characters; the human decides from it, and
-     the full review is one tap away above it). Plain sentences and `- ` bullets, no headings or bold:
+     the full review is attached as a Markdown file). Plain sentences and `- ` bullets, no headings or bold:
      one concrete reason for your recommendation; each material risk, blocker or gap; and a line
      "Deploy on merge: …" (or "Deploy on merge: unknown"). For send-back, name the concrete blocker and remedy. Never omit a material risk to save room.
    - Choose exactly one: `merge` (the change is right and checks pass), `send-back` (concrete revisions
@@ -84,7 +84,7 @@ On a wake:
      ```
 
      For a review card, use the ledger id named in its body. It prints a request id; the human gets your
-     summary, with your feedback quoted whole above it and Merge PR, Send back and Leave PR open buttons, under your full review. A refusal on stderr says why (for example, the
+     summary, with your feedback quoted whole above it and Merge PR, Send back and Leave PR open buttons, with your full review attached as a Markdown file. A refusal on stderr says why (for example, the
      head moved: read the pull request again and review the new head).
    - The printed id means the recommendation was recorded and the human gets it as a message. On an
      automated wake, then reply `[SILENT]`; on a direct human request, answer briefly. If the command
@@ -110,7 +110,7 @@ On a wake:
      ```
 
      It prints a request id; the human gets your summary, headed with that version, with Approve design v<n>,
-     Send back and Leave pending buttons (your revisions quoted whole above them), under your full review and the design's full text. Their tap answers the agent's approval question for that version; you answer nothing.
+     Send back and Leave pending buttons (your revisions quoted whole above them), with your full review and the design attached as Markdown files. Their tap answers the agent's approval question for that version; you answer nothing.
      A refusal "Proposal v<m> is newer" means a newer version was published and its own card follows: reply
      `[SILENT]`. A refusal "already answered" means the human answered the builder's question first: their
      answer stands and nothing asks them again. If your review found something they should know, reply with

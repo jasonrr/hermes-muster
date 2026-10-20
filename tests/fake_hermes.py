@@ -239,6 +239,7 @@ class Adapter:
         self.notes = []  # send(): (chat, text, thread)
         self.note_ids = []  # send(): the message id each note got, from the same counter as every prompt
         self.fail_notes = self.raise_notes = 0  # the next n sends return a failure / raise (a lost reply)
+        self.documents, self.fail_documents = [], 0  # _send_local_file: what arrived; the next n uploads fail
 
     @staticmethod
     def _metadata_thread_id(metadata):
@@ -268,6 +269,18 @@ class Adapter:
         self.notes.append((chat_id, content, self.landing(metadata)))
         self._n += 1
         self.note_ids.append(str(self._n))
+        return SimpleNamespace(success=True, message_id=str(self._n), error=None)
+
+    async def _send_local_file(self, label, path, chat_id, reply_to, metadata, media_key, build_kwargs, on_error):
+        """Hermes's local-file send shell (telegram adapter.py:5341): a failure goes to `await on_error(e)`."""
+        if self.fail_documents:
+            self.fail_documents -= 1
+            return await on_error(RuntimeError("Request Entity Too Large"))
+        with open(path, "rb") as f:  # noqa: ASYNC230 - as Hermes opens it
+            kw = build_kwargs(f)
+            self.documents.append({"chat": chat_id, "filename": kw["filename"], "text": f.read().decode(),
+                                   "caption": kw["caption"], "thread": self.landing(metadata), "kind": media_key})
+        self._n += 1
         return SimpleNamespace(success=True, message_id=str(self._n), error=None)
 
     async def send_exec_approval(self, chat_id, command, session_key, description=None, metadata=None,
@@ -431,7 +444,10 @@ def install(monkeypatch):
     constants.ParseMode = SimpleNamespace(HTML="HTML", MARKDOWN_V2="MarkdownV2")
     agent, i18n = types.ModuleType("agent"), types.ModuleType("agent.i18n")
     agent.i18n, i18n.t = i18n, t
-    for name, mod in (("telegram.constants", constants), ("agent", agent), ("agent.i18n", i18n), ("tools", tools), ("tools.clarify_gateway", clarify), ("tools.approval", approval),
+    redact = types.ModuleType("agent.redact")  # Hermes's redactor, for a bot token in a transport error
+    redact.redact_sensitive_text = lambda text, force=False: __import__("re").sub(r"bot\d+:[\w-]+", "bot***", text)
+    agent.redact = redact
+    for name, mod in (("telegram.constants", constants), ("agent", agent), ("agent.i18n", i18n), ("agent.redact", redact), ("tools", tools), ("tools.clarify_gateway", clarify), ("tools.approval", approval),
                       ("tools.approval_gateway_wait", wait), ("telegram", telegram),
                       ("telegram.ext", ext)):
         monkeypatch.setitem(sys.modules, name, mod)

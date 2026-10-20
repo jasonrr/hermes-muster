@@ -43,7 +43,7 @@ Every text the human reads (the summary, the feedback or revisions, the full rev
 - Don't restate the brief, the plan, the card or each other: the card already shows the subject, your
   recommendation and the quoted feedback.
 - When the proposal has a preview or examples section (messages, screens, output), the summary's first line points
-  to it, e.g. "👀 Preview the proposed messages: section 1 of the plan, just above this card".
+  to it, e.g. "👀 Preview the proposed messages: section 1 of the attached design file".
 
 Example, documentation conflict:
 

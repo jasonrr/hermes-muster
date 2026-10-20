@@ -893,28 +893,82 @@ def build_request(review, summary=None, feedback=None):
                                 {"label": label, "description": ""} for label in labels]}])
 
 
-def test_a_long_review_is_its_own_message_whole_and_the_card_keeps_its_deploy_caveat(channel):
+def test_a_long_review_is_one_markdown_file_and_the_card_keeps_its_deploy_caveat(channel):
     review = "\n\n".join(f"Paragraph {i}: " + "evidence " * 60 for i in range(40))  # ~20k characters
     req = build_request(review, summary="Right and tested.\nDeploy on merge: publishes the docs site.")
     asyncio.run(gateway.scan())
-    detail, card = channel.client.posts
-    kit_ok(detail["blocks"], detail["text"])
+    (upload,) = channel.client.uploads
+    (card,) = channel.client.posts  # no message carries the review
     kit_ok(card["blocks"], card["text"])
-    whole = "\n\n".join(b["text"]["text"] for b in detail["blocks"])
-    for i in range(40):
-        assert f"Paragraph {i}: " in whole  # nothing cut at a section limit
-    assert len(detail["blocks"]) > 1 and detail["text"].startswith("Coordinator's full review · PR #9 · Fix it")
+    name = f"fix-it-pr-9-review-{'a' * 7}.md"
+    assert upload["channel"] == CHAN and upload["initial_comment"] == "Full review · PR #9 · Fix it"
+    assert upload["file_uploads"] == [{"content": review, "filename": name, "title": name}]  # whole, nothing cut
     shown = "\n".join(b["text"]["text"] for b in card["blocks"] if b["type"] == "section")
     assert "Deploy on merge: publishes the docs site." in shown and "evidence evidence" not in shown
     assert shown.startswith("*PR #9 · Fix it*\n*Coordinator recommends: merge*")  # native bold, no ** left
-    assert "**" not in shown and "**" not in whole
+    assert "**" not in shown
     link = next(b for b in card["blocks"] if b["type"] == "context")["elements"][0]["text"]
-    assert link == f"<https://example.slack.com/archives/{CHAN}/p{detail_ts(req)}|Full review>"
+    assert link == f"📎 <https://example.slack.com/files/U1/{detail_ts(req)}/x.md|Full review>"
+    assert channel.client.order.index("files_upload_v2") < channel.client.order.index("chat_postMessage")
     assert card["text"] == "PR #9 · Fix it\nCoordinator recommends: merge"  # notification text: the lead, not the review
     asyncio.run(gateway.scan())
-    assert len(channel.client.posts) == 2  # the detail is posted once
-    # the card links the review just above it: Slack must not unfurl that link into a second copy of the review
+    assert len(channel.client.uploads) == 1 and len(channel.client.posts) == 1  # attached once
     assert all(p["unfurl_links"] is False and p["unfurl_media"] is False for p in channel.client.posts)
+
+
+def test_a_design_card_attaches_the_pinned_design_and_the_review(channel):
+    req = design_card(summary="Fine.")
+    asyncio.run(gateway.scan())
+    (upload,) = channel.client.uploads
+    assert [(f["filename"], f["content"]) for f in upload["file_uploads"]] == [
+        ("issue-7-design-v2-review.md", "Fine."), ("issue-7-design-v2.md", PLAN_TEXT)]
+    assert upload["initial_comment"] == "Full review and design · Design v2 · Issue #7"
+    assert decisions.load(req["id"])["detail"]["files"] == ["issue-7-design-v2-review.md", "issue-7-design-v2.md"]
+    card = channel.client.posts[-1]
+    row = [e["text"] for b in card["blocks"] if b["type"] == "context" for e in b["elements"]]
+    first = decisions.load(req["id"])["detail"]["id"]  # the upload's file ids, in order: F<n>0, F<n>1
+    url = "https://example.slack.com/files/U1/{}/x.md"
+    assert row == [f"📎 <{url.format(first)}|Full review> · <{url.format(first[:-1] + '1')}|Design v2>"]  # one row
+
+
+def edited_plan(channel):
+    from muster import events
+    (events.proposals("led1") / "v2.md").write_text("edited")
+
+
+@pytest.mark.parametrize("break_it, why", [
+    (lambda c: c.client.fail.__setitem__("files_upload_v2", ["missing_scope"]), "missing_scope"),
+    (edited_plan, "Design v2 changed after it was reviewed")], ids=["refused", "changed-after-review"])
+def test_documents_that_cannot_be_attached_are_said_on_the_card_never_claimed(channel, break_it, why):
+    req = design_card(summary="Fine.")
+    break_it(channel)
+    asyncio.run(gateway.scan())
+    assert not channel.client.uploads
+    (card,) = channel.client.posts
+    assert any(b["type"] == "actions" for b in card["blocks"])  # the decision still goes out
+    notes = [e["text"] for b in card["blocks"] if b["type"] == "context" for e in b["elements"]]
+    assert notes == [f"⚠️ Full review and design could not be attached ({why}). Ask Coordinator in this thread for it."]
+    decisions.transition(req["id"], ("open",), "stale", outcome="Ended")
+    assert slack.link(decisions.load(req["id"])) == []  # an ended card carries no warning
+
+
+def test_a_lost_file_permalink_still_says_where_the_files_are(channel):
+    req = build_request("Detail. " * 10, summary="Right.\nDeploy on merge: none.")
+    channel.client.fail["files_info"] = ["missing_scope"]
+    asyncio.run(gateway.scan())
+    (card,) = channel.client.posts
+    notes = [e["text"] for b in card["blocks"] if b["type"] == "context" for e in b["elements"]]
+    assert notes == ["Full review: the Markdown files in this thread"]
+    assert "url" not in decisions.load(req["id"])["detail"]
+
+
+def test_a_request_made_before_documents_keeps_its_detail_message(channel):
+    req = build_request("Detail. " * 10, summary="Right.\nDeploy on merge: none.")
+    decisions.update(req["id"], detail={"platform": "slack", "id": "9.0", "url": "https://example.slack.com/p9"})
+    asyncio.run(gateway.scan())
+    assert not channel.client.uploads
+    link = next(b for b in channel.client.posts[-1]["blocks"] if b["type"] == "context")["elements"][0]["text"]
+    assert link == "<https://example.slack.com/p9|Full review>"
 
 
 def detail_ts(req):
@@ -948,7 +1002,8 @@ def test_agent_text_is_escaped_before_hermes_formats_it(channel):
 
 # -- one decision surface per design version ---------------------------------------------------------------------------
 
-PLAN = {"version": 2, "sha": "abcdef012345"}
+PLAN_TEXT = "# Design v2\n\nDrop the cache.\n\n## Builder plan\n\n1. Delete cache.py.\n"
+PLAN = {"version": 2, "sha": __import__("hashlib").sha256(PLAN_TEXT.encode()).hexdigest()[:12]}
 
 
 def reviewing_plan(ledger="led1"):
@@ -964,6 +1019,9 @@ def approval_ask(**fields):
 
 
 def design_card(**fields):
+    from muster import events
+    events.proposals("led1").mkdir(parents=True, exist_ok=True)
+    (events.proposals("led1") / "v2.md").write_text(PLAN_TEXT)
     labels = ["Approve design v2 (recommended)", "Send revisions to builder", "Leave pending"]
     return decisions.create("design", "led1", **fields, run={"repo": "o/r", "issue": 7, "branch": "muster/7"}, proposal=PLAN,
                             review="Fine.", feedback="Drop the cache.", actions=["approve", "send-back", "nothing"],
@@ -1001,7 +1059,7 @@ def test_question_then_review_shows_one_live_approval_surface_then_recorded_then
     tap(channel, d, 0, "muster_choice_0", value=f"{d['id']}|0|0", message_ts=ts_of(d))
     asked = decisions.load(q["id"])
     assert asked["status"] == "answered" and asked["answer"] == {"Implement design v2?": "Approve: the human approved "
-                                                                                       "Proposal v2 abcdef012345."}
+                                                                                       f"Proposal v2 {PLAN['sha']}."}
     asyncio.run(gateway.scan())
     assert channel.client.updates[-1]["text"] == "Approval of design v2 recorded · delivering to the builder"
     decisions.transition(q["id"], ("answered",), "done", outcome=decisions.ANSWER_SENT)  # the pane's bridge delivered it
@@ -1043,7 +1101,7 @@ def test_a_bundled_question_keeps_its_other_question_live_while_the_review_answe
     tap(channel, q, 0, "muster_choice_1", value=f"{q['id']}|0|1", message_ts=ts_of(q))
     assert decisions.load(q["id"])["answer"] == {"Which store?": "Beta",
                                                  "Implement design v2?": "Approve: the human approved Proposal v2 "
-                                                                       "abcdef012345."}
+                                                                       f"{PLAN['sha']}."}
 
 
 def test_five_parents_scan_without_opening_a_thread(monkeypatch):
@@ -1089,8 +1147,9 @@ def test_an_open_review_is_linked_from_the_thread_parent_above_the_activity(thre
     req = make()
     tick(threads)  # one scan: the status line goes to "your decision" first, then the review is posted
     url = decisions.load(req["id"])["detail"]["url"]
-    detail, card = [p for p in threads.client.posts if p.get("thread_ts") == thread][-2:]
-    assert "full review" in detail["text"] and any(b["type"] == "actions" for b in card["blocks"])
+    assert threads.client.uploads[-1]["thread_ts"] == thread  # the files land in the run's thread
+    card = [p for p in threads.client.posts if p.get("thread_ts") == thread][-1]
+    assert any(b["type"] == "actions" for b in card["blocks"])
     parent = [u["text"] for u in threads.client.updates if u["ts"] == thread][-1]
     assert "\n🟡 Your decision: " in parent and f"<{url}|Coordinator's full review>" in parent
     tick(threads, progress.REFRESH)
@@ -1108,7 +1167,12 @@ def test_agent_markdown_links_cannot_ping_mention_or_disguise_a_link(channel):
 
 
 def test_a_failed_detail_post_still_posts_the_decision_card(channel):
-    req = build_request("Detail. " * 10, summary="Right.\nDeploy on merge: none.")
+    feedback = "word " * 700  # a send-back longer than DETAIL_OVER: its whole text goes above the card
+    req = decisions.create("feedback", "led1", run={"repo": "o/r", "issue": 7, "branch": "muster/7"}, feedback=feedback,
+                           pr="https://github.com/o/r/pull/9", actions=["send", "cancel"], choices=[["Send", "Don't"]],
+                           questions=[{"text": f"**Send this?**\n\n{feedback}", "header": "Feedback", "multi": False,
+                                       "options": [{"label": "Send", "description": ""},
+                                                   {"label": "Don't", "description": ""}]}])
     channel.client.fail["chat_postMessage"] = ["msg_too_long"]  # the detail is refused
     asyncio.run(gateway.scan())
     (card,) = channel.client.posts

@@ -240,7 +240,7 @@ LABELS = {"merge": "Merge {pr}", "send-back": "Send back…", "nothing": "Leave 
 SEND_BACK = "Send back with this feedback"  # the send-back label once the feedback is on the card
 LEADS = {"merge": "{who} recommends merging it.", "send-back": "{who} recommends sending it back.",
          "nothing": "{who} recommends leaving it open for now."}
-SUMMARY_MAX = 900  # characters: the card shows this summary whole; the full review is its own message above the card
+SUMMARY_MAX = 900  # characters: the card shows this summary whole; the full review is attached as a Markdown file
 PR_FIELDS = "url,state,headRefOid,headRefName,baseRefName,isDraft,isCrossRepository"  # what refusal checks
 MERGEABLE = ("CLEAN", "HAS_HOOKS", "UNSTABLE")  # GitHub's mergeStateStatus; it stays the authority on checks
 
@@ -303,15 +303,19 @@ def short(run):
     return conversation.short(run.get("title") or "", run.get("repo") or "") or run.get("branch") or run.get("card")
 
 
-def summary_of(args, kind):
-    """The coordinator's card summary (`--summary`), or None: the card then shows the whole review. Refused, never cut,
-    when it is too long; a build's must state the deploy consequence, which no card may hide."""
+def summary_of(args, kind, review):
+    """The coordinator's card summary (`--summary`), or None: the card then shows the whole review, so a review longer
+    than a summary needs one. Refused, never cut, when it is too long; a build's must state the deploy consequence,
+    which no card may hide."""
     if not getattr(args, "summary", None):
+        if len(review) > SUMMARY_MAX:
+            raise ValueError(f"the review is {len(review)} characters, over {SUMMARY_MAX}: give the card a --summary "
+                             f"(the full review is attached as a file)")
         return None
     text = read_text(args.summary, "summary")
     if len(text) > SUMMARY_MAX:
         raise ValueError(f"the summary is {len(text)} characters, over {SUMMARY_MAX}: the card shows it whole, so "
-                         f"shorten it (the full review stays in --review)")
+                         f"shorten it (the full review is attached as a file)")
     if kind == "build" and "deploy" not in text.lower():
         raise ValueError("the summary must state the deploy consequence (\"Deploy on merge: …\" or \"unknown\")")
     return text
@@ -345,7 +349,7 @@ def recommend(args):
         if feedback and len(feedback) > FEEDBACK_MAX:
             raise ValueError(f"the feedback is {len(feedback)} characters, over {FEEDBACK_MAX}: the human must see "
                              f"all of it on the message, so shorten it")
-        summary = summary_of(args, "build")
+        summary = summary_of(args, "build", review)
         for req in for_ledger(args.ledger, "build"):
             if req["status"] == "open" and req.get("head") == args.head:
                 print("an open build request already exists for this head; the new text was ignored", file=sys.stderr)
@@ -416,7 +420,7 @@ def recommend_design(args):
             raise ValueError(f"Proposal v{pin['version']} does not have hash {pin['sha']}")
         review = read_text(args.review, "review")
         feedback = read_text(args.feedback, "feedback") if args.feedback else None
-        summary = summary_of(args, "design")
+        summary = summary_of(args, "design", review)
         if feedback and len(feedback) > FEEDBACK_MAX:
             raise ValueError(f"the revisions are {len(feedback)} characters, over {FEEDBACK_MAX}: the human must "
                              f"see all of them on the message, so shorten them")
