@@ -981,6 +981,16 @@ def test_a_merge_of_another_head_never_uses_the_reviewed_heads_handoff_or_says_a
     assert key == f"muster-activate:t_1:{'b' * 40}" and world.cards[card]["reason"].startswith("Activation unknown")
 
 
+def test_a_merge_read_back_without_a_head_opens_no_card_and_claims_no_commit(world):
+    world.pr.update(state="MERGED", headRefOid=None, mergeCommit={"oid": "c" * 40})
+    req = executing(world, "merge")
+    decisions.update(req["id"], activation="none: documentation only.")
+    decisions.recover(decisions.load(req["id"]))
+    status, outcome = state(req["id"])
+    assert status == "done" and "did not say which commit merged" in outcome and "Nothing to activate" not in outcome
+    assert "cleanup tries again" in outcome and world.cards == {}
+
+
 def test_a_recovered_merge_of_another_head_is_merged_not_failed(world):
     world.pr.update(state="MERGED", headRefOid="b" * 40, mergeCommit={"oid": "c" * 40})
     req = executing(world, "merge")

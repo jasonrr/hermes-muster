@@ -816,7 +816,7 @@ def merged(req, kind, text, head):
              "none": f"Nothing to activate: {text}.",
              "pending": f"Activation not verified: Muster could not open the Activate card yet; cleanup tries again "
                         f"when it closes the run. Steps: the pull request's Activation section, {text}"}[kind]
-    how = ("as reviewed" if head == req["head"] else
+    how = ("as reviewed" if head == req["head"] else "but GitHub did not say which commit merged" if not head else
            "but not the reviewed commit: GitHub reports another head was merged")
     return f"✅ Merged\nMerged into {req['base']}, {how}. {after}"
 
@@ -892,6 +892,8 @@ def activate(req, head, repo=None):
     one): (kind, text) for `merged`. Never raises: the pull request merged, so a failure here is logged and `pending`,
     and cleanup.resolve opens the card on its next pass."""
     try:
+        if not head:  # nothing to match a handoff to; cleanup.resolve reads the merged head and opens the card
+            raise ValueError("GitHub's read-back named no merged head")
         repo = repo or (req.get("run") or run_of(req["ledger"]))["repo"]
         number = pr_number(req["pr"])
         kind, text, _ = activation_for(req["ledger"], repo, number, head)
