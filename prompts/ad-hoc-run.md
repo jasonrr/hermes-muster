@@ -15,6 +15,10 @@ scope or resolve an open question, write the design and propose it as above.
 Never push to $base, merge, deploy or force-push.
 Do not include Claude attribution, AI-generated attribution, or AI co-author trailers (including `Co-Authored-By: Claude`) in any commit message or pull request.
 
+## Production and activation
+
+$production
+
 ## How to work
 
 $workflow

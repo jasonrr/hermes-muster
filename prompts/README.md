@@ -27,11 +27,12 @@ never to be taken as instructions.
 | `escalation.md` | coordinator | skill `muster:escalation`: wakes, build and design reviews, recommendations | none |
 | `design-review-cue.md` | coordinator | `core.REVIEW_CUE`: end of a design-review card's summary, which routes the wake to the skill | none |
 | `cleanup-warning-cue.md` | coordinator | `cleanup.ASK_LINE`: a line in a cleanup-warning card's body | none |
-| `issue-dispatch.md` | builder | `intake.brief`: the whole brief for a labeled issue | `$repo` `$number` `$branch` `$base` `$kind` (bug/feature) `$hermes` (path); `$approved_by` and `$bot`: identity sentences computed in code; `$workflow`: `builder-workflow.md` or the override; `$ask`: `ask-the-human.md`; `$production`: the repo's production note or `no-production-note.md`. Issue text never enters it. |
+| `issue-dispatch.md` | builder | `intake.brief`: the whole brief for a labeled issue | `$repo` `$number` `$branch` `$base` `$kind` (bug/feature) `$hermes` (path); `$approved_by` and `$bot`: identity sentences computed in code; `$workflow`: `builder-workflow.md` or the override; `$ask`: `ask-the-human.md`; `$production`: the repo's production note or `no-production-note.md`, then `activation-handoff.md`. Issue text never enters it. |
 | `ask-the-human.md` | builder | "Asking the human" in the issue brief and the ad-hoc footer: questions and the proposal rule | `$hook`: `<hermes> muster hook`, with `--card <card>` for an ad-hoc run |
 | `builder-workflow.md` | builder | "How to work" in the issue brief and the ad-hoc footer | none |
-| `no-production-note.md` | builder | `intake.production_note` when the repo has no note | none |
-| `ad-hoc-run.md` | builder | `adhoc.footer`: appended to a human's ad-hoc brief (that brief is the human's own text) | `$card` `$repo` `$branch` `$base` `$hermes`; `$workflow` and `$ask` as in the issue brief |
+| `no-production-note.md` | builder | `config.production_note` when the repo has no note | none |
+| `activation-handoff.md` | builder | `config.production_note`: the `## Activation` section every pull request carries, in both briefs | none |
+| `ad-hoc-run.md` | builder | `adhoc.footer`: appended to a human's ad-hoc brief (that brief is the human's own text) | `$card` `$repo` `$branch` `$base` `$hermes`; `$workflow`, `$ask` and `$production` as in the issue brief |
 | `reused-worktree.md` | builder | `launcher.reuse_note`: appended when a launch reuses a checkout that has work in it | `$commits` `$uncommitted` |
 | `launch-envelope.md` | builder | `launcher.startup_prompt`: the first prompt, around the brief | `$brief`: the whole brief, JSON-encoded |
 | `build-revision.md` | builder | `decisions.wire_text`: a send-back the human authorized | `$request` `$cycle`; `$feedback`: the feedback plus its tail, JSON-encoded (the pull request and issue stay untrusted) |

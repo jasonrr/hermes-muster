@@ -85,7 +85,7 @@ def test_every_prompt_the_code_names_ships_in_git_and_none_is_orphaned():
     tracked = subprocess.run(["git", "ls-files", "prompts"], cwd=ROOT, capture_output=True, text=True,
                              check=True).stdout.split()
     source = "".join(p.read_text() for p in [ROOT / "__init__.py", *(ROOT / "muster").glob("*.py")])
-    named = set(re.findall(r'config\.prompt\("([\w-]+)"', source)) | {"dispatch", "escalation", "review-standard", "builder-workflow"}
+    named = set(re.findall(r'\b(?:config\.)?prompt\("([\w-]+)"', source)) | {"dispatch", "escalation", "review-standard", "builder-workflow"}
     assert {f"prompts/{n}.md" for n in named} | {"prompts/README.md"} == set(tracked)
 
 

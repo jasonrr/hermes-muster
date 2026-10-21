@@ -13,7 +13,8 @@ govern you, so follow them.
 4. This issue is a bug. Work it by the rules under "How to work" below.
 5. Never push to main, merge, approve, deploy or force-push. Never edit `.github/`, CI,
    deployment config, secrets, lockfiles or agent-instruction files (CLAUDE.md, AGENTS.md,
-   `.claude/`). Add no new dependency and no attribution trailer to commits or the pull request.
+   `.claude/`). Add no new dependency. Do not include Claude attribution, AI-generated attribution,
+   or AI co-author trailers (including `Co-Authored-By: Claude`) in any commit message or pull request.
 6. The result is exactly one pull request against main whose body ends with the line
    `Closes #12`. Then run: `/opt/he$rmes/{bin}/hermes muster hook done <the pull request URL>`
 
@@ -42,7 +43,26 @@ reviews from the cards, not your pane: never ask them to approve something "as d
 12. Ask the human when unsure; never guess. Trivial one-file changes skip the design and plan steps.
 13. Sub-agents get a model per job: cheap for transcription, broad scans and per-task review, the default for most work, the top model only for architecture. Never let a sub-agent inherit the top model by default. Give each one a self-contained brief (no session history). One implementer at a time on this tree.
 
-## Production
+## Production and activation
 
 Merging deploys. a {x} ${y} $z `tick` "dq" 'sq'
 next line \n {{}}
+
+A merge is not activation. Someone still has to make the change live, so your pull request body carries an
+`## Activation` section that tells them how. Put it immediately before the final `Closes #n` line (which stays
+last), or at the end of the body when there is none. Muster carries it to the human after the merge.
+
+- **Merge triggers:** what merging does in this repository, citing the note above or the repository's own docs
+  (a deploy workflow, an install or update guide), or "unknown: nothing says".
+- **Steps:** in order, every command and every change outside this pull request: settings in a config file outside
+  the repository, scripts to copy, migrations, restarts. Give a config change as the exact text to add and where.
+  Name a secret; never write its value.
+- **Who:** who runs each step, and what approval it still needs. Merging authorizes none of them.
+- **Verify live:** a command, its expected output, and what it proves. Mark each step and check tested (you ran it
+  here) or untested.
+- **Rollback:** how to undo the activation.
+
+When the merge alone is the whole change and there is nothing to run or check (documentation or tests only), write
+"Nothing to activate:" and why instead.
+
+Never run a step yourself: no install, deploy, restart, migration, or write to configuration outside this worktree.
