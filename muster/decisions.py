@@ -354,6 +354,8 @@ def recommend(args):
         if len(activation) > FEEDBACK_MAX:
             raise ValueError(f"the activation is {len(activation)} characters, over {FEEDBACK_MAX}: shorten it; the "
                              f"pull request's own Activation section can hold the rest")
+        if NONE.match(activation) and not none_reason(activation):
+            raise ValueError("the activation says 'none:' with no reason: say why there is nothing to activate")
         for req in for_ledger(args.ledger, "build"):
             if req["status"] == "open" and req.get("head") == args.head:
                 print("an open build request already exists for this head; the new text was ignored", file=sys.stderr)
@@ -781,11 +783,12 @@ def _merge(req, boot):
         if attempt:
             time.sleep(READBACK_WAIT)
         try:
-            state = view(req["pr"], "state,mergeCommit,autoMergeRequest", env)
+            state = view(req["pr"], "state,headRefOid,mergeCommit,autoMergeRequest", env)
         except (core.CommandError, ValueError):
             continue
-        if state.get("state") == "MERGED":
-            transition(rid, ("executing",), "done", outcome=merged(req, *activate(req, run["repo"])))
+        if state.get("state") == "MERGED":  # maybe another head, pushed and merged elsewhere while ours ran
+            head = state.get("headRefOid")
+            transition(rid, ("executing",), "done", outcome=merged(req, *activate(req, head, run["repo"]), head))
             return
     if error:
         fail(rid, error)
@@ -804,20 +807,28 @@ def fresh(req):
         "actions", "choices", "questions", "recommended", "hints") if k in req})
 
 
-def merged(req, kind, text):
-    """The Merge tap's outcome: merged, and what is known about activation (`activate`'s kind and text). A merge
-    proves only the merge, so it never says the change is live, nor that it is not."""
+def merged(req, kind, text, head):
+    """The Merge tap's outcome: merged at `head` (GitHub's read-back), and what is known about activation (`activate`'s
+    kind and text for that head). A merge proves only the merge, so it never says the change is live, nor that it is
+    not; and "as reviewed" only when GitHub merged the reviewed commit."""
     after = {"steps": "Activation not verified: its steps and check are on the Activate card.",
              "unknown": "Activation unknown: no reviewed handoff matches this merge; see the Activate card.",
-             "none": f"Nothing to activate: {text.rstrip('.')}." if text.strip(" .") else "Nothing to activate.",
+             "none": f"Nothing to activate: {text}.",
              "pending": f"Activation not verified: Muster could not open the Activate card yet; cleanup tries again "
                         f"when it closes the run. Steps: the pull request's Activation section, {text}"}[kind]
-    return f"✅ Merged\nMerged into {req['base']}, as reviewed. {after}"
+    how = ("as reviewed" if head == req["head"] else
+           "but not the reviewed commit: GitHub reports another head was merged")
+    return f"✅ Merged\nMerged into {req['base']}, {how}. {after}"
 
 
 # -- the activation handoff: what is left after a merge, on one Activate card per merged head -----------------
 
 NONE = re.compile(r"none:", re.IGNORECASE)
+
+
+def none_reason(text):
+    """The reason after `none:`, or "" when there is none (only spaces or dots)."""
+    return text[len("none:"):].strip().rstrip(".").strip()
 
 
 def pr_number(url):
@@ -838,7 +849,10 @@ def activation_for(ledger, repo, number, head):
                            f"unreviewed Activation section is in {url}. Ask {who()} to check it."), url
     text = match["activation"]
     if NONE.match(text):
-        return "none", text[len("none:"):].strip(), url
+        if none_reason(text):
+            return "none", none_reason(text), url
+        return "unknown", (f"Activation unknown: the reviewed handoff said 'none:' without a reason. The builder's "
+                           f"Activation section is in {url}. Ask {who()} to check it."), url
     if match.get("recommended") not in (None, "merge"):
         text = (f"{who()} recommended {match.get('recommended')}, not merge, for this commit; check before "
                 f"activating.\n{text}")
@@ -873,14 +887,15 @@ def handoff(ledger, repo, number, head):
     return kind
 
 
-def activate(req, repo=None):
-    """The handoff for the merge a Merge tap made: (kind, text) for `merged`. Never raises: the pull request merged,
-    so a failure here is logged and `pending`, and cleanup.resolve opens the card on its next pass."""
+def activate(req, head, repo=None):
+    """The handoff for the merge a Merge tap made, at the `head` GitHub reports merged (not necessarily the reviewed
+    one): (kind, text) for `merged`. Never raises: the pull request merged, so a failure here is logged and `pending`,
+    and cleanup.resolve opens the card on its next pass."""
     try:
         repo = repo or (req.get("run") or run_of(req["ledger"]))["repo"]
         number = pr_number(req["pr"])
-        kind, text, _ = activation_for(req["ledger"], repo, number, req["head"])
-        handoff(req["ledger"], repo, number, req["head"])
+        kind, text, _ = activation_for(req["ledger"], repo, number, head)
+        handoff(req["ledger"], repo, number, head)
         return kind, text
     except Exception as caught:  # noqa: BLE001 - a side step after an irreversible merge must not fail it
         with contextlib.suppress(OSError):  # nor may an unwritable log
@@ -968,8 +983,9 @@ def _recover(req):
         except (OSError, core.CommandError, ValueError):
             fail(rid, "interrupted; not merged (could not read the pull request)")
             return
-        if pr.get("state") == "MERGED" and pr.get("headRefOid") == req["head"]:
-            transition(rid, ("executing",), "done", outcome=merged(req, *activate(req)))
+        if pr.get("state") == "MERGED":  # at whatever head GitHub merged: the handoff and the text follow that head
+            head = pr.get("headRefOid")
+            transition(rid, ("executing",), "done", outcome=merged(req, *activate(req, head), head))
             return
         if pr.get("state") == "OPEN" and pr.get("headRefOid") == req["head"]:  # unchanged: the human may click again
             fresh(req)

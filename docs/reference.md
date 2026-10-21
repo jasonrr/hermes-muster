@@ -171,7 +171,9 @@ triggers: …") and what is left after it ("After merge: …").
   without branch protection a red check does not block it. Muster then runs
   `gh pr merge --squash --match-head-commit <sha>` with **your own** `gh` login, not the bot's, and reads
   back MERGED before saying it merged. A merge never implies a deploy: the message says "Activation not
-  verified" (or "Nothing to activate: …"), never that the change is live.
+  verified" (or "Nothing to activate: …"), never that the change is live. The read-back also names the head
+  GitHub merged: if a newer commit was pushed and merged elsewhere meanwhile, the message says it was not the
+  reviewed commit, and activation follows that head (usually "Activation unknown").
 - **Review feedback…** shows the proposed revision instructions. Send them, add your own words, or start
   your words with `replace:` to replace them. They go to the same builder in the same pane and count as
   sent only once the pane confirms they arrived; a busy or absent builder gets nothing, and you get
@@ -191,7 +193,8 @@ pull request (a Hermes setting, a cron script, a gateway restart). So the work c
    secrets named, never given), who runs each, a live check with its expected output, and rollback; or
    "Nothing to activate: <why>". The builder never runs a step.
 2. **Your Hermes agent checks it** against the diff, the production note and the repository's docs, and records
-   the checked version with `--activation`. A missing or wrong section is a reason to send the build back.
+   the checked version with `--activation` (`none: <why>` needs a reason; a bare `none:` is refused). A
+   missing or wrong section is a reason to send the build back.
 3. **Every merge Muster learns of gets it:** your Merge tap, a merge found after a restart, and a merge made on
    GitHub or by hand, which cleanup finds. If a reviewed handoff matches the merged commit, an **Activate card**
    carries it; if none matches, the card says "Activation unknown" and points to the builder's unreviewed

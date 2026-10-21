@@ -874,7 +874,7 @@ def test_recover_a_merge_that_landed(world):
     world.pr.update(state="MERGED", mergeCommit={"oid": "c" * 40})
     req = executing(world, "merge")
     decisions.recover(req)
-    assert state(req["id"]) == ("done", decisions.merged(req, *decisions.activate(req, "acme/app")))
+    assert state(req["id"]) == ("done", decisions.merged(req, *decisions.activate(req, HEAD, "acme/app"), HEAD))
     assert world.merge_calls() == [] and len(world.cards) == 1
 
 
@@ -943,10 +943,51 @@ def test_another_head_merged_later_gets_its_own_card(world):
     assert len(world.cards) == 2
 
 
-def test_a_none_without_a_reason_reads_cleanly(world):
+@pytest.mark.parametrize("empty", ["none:", "none:   ", "None: ."])
+def test_none_without_a_reason_is_refused_before_anything_is_recorded(world, tmp_path, capsys, empty):
+    assert decisions.recommend(rec_args(tmp_path, activation=empty)) == 1
+    assert "reason" in capsys.readouterr().err and decisions.for_ledger("t_1") == []
+
+
+def test_a_legacy_none_without_a_reason_is_activation_unknown_not_nothing(world):
     rid = build(world, {"action": "merge"}, activation="none:")
     decisions.execute(rid)
-    assert state(rid)[1].endswith("as reviewed. Nothing to activate.")
+    assert "Activation unknown" in state(rid)[1] and "Nothing to activate" not in state(rid)[1]
+    [rec] = world.cards.values()
+    assert rec["reason"].startswith("Activation unknown")
+
+
+def merges_another_head_then_raises(world, monkeypatch):
+    """Someone pushed B and merged it on GitHub while the pinned merge of A ran; gh then exits non-zero."""
+    real = world.run
+
+    def run(argv, env=None):
+        if argv[:3] == ["gh", "pr", "merge"]:
+            world.calls.append((argv, env))
+            world.pr.update(state="MERGED", headRefOid="b" * 40, mergeCommit={"oid": "c" * 40})
+            raise core.CommandError("gh: exit 1\nHead branch was modified")
+        return real(argv, env)
+    monkeypatch.setattr(core, "run", run)
+
+
+def test_a_merge_of_another_head_never_uses_the_reviewed_heads_handoff_or_says_as_reviewed(world, monkeypatch):
+    merges_another_head_then_raises(world, monkeypatch)
+    rid = build(world, {"action": "merge"}, activation="none: documentation only.", recommended="merge")
+    decisions.execute(rid)
+    status, outcome = state(rid)
+    assert status == "done" and "as reviewed" not in outcome and "not the reviewed commit" in outcome
+    assert "Activation unknown" in outcome and "Nothing to activate" not in outcome
+    [(key, card)] = world.keys.items()
+    assert key == f"muster-activate:t_1:{'b' * 40}" and world.cards[card]["reason"].startswith("Activation unknown")
+
+
+def test_a_recovered_merge_of_another_head_is_merged_not_failed(world):
+    world.pr.update(state="MERGED", headRefOid="b" * 40, mergeCommit={"oid": "c" * 40})
+    req = executing(world, "merge")
+    decisions.update(req["id"], activation="none: documentation only.")
+    decisions.recover(decisions.load(req["id"]))
+    status, outcome = state(req["id"])
+    assert status == "done" and "not the reviewed commit" in outcome and "Activation unknown" in outcome
 
 
 def test_a_recovered_merge_whose_request_lacks_a_run_and_an_unwritable_log_still_end_done(world, monkeypatch):
