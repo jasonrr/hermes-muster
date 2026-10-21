@@ -589,7 +589,7 @@ def test_closing_says_done_once_and_marks_the_parent(threads):
     tick(threads)
     assert threads.client.posts[1:] == []  # no finish note: the parent says it
     (parent,) = threads.client.updates
-    assert parent["ts"] == thread and parent["text"].endswith("\nFinished")
+    assert parent["ts"] == thread and parent["text"].endswith("\nClosed")
     ref = conversation.load("led1")
     assert ref["state"] == "closed" and ref["closed_at"] == threads.clock[0] and ref["closed_by"] == "muster"
 

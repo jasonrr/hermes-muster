@@ -170,5 +170,13 @@ def workflow_text() -> str:
     return workflow_path().read_text().strip()
 
 
+def production_note(repo):
+    """This repository's production note from the notes directory (or the line that says there is none), then the
+    rule for the pull request's activation handoff."""
+    path = notes_dir() / (repo.replace("/", "__") + ".md")
+    note = path.read_text().strip() if path.is_file() else prompt("no-production-note")
+    return note + "\n\n" + prompt("activation-handoff")
+
+
 def hermes_bin() -> str:  # call AFTER core.prepare_env() so PATH is extended
     return shutil.which("hermes") or str(Path.home() / ".local/bin/hermes")

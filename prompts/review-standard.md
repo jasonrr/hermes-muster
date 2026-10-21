@@ -21,6 +21,7 @@ The standard for review judgment, verification and human-facing writing, for des
 - For non-trivial code, obtain independent review when available, then verify findings yourself. A reviewer suggestion or keyword match is not proof of a defect.
 - Keep independently executed evidence separate from author claims, baseline failures, interrupted runs and unperformed live checks. No reported CI is neither failing CI nor passing CI.
 - Keep merge, installation and live activation separate. GitHub proves merge state, not what is installed or executing locally. Use installed revision/runtime evidence for deployment claims. Missing production notes mean uncertainty, not proof of no deployment.
+- Check the builder's Activation section against the diff and the repository's install or deploy docs. A change that needs a step outside the pull request (a setting, a script copy, a restart, a migration) with no step in the handoff is incomplete. A merge-triggered deploy is still "activation not verified" until someone checks it live.
 
 ## Human decision summary
 
@@ -29,7 +30,7 @@ Write for the decision, not for an audit log. Lead with a recognizable task, rec
 - Use plain language: translate Git state labels and implementation details into consequences.
 - For revisions, show every instruction being authorized. Do not make the human reconstruct feedback from analysis.
 - Keep hashes, long test totals, routine provenance and non-decision-changing caveats in supporting detail. Include a risk or uncertainty in the summary when it changes the decision; never conceal it to fit a length budget.
-- Do not require use-case/rationale lists, severity sections, praise sections or deployment boilerplate on every card. Omit empty or repetitive sections. The card's "Deploy on merge" line is the one place for the deploy consequence; do not repeat it in prose.
+- Do not require use-case/rationale lists, severity sections, praise sections or deployment boilerplate on every card. Omit empty or repetitive sections. The card's "Merge triggers" and "After merge" lines are the one place for the merge and activation consequence; do not repeat them in prose.
 - Author the short summary deliberately; never truncate the full review to make one.
 
 Every text the human reads (the summary, the feedback or revisions, the full review) follows one standard:

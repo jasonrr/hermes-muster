@@ -34,7 +34,7 @@ COMMAND_MAX = 2900  # characters of a command shown whole on a card with buttons
 SHOWN_MAX = 500  # characters of a too-long command, and of a card's why, shown
 GONE = ("message_not_found", "channel_not_found", "is_archived", "thread_not_found")  # the parent cannot change
 PARENT = {"running": "Dispatched · waiting for the builder to start", "reopened": "Reopened for a new request",
-          "done": "Finished", "archived": "Archived"}
+          "done": "Closed", "archived": "Archived"}
 ACTIONS = re.compile(r"^muster_(choice_\d+|text|multi|submit|allow|deny|deny_text)$")
 
 
@@ -610,7 +610,7 @@ def headline(ledger, state, name=None):
 def parent_line(ref, status, line=None):
     """The thread parent: the run and its state. While running, the status message's line (muster.progress), so every
     parent write keeps it; a final line never shows under "running" (a reopened thread is not finished). Done shows
-    the final line when it is a finish ("Finished · PR #9 merged")."""
+    the final line when it is a finish ("✅ PR #9 merged · activation not verified at merge; …")."""
     if line is None and status in ("running", "done"):
         saved = progress.load(ref["ledger"])
         text = str(saved.get("text") or "")
@@ -744,7 +744,8 @@ async def create(ref):
 
 
 async def close(ref):
-    """The run's work is resolved: the parent says Finished (no note in the thread: the parent is what people scan).
+    """The run's work is resolved: the parent says its final line, else Closed (no note in the thread: the parent is
+    what people scan).
     closed only once Slack took the update, or the parent is gone."""
     ledger, thread = ref["ledger"], ref["thread_id"]
     try:

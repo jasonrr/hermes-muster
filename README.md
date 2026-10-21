@@ -32,7 +32,10 @@ several side by side, could be added later; they are not supported today.
    proposes a design and waits for your approval before writing code.
 4. **It opens one pull request.** Your Hermes agent reviews it and recommends merge or send-back.
 5. **You decide:** Merge, send feedback to the builder, or leave it open.
-6. **Muster cleans up** the worktree after the merge.
+6. **You activate it:** a merge is not activation. An Activate card gives you the checked steps to install or
+   deploy the change (including any change outside the pull request), how to check it is live, and how to roll
+   it back. Run them, or ask your Hermes agent to.
+7. **Muster cleans up** the worktree after the merge.
 
 To install and configure Muster, see [setup](docs/setup.md).
 
@@ -84,9 +87,12 @@ Every decision is a message with buttons in your chat; you can also answer in th
   prompt is denied.
 - **Designs:** your Hermes agent reviews each version first. Approve it, send revisions, or leave it
   pending. No code is written for a feature before you approve.
-- **Pull requests:** your Hermes agent reviews the build and says what a merge deploys. Merge, send
-  feedback to the same builder, or leave it open. A merge is a squash of exactly the reviewed commit, made
-  with your own `gh` login.
+- **Pull requests:** your Hermes agent reviews the build and says what a merge triggers and what is left
+  after it. Merge, send feedback to the same builder, or leave it open. A merge is a squash of exactly the
+  reviewed commit, made with your own `gh` login.
+- **Activation:** after a merge, the Activate card holds the steps. Merging authorizes none of them; your
+  agent runs them only when you ask, and records the result as verified or as reported by you. See
+  [activation after merge](docs/reference.md#activation-after-merge).
 
 Each run also has a status message, edited in place, that shows whether it is working, quiet or waiting
 for you. See [channels](docs/channels.md) for how this looks on Telegram and Slack, including one forum

@@ -6,7 +6,8 @@
 │ *Why*
 │ README still lists “Decide from your phone” as a benefit; you asked for chat to be described as the
 │ interface. Everything else meets the brief.
-│ Deploy on merge: none (documentation only).
+│ Merge triggers: nothing (documentation only).
+│ After merge: nothing to activate.
 │
 │ [ Send back with this feedback ]*  [ Merge PR #9 ]  [ Leave PR open ]
 │

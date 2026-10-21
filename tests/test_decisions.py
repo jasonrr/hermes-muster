@@ -167,8 +167,32 @@ class World:
         self.merges_anyway = False
         self.merge_lag = 0  # readbacks that still show OPEN after the merge call
         self.lagging = None
+        self.cards, self.keys, self.blocks, self.subscribed = {}, {}, {}, []  # the board, as Hermes keeps it
+        self.kanban_error = None
+
+    def kanban(self, argv):
+        """`hermes kanban` create (by idempotency key), show and block, as Hermes answers them."""
+        verb = argv[4]
+        if self.kanban_error:
+            raise self.kanban_error
+        if verb == "create":
+            key = argv[argv.index("--idempotency-key") + 1]
+            card = self.keys.setdefault(key, f"t_act{len(self.keys) + 1}")
+            self.cards.setdefault(card, {"status": "ready", "body": argv[argv.index("--body") + 1], "title": argv[-1]})
+            return json.dumps({"id": card, "status": self.cards[card]["status"]})
+        if verb == "show":
+            return json.dumps({"task": {"id": argv[5], "status": self.cards[argv[5]]["status"]}, "comments": []})
+        if verb == "block":
+            card = argv[7]
+            assert self.cards[card]["status"] == "ready"
+            self.cards[card].update(status="blocked", reason=argv[8])
+            self.blocks[card] = self.blocks.get(card, 0) + 1
+            return ""
+        raise AssertionError(argv)
 
     def run(self, argv, env=None):
+        if argv[:4] == ["hermes", "kanban", "--board", config.settings["board"]]:
+            return self.kanban(argv)
         self.calls.append((argv, env))
         if argv[0] == "gh" and self.gh_missing:
             raise FileNotFoundError(2, "No such file or directory: 'gh'")
@@ -217,6 +241,7 @@ def world(tmp_path, monkeypatch):
     w = World(tmp_path)
     run = {**RUN, "evidence_dir": str(w.evidence)}
     monkeypatch.setattr(core, "run", w.run)
+    monkeypatch.setattr(core, "subscribe", lambda card, ledger=None: w.subscribed.append((card, ledger)))
     monkeypatch.setattr(decisions, "run_of", lambda ledger: dict(run))
     monkeypatch.setattr(decisions, "READBACK_WAIT", 0, raising=False)
     monkeypatch.setattr(decisions, "SEEN_WAIT", 0, raising=False)
@@ -231,28 +256,55 @@ def files(tmp_path, review="Looks good.", feedback=None):
     return str(tmp_path / "review.md"), (str(tmp_path / "fb.md") if feedback is not None else None)
 
 
-def rec_args(tmp_path, choice="merge", head=HEAD, pr=URL, review="Looks good.", feedback=None, summary=None):
+LINES = "\nMerge triggers: nothing.\nAfter merge: nothing to activate."  # every build card states both
+
+
+def rec_args(tmp_path, choice="merge", head=HEAD, pr=URL, review="Looks good." + LINES, feedback=None, summary=None,
+             activation="none: tests only."):
     r, f = files(tmp_path, review, feedback)
     if summary is not None:
         (tmp_path / "summary.md").write_text(summary)
+    (tmp_path / "activation.md").write_text(activation)
     return argparse.Namespace(ledger="t_1", pr=pr, head=head, choice=choice, review=r, feedback=f,
-                              summary=str(tmp_path / "summary.md") if summary is not None else None)
+                              summary=str(tmp_path / "summary.md") if summary is not None else None,
+                              activation=str(tmp_path / "activation.md"))
 
 
 def test_a_summary_is_the_card_and_the_review_stays_whole(world, tmp_path, capsys):
     long = "Detail. " * 1000
-    assert decisions.recommend(rec_args(tmp_path, review=long, summary="Right and tested.\nDeploy on merge: none.")) == 0
+    assert decisions.recommend(rec_args(tmp_path, review=long, summary="Right and tested." + LINES)) == 0
     req = decisions.load(capsys.readouterr().out.strip())
-    assert req["review"] == long.strip() and req["summary"] == "Right and tested.\nDeploy on merge: none."
+    assert req["review"] == long.strip() and req["summary"] == "Right and tested." + LINES
     assert req["questions"][0]["text"] == ("**🟡 PR #9 · T**\n**Coordinator recommends merging it.**\n\n"
-                                           "Right and tested.\nDeploy on merge: none.")
+                                           "Right and tested." + LINES)
 
 
-@pytest.mark.parametrize("summary, why", [("x deploy " * 200, "over 900"), ("Right and tested.", "deploy consequence")])
-def test_a_summary_too_long_or_without_the_deploy_consequence_is_refused_not_cut(world, tmp_path, capsys, summary,
-                                                                                 why):
+@pytest.mark.parametrize("summary, why", [("x deploy " * 200, "over 900"), ("Right and tested.", "merge triggers"),
+                                          ("Right.\nDeploy on merge: none.", "merge triggers"),
+                                          ("Right.\nMerge triggers: nothing.", "merge triggers")])
+def test_a_summary_too_long_or_without_the_merge_and_activation_lines_is_refused_not_cut(world, tmp_path, capsys,
+                                                                                         summary, why):
     assert decisions.recommend(rec_args(tmp_path, summary=summary)) == 1
     assert why in capsys.readouterr().err and decisions.for_ledger("t_1") == []
+
+
+def test_a_short_review_shown_whole_needs_the_lines_too(world, tmp_path, capsys):
+    assert decisions.recommend(rec_args(tmp_path, review="Looks good.")) == 1
+    assert "merge triggers" in capsys.readouterr().err and decisions.for_ledger("t_1") == []
+
+
+def test_the_checked_handoff_is_stored_whole_and_refused_when_too_long(world, tmp_path, capsys):
+    handoff = "Merge triggers: nothing.\nSteps:\n1. hermes plugins update muster\n2. hermes gateway restart"
+    assert decisions.recommend(rec_args(tmp_path, activation=handoff)) == 0
+    req = decisions.load(capsys.readouterr().out.strip())
+    assert req["activation"] == handoff and decisions.fresh(req)["activation"] == handoff
+    for r in decisions.for_ledger("t_1", "build"):
+        decisions.transition(r["id"], ("open",), "stale")
+    made = len(decisions.for_ledger("t_1", "build"))
+    assert decisions.recommend(rec_args(tmp_path, activation="x" * (decisions.FEEDBACK_MAX + 1))) == 1
+    err = capsys.readouterr().err
+    assert "activation" in err and str(decisions.FEEDBACK_MAX) in err
+    assert len(decisions.for_ledger("t_1", "build")) == made  # refused, never cut: nothing new was recorded
 
 
 def test_recommend_creates_the_build_request(world, tmp_path, capsys):
@@ -264,7 +316,7 @@ def test_recommend_creates_the_build_request(world, tmp_path, capsys):
     assert req["actions"] == ["send-back", "merge", "nothing"] and req["recommended"] == "send-back"
     # the feedback the tap sends is on the card, whole and quoted, before the reason
     assert req["questions"] == [{"text": "**🟡 PR #9 · T**\n**Coordinator recommends sending it back with this "
-                                         "feedback:**\n> Fix the null case.\n\n**Why**\nLooks good.",
+                                         "feedback:**\n> Fix the null case.\n\n**Why**\nLooks good." + LINES,
                                  "header": "Build", "multi": False, "options": [
         {"label": label, "description": ""} for label in req["choices"][0]]}]
     assert req["hints"] == [
@@ -272,7 +324,7 @@ def test_recommend_creates_the_build_request(world, tmp_path, capsys):
         "merged.", "• Merge PR #9: puts it into main now, as it stands. Muster does not deploy.",
         "• Leave PR open: nothing changes."]
     assert (req["head"], req["base"], req["pr"], req["cycle"]) == (HEAD, "main", URL, 1)
-    assert req["review"] == "Looks good." and req["feedback"] == "Fix the null case."
+    assert req["review"] == "Looks good." + LINES and req["feedback"] == "Fix the null case."
     assert req["run"]["pane"] == "p_1" and req["run"]["repo"] == "acme/app"
 
 
@@ -286,7 +338,7 @@ def test_recommended_choice_goes_first(world, tmp_path, capsys, choice, first):
 
 def test_texts_are_redacted(world, tmp_path, capsys):
     token = "ghp_" + "x" * 20
-    decisions.recommend(rec_args(tmp_path, "send-back", review=f"saw {token}", feedback=f"use {token}"))
+    decisions.recommend(rec_args(tmp_path, "send-back", review=f"saw {token}" + LINES, feedback=f"use {token}"))
     req = decisions.load(capsys.readouterr().out.strip())
     assert token not in json.dumps(req) and "[redacted]" in req["review"] and "[redacted]" in req["feedback"]
 
@@ -349,12 +401,12 @@ def test_older_open_build_requests_are_staled(world, tmp_path, capsys):
 
 
 def test_the_same_head_again_returns_the_open_request_and_ignores_the_new_text(world, tmp_path, capsys):
-    decisions.recommend(rec_args(tmp_path, review="first"))
+    decisions.recommend(rec_args(tmp_path, review="first" + LINES))
     first = capsys.readouterr().out.strip()
-    assert decisions.recommend(rec_args(tmp_path, "nothing", review="second")) == 0
+    assert decisions.recommend(rec_args(tmp_path, "nothing", review="second" + LINES)) == 0
     captured = capsys.readouterr()
     assert captured.out.strip() == first and "ignored" in captured.err
-    assert decisions.load(first)["review"] == "first" and len(decisions.for_ledger("t_1")) == 1
+    assert decisions.load(first)["review"] == "first" + LINES and len(decisions.for_ledger("t_1")) == 1
 
 
 # -- execute (task 6) -----------------------------------------------------------------------------
@@ -389,7 +441,8 @@ def test_merge_revalidates_then_squash_merges_pinned_to_the_head_with_the_humans
     monkeypatch.setenv("KEEP_ME", "1")
     rid = build(world, {"action": "merge"})
     decisions.execute(rid, "boot1")
-    assert state(rid) == ("done", "✅ Merged\nMerged into main, as reviewed. Muster does not deploy.")
+    assert state(rid) == ("done", ("✅ Merged\nMerged into main, as reviewed. Activation unknown: no reviewed handoff "
+                                   "matches this merge; see the Activate card."))  # this request predates --activation
     kinds = [a[2] for a, _ in world.calls]
     assert kinds == ["view", "merge", "view"]
     assert world.merge_calls() == [["gh", "pr", "merge", URL, "--squash", "--match-head-commit", HEAD]]
@@ -821,7 +874,149 @@ def test_recover_a_merge_that_landed(world):
     world.pr.update(state="MERGED", mergeCommit={"oid": "c" * 40})
     req = executing(world, "merge")
     decisions.recover(req)
-    assert state(req["id"]) == ("done", decisions.merged(req)) and world.merge_calls() == []
+    assert state(req["id"]) == ("done", decisions.merged(req, *decisions.activate(req, HEAD, "acme/app"), HEAD))
+    assert world.merge_calls() == [] and len(world.cards) == 1
+
+
+# -- the activation handoff: one Activate card per merged head, whoever saw the merge ---------------------------
+
+STEPS = "Merge triggers: nothing.\nSteps:\n1. hermes plugins update muster\n2. hermes gateway restart\nVerify live: …"
+
+
+def launched_run():
+    progress.touch("t_1", "launched", "{}")  # the run's activity directory, where the handoff's evidence goes
+
+
+def test_a_merge_with_steps_opens_one_blocked_activate_card_in_the_runs_thread(world):
+    from muster import conversation
+    launched_run()
+    conversation.update("t_1", state="open", chat_id="c", thread_id="790", cards=[])
+    rid = build(world, {"action": "merge"}, activation=STEPS)
+    decisions.execute(rid, "boot1")
+    assert state(rid) == ("done", ("✅ Merged\nMerged into main, as reviewed. Activation not verified: its steps and "
+                                   "check are on the Activate card."))
+    [(card, rec)] = world.cards.items()
+    assert world.keys == {f"muster-activate:t_1:{HEAD}": card} and world.subscribed == [(card, "t_1")]
+    assert rec["status"] == "blocked" and rec["reason"] == "Merged; activation not verified.\n" + STEPS
+    assert rec["title"] == "Activate · T (PR #9)" and URL in rec["body"]
+    assert (progress.activity("t_1") / "activation").read_text() == f"steps {card}"
+
+
+def test_a_matching_none_opens_no_card_and_says_why(world):
+    launched_run()
+    rid = build(world, {"action": "merge"}, activation="none: documentation only.")
+    decisions.execute(rid)
+    assert state(rid)[1].endswith("Nothing to activate: documentation only.") and world.cards == {}
+    assert (progress.activity("t_1") / "activation").read_text() == "none"
+
+
+@pytest.mark.parametrize("text", ["None of the steps but a restart.",
+                                  "Merge triggers a deploy (deploy.yml).\nVerify live: gh run list --workflow deploy.yml"])
+def test_only_none_with_a_colon_is_nothing_and_a_deploy_on_merge_is_not_verified(world, text):
+    rid = build(world, {"action": "merge"}, activation=text)
+    decisions.execute(rid)
+    [rec] = world.cards.values()
+    for shown in (state(rid)[1], rec["reason"]):
+        assert "activation not verified" in shown.lower() and "not active" not in shown.lower()
+
+
+def test_another_recommendation_for_the_merged_head_is_flagged(world):
+    rid = build(world, {"action": "merge"}, activation=STEPS, recommended="send-back")
+    decisions.execute(rid)
+    [rec] = world.cards.values()
+    assert rec["reason"].startswith("Merged; activation not verified.\nCoordinator recommended send-back, not merge")
+
+
+def test_the_handoff_is_idempotent_across_the_tap_its_recovery_and_a_replay(world):
+    world.pr.update(state="MERGED", mergeCommit={"oid": "c" * 40})
+    req = executing(world, "merge")
+    decisions.update(req["id"], activation=STEPS)
+    for _ in range(2):
+        decisions.handoff("t_1", "acme/app", 9, HEAD)
+    decisions.recover(decisions.load(req["id"]))
+    assert len(world.cards) == 1 and list(world.blocks.values()) == [1] and len(world.subscribed) == 1
+
+
+def test_another_head_merged_later_gets_its_own_card(world):
+    decisions.handoff("t_1", "acme/app", 9, HEAD)
+    decisions.handoff("t_1", "acme/app", 9, "b" * 40)
+    assert len(world.cards) == 2
+
+
+@pytest.mark.parametrize("empty", ["none:", "none:   ", "None: ."])
+def test_none_without_a_reason_is_refused_before_anything_is_recorded(world, tmp_path, capsys, empty):
+    assert decisions.recommend(rec_args(tmp_path, activation=empty)) == 1
+    assert "reason" in capsys.readouterr().err and decisions.for_ledger("t_1") == []
+
+
+def test_a_legacy_none_without_a_reason_is_activation_unknown_not_nothing(world):
+    rid = build(world, {"action": "merge"}, activation="none:")
+    decisions.execute(rid)
+    assert "Activation unknown" in state(rid)[1] and "Nothing to activate" not in state(rid)[1]
+    [rec] = world.cards.values()
+    assert rec["reason"].startswith("Activation unknown")
+
+
+def merges_another_head_then_raises(world, monkeypatch):
+    """Someone pushed B and merged it on GitHub while the pinned merge of A ran; gh then exits non-zero."""
+    real = world.run
+
+    def run(argv, env=None):
+        if argv[:3] == ["gh", "pr", "merge"]:
+            world.calls.append((argv, env))
+            world.pr.update(state="MERGED", headRefOid="b" * 40, mergeCommit={"oid": "c" * 40})
+            raise core.CommandError("gh: exit 1\nHead branch was modified")
+        return real(argv, env)
+    monkeypatch.setattr(core, "run", run)
+
+
+def test_a_merge_of_another_head_never_uses_the_reviewed_heads_handoff_or_says_as_reviewed(world, monkeypatch):
+    merges_another_head_then_raises(world, monkeypatch)
+    rid = build(world, {"action": "merge"}, activation="none: documentation only.", recommended="merge")
+    decisions.execute(rid)
+    status, outcome = state(rid)
+    assert status == "done" and "as reviewed" not in outcome and "not the reviewed commit" in outcome
+    assert "Activation unknown" in outcome and "Nothing to activate" not in outcome
+    [(key, card)] = world.keys.items()
+    assert key == f"muster-activate:t_1:{'b' * 40}" and world.cards[card]["reason"].startswith("Activation unknown")
+
+
+def test_a_merge_read_back_without_a_head_opens_no_card_and_claims_no_commit(world):
+    world.pr.update(state="MERGED", headRefOid=None, mergeCommit={"oid": "c" * 40})
+    req = executing(world, "merge")
+    decisions.update(req["id"], activation="none: documentation only.")
+    decisions.recover(decisions.load(req["id"]))
+    status, outcome = state(req["id"])
+    assert status == "done" and "did not say which commit merged" in outcome and "Nothing to activate" not in outcome
+    assert "cleanup tries again" in outcome and world.cards == {}
+
+
+def test_a_recovered_merge_of_another_head_is_merged_not_failed(world):
+    world.pr.update(state="MERGED", headRefOid="b" * 40, mergeCommit={"oid": "c" * 40})
+    req = executing(world, "merge")
+    decisions.update(req["id"], activation="none: documentation only.")
+    decisions.recover(decisions.load(req["id"]))
+    status, outcome = state(req["id"])
+    assert status == "done" and "not the reviewed commit" in outcome and "Activation unknown" in outcome
+
+
+def test_a_recovered_merge_whose_request_lacks_a_run_and_an_unwritable_log_still_end_done(world, monkeypatch):
+    world.pr.update(state="MERGED", mergeCommit={"oid": "c" * 40})
+    req = executing(world, "merge")
+    decisions.update(req["id"], run=None)
+    world.kanban_error = core.CommandError("hermes kanban: exit 1")
+    monkeypatch.setattr(core, "log", lambda *a: (_ for _ in ()).throw(OSError("read-only")))
+    decisions.recover(decisions.load(req["id"]))
+    assert state(req["id"])[0] == "done" and "Activation not verified" in state(req["id"])[1]
+
+
+def test_a_failed_handoff_never_fails_the_merge_that_landed(world):
+    world.kanban_error = core.LaunchError("the notify+wake subscription did not read back")
+    rid = build(world, {"action": "merge"}, activation=STEPS)
+    decisions.execute(rid)
+    status, outcome = state(rid)
+    assert status == "done" and outcome.startswith("✅ Merged\nMerged into main, as reviewed. Activation not verified")
+    assert "cleanup tries again" in outcome and URL in outcome
 
 
 def test_recover_a_merge_that_did_not_fails_and_offers_a_fresh_build_request(world):
@@ -1314,7 +1509,7 @@ def test_a_long_review_without_a_summary_is_refused_so_no_card_carries_it_whole(
     (tmp_path / "review.md").write_text(long)
     assert decisions.recommend_design(args) == 1
     assert "--summary" in capsys.readouterr().err
-    assert decisions.recommend(rec_args(tmp_path, review="x" * decisions.SUMMARY_MAX)) == 0  # short: the card holds it
+    assert decisions.recommend(rec_args(tmp_path, review="x" * (decisions.SUMMARY_MAX - len(LINES)) + LINES)) == 0  # short: the card holds it
 
 
 def test_a_cards_documents_are_the_pinned_proposal_and_the_whole_review(world, tmp_path, capsys):
@@ -1332,9 +1527,9 @@ def test_a_cards_documents_are_the_pinned_proposal_and_the_whole_review(world, t
     (events.proposals("t_1") / "v2.md").write_text("changed after the review")
     with pytest.raises(ValueError, match="Design v2"):
         shared.documents(design)  # a changed file is never sent under the reviewed version's name
-    assert decisions.recommend(rec_args(tmp_path, review="Detail. " * 300, summary="Right.\nDeploy on merge: none.")) == 0
+    assert decisions.recommend(rec_args(tmp_path, review="Detail. " * 300, summary="Right." + LINES)) == 0
     build = decisions.load(capsys.readouterr().out.strip())
     assert shared.documents(build) == [(f"{slug}-pr-9-review-{HEAD[:7]}.md", ("Detail. " * 300).strip())]
     decisions.transition(build["id"], ("open",), "stale")
-    assert decisions.recommend(rec_args(tmp_path, review="Short.")) == 0  # no summary: the card is the review
+    assert decisions.recommend(rec_args(tmp_path, review="Short." + LINES)) == 0  # no summary: the card is the review
     assert shared.documents(decisions.load(capsys.readouterr().out.strip())) == []

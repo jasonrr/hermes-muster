@@ -26,6 +26,6 @@ $ask
 
 $workflow
 
-## Production
+## Production and activation
 
 $production

@@ -81,14 +81,6 @@ def is_bug(issue):
     return any(label.get("name") == config.settings["bug_label"] for label in issue.get("labels", []))
 
 
-def production_note(repo):
-    """This repository's production note from the notes directory, or the line that says there is none."""
-    path = config.notes_dir() / (repo.replace("/", "__") + ".md")
-    if path.is_file():
-        return path.read_text().strip()
-    return config.prompt("no-production-note")
-
-
 def approved_by(repo, number, auto=None):
     """Who approved, for the brief and the card. An automatic approval never says the approver labeled it."""
     s = config.settings
@@ -107,7 +99,7 @@ def brief(repo, number, bug, base="main", auto=None):
                          bot=bot, branch=f"{s['branch_prefix']}{number}", base=base, kind="bug" if bug else "feature",
                          hermes=config.hermes_bin(), workflow=config.workflow_text(),
                          ask=config.prompt("ask-the-human", hook=f"{config.hermes_bin()} muster hook"),
-                         production=production_note(repo)) + "\n"
+                         production=config.production_note(repo)) + "\n"
 
 
 def card_argv(repo, issue, event, auto=None):

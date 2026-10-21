@@ -65,7 +65,8 @@ What to expect:
   "Moved", and the request is shown again in its topic.
 - **If you delete a topic by hand,** Muster notices when the next prompt lands outside it, creates a new
   topic and shows the open prompts there.
-- **When the work is merged,** the topic gets "Finished. This topic is now closed." and is closed. A new
+- **When the work is merged,** the topic gets "Merged. This topic is now closed." and is closed (a run
+  closed without a merge gets "This topic is now closed."). A new
   request from the run, such as a reviewer's question, reopens it.
 - **Closing or reopening a topic by hand** is respected: nothing reopens it except a new request, and a
   topic you reopen stays open until you close it.
@@ -112,7 +113,8 @@ Only one workspace is supported: Muster posts with Hermes's first bot token.
 - **Restarts** post nothing again, and prompts stay answerable. Rarely, if the gateway dies just after a
   post, a prompt is posted twice; both copies answer the same request once.
 - **Threads** (`notify_topics: true`): one parent message per run, with the run under it. The parent shows
-  the title, the run's state and the issue link, then "Finished · PR #<n> merged" or "Archived". Muster
+  the title, the run's state and the issue link, then its final line ("✅ PR #<n> merged · activation not
+  verified at merge; …") or "Archived". Muster
   deletes no Slack message; do not delete a parent by hand, or later messages may be orphaned.
 - **Your Hermes agent in a thread:** Hermes's `thread_require_mention`, `strict_mention` and
   `allowed_channels` settings can keep un-mentioned thread replies from reaching it. Check them if it does
@@ -143,7 +145,8 @@ Claude Code hooks:
 | Feedback delivered 15:10 · revision pending | The builder received your send-back or design revisions. |
 | Turn ended 15:20 · the builder is waiting at its prompt, no question open | The builder stopped without asking anything. |
 | Session ended 15:30 · the builder is not running | Claude Code exited. |
-| Finished · PR #9 merged / Archived | Final. |
+| ✅ PR #9 merged · activation not verified at merge; current state on its Activate card | Final, and history: the [Activate card](reference.md#activation-after-merge) is the current record. "activation unknown" when no reviewed handoff matched the merge. |
+| ✅ Finished · PR #9 merged · nothing to activate / Archived | Final. |
 
 The status only reports; a quiet or unknown status never triggers a retry or any other action. It is
 edited when the state changes, and at most every 5 minutes while only its times age. Its limits:

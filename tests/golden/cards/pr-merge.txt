@@ -2,7 +2,8 @@
 │ *Ella recommends merging it.*
 │
 │ Docs-only change; README is now a 140-line manual and every link resolves.
-│ Deploy on merge: none (documentation only).
+│ Merge triggers: nothing (documentation only).
+│ After merge: nothing to activate.
 │
 │ *What each button does*
 │ • Merge PR #9: puts it into main now, as it stands. Muster does not deploy.

@@ -15,7 +15,8 @@ This page shows how a piece of work moves through muster's code. The [README](..
    - no tracked file has uncommitted changes.
 
    `adhoc.verify` checks both conditions on the `stop` hook and on the flush, and `adhoc.complete` completes the card.
-6. **Resource cleanup.** The `cleanup` cron (`cleanup.cleanup`) closes a finished workspace once its work is merged and its panes have been quiet. It first backs up anything that would be lost.
+6. **Activation handoff.** A merge is not activation. Every merge Muster learns of (the Merge tap in `decisions._merge`, its recovery, and a merge made elsewhere, which `cleanup.resolve` finds) calls `decisions.handoff`: the coordinator's checked handoff for that head, else "activation unknown", on one Activate card per merged head. The card, not the run's final status line, is the current record.
+7. **Resource cleanup.** The `cleanup` cron (`cleanup.cleanup`) closes a finished workspace once its work is merged and its panes have been quiet. It first backs up anything that would be lost.
 
 ## Three processes
 
@@ -41,7 +42,7 @@ The three processes share no memory. They communicate only through files under `
 | `runs` | Every run's directory `<data dir>/runs/<card>/` and its durable event delivery: `enqueue`, `drain`, gateway acks and `flush` |
 | `events` | The issue route's hooks, wait cards, design proposals and their approval gate, and `replay` for issue-run outbox entries |
 | `bridge` | The pane side of a permission prompt: record it, wait for the human's answer, then print it as the hook's decision |
-| `decisions` | The request store (one JSON file per question, approval or build) and the actions a tap carries out |
+| `decisions` | The request store (one JSON file per question, approval or build), the actions a tap carries out, and the activation handoff after a merge |
 | `gateway`, `channels/` | The gateway side: present requests in Telegram or Slack and take the answers |
 | `conversation` | A run's topic or thread, and where its messages go |
 | `progress` | The evidence behind each run's status message |
@@ -53,7 +54,7 @@ The three processes share no memory. They communicate only through files under `
 
 | Path | Written by | Holds |
 |---|---|---|
-| kanban board (`board` setting) | `intake`, `adhoc`, `events`, `runs`, `decisions` | One ledger card per run; wait and review cards; card comments such as the links and proposal versions |
+| kanban board (`board` setting) | `intake`, `adhoc`, `events`, `runs`, `decisions` | One ledger card per run; wait, review and Activate cards; card comments such as the links and proposal versions |
 | `<data dir>/intake/<card>/` | `intake`, `launcher`, `hold` | `launch.json` (the issue launch record), `launch.lock`, `prompt-seen.jsonl`, and a held duplicate's record |
 | `<data dir>/runs/<card>/` | `runs`, `adhoc`, `events`, `progress`, `conversation` | `outbox/`, `sent/` and `lock` for every run. Only an ad-hoc run has `run.json` (its launch record is `run.json`'s `launch`), `brief.md`, `caller-brief.md`, `settings.json`, `launch.lock` and `prompt-seen.jsonl`. Every run has `proposals/`, `activity/`, `progress.json` and `conversation.json` |
 | `<git dir>/muster-card.json`, `muster-brief.md`, `muster-launch-owner.json` | `intake`, `launcher` | The issue worktree's link to its card, the audit copy of its brief, and which launch owns the checkout |

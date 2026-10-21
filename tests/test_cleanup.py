@@ -198,7 +198,8 @@ class World:
             verb = argv[4]
             if verb == "create":
                 key = argv[argv.index("--idempotency-key") + 1]
-                card = self.keys.setdefault(key, f"t_warn{len(self.keys) + 1}")
+                kind = "t_act" if key.startswith("muster-activate:") else "t_warn"  # overdue_cards reads t_warn only
+                card = self.keys.setdefault(key, f"{kind}{len(self.keys) + 1}")
                 self.cards.setdefault(card, {"status": "ready", "body": argv[argv.index("--body") + 1],
                                              "title": argv[-1]})
                 return json.dumps({"id": card, "status": self.cards[card]["status"]})
@@ -1355,6 +1356,59 @@ def test_resolving_ends_the_saved_approvals_but_not_the_agents_question(world):
     assert decisions.load(other)["status"] == "open"
 
 
+def activate_cards(world):
+    return {card: rec for card, rec in world.cards.items() if card.startswith("t_act")}
+
+
+def warned(world):
+    """(where each cleanup card was subscribed, its blocks): resolving also opens an Activate card, asserted apart."""
+    return ([ledger for card, ledger in zip(world.subscribed, world.ledgers) if not card.startswith("t_act")],
+            {card: n for card, n in world.blocks.items() if not card.startswith("t_act")})
+
+
+def test_a_merge_outside_the_button_gets_the_reviewed_handoff_read_before_its_request_ends(world):
+    resolvable(world)
+    rid = decisions.create("build", "t_1", pr=f"https://github.com/{REPO}/pull/16", head=world.head_sha,
+                           recommended="merge", activation="Merge triggers: nothing.\nSteps: restart.")["id"]
+    assert main([]) == 0
+    [(card, rec)] = activate_cards(world).items()
+    assert world.keys[f"muster-activate:t_1:{world.head_sha}"] == card and rec["status"] == "blocked"
+    assert rec["reason"] == "Merged; activation not verified.\nMerge triggers: nothing.\nSteps: restart."
+    assert decisions.load(rid)["status"] == "stale" and topic()["resolved_at"] == BASE
+
+
+@pytest.mark.parametrize("head", ["f" * 40, None])
+def test_an_unreviewed_merge_says_activation_unknown_never_nothing_to_activate(world, head):
+    resolvable(world)
+    if head:  # reviewed, but GitHub merged another commit
+        decisions.create("build", "t_1", pr=f"https://github.com/{REPO}/pull/16", head=head, activation="none: docs.")
+    assert main([]) == 0
+    [rec] = activate_cards(world).values()
+    assert rec["reason"].startswith("Activation unknown") and "nothing to activate" not in rec["reason"].lower()
+
+
+def test_repeated_passes_and_a_merge_tap_first_leave_one_card_blocked_once(world):
+    resolvable(world)
+    decisions.handoff("t_1", REPO, 16, world.head_sha)  # the Merge tap's, in the gateway
+    assert main([]) == 0 and main([]) == 0 and tick(world, 5) == 0
+    [card] = activate_cards(world)
+    assert world.blocks[card] == 1
+
+
+def test_a_dry_run_opens_no_activate_card(world):
+    resolvable(world)
+    assert main(["--dry-run"]) == 0 and activate_cards(world) == {}
+
+
+def test_a_failed_handoff_keeps_the_run_unresolved_for_the_next_pass(world, capsys):
+    resolvable(world)
+    world.fail_on = {("hermes", "kanban", "--board", config.settings["board"], "create")}
+    assert main([]) == 1
+    assert "resolved_at" not in topic() and "activation handoff failed" in capsys.readouterr().out
+    world.fail_on = set()
+    assert main([]) == 0 and topic()["resolved_at"] == BASE and len(activate_cards(world)) == 1
+
+
 def test_a_human_closed_topic_is_marked_resolved_and_stays_closed(world):
     resolvable(world, state="closed")
     assert main([]) == 0
@@ -1375,7 +1429,7 @@ def test_a_resolved_runs_unsaved_work_warning_goes_to_the_main_chat(world):
     resolvable(world)
     world.status = "UU a.py\n"
     window(world)
-    assert world.subscribed and world.ledgers == [None]
+    assert world.subscribed and warned(world)[0] == [None]
 
 
 def test_a_merged_run_whose_worktree_is_gone_closes_then_retires(world):
@@ -1413,11 +1467,10 @@ def test_a_blocked_worktree_is_escalated_once_a_day_after_resolution(world):
     tick(world, 61)
     [(card, rec)] = overdue_cards(world).items()
     assert "Cleanup overdue" in rec["body"] and "pane wR:p2: claude is working" in rec["body"]
-    assert "ledger t_1" in rec["body"] and world.path in rec["body"] and world.ledgers == [None]
-    assert world.blocks == {card: 1}
+    assert "ledger t_1" in rec["body"] and world.path in rec["body"] and warned(world) == ([None], {card: 1})
     for _ in range(5):
         tick(world, 5)
-    assert list(overdue_cards(world)) == [card] and world.blocks == {card: 1}  # deduplicated
+    assert list(overdue_cards(world)) == [card] and warned(world)[1] == {card: 1}  # deduplicated
     assert topic()["state"] == "closing"  # never reopened
 
 

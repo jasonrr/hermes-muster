@@ -173,7 +173,7 @@ def test_brief_has_workflow_and_no_tally():
 
 def test_brief_keeps_forbidden_list():
     text = intake.brief(REPO, 7, False)
-    for needle in (".github/", "lockfiles", "force-push", "attribution trailer", "Closes #7"):
+    for needle in (".github/", "lockfiles", "force-push", "AI co-author trailers", "Closes #7"):
         assert needle in text
 
 
@@ -183,6 +183,20 @@ def test_the_brief_carries_the_production_note_or_says_there_is_none(tmp_path, m
     (tmp_path / "repos").mkdir()
     (tmp_path / "repos" / "Radical-Candor-LLC__radicalcandorai.md").write_text("# note\nCloud Run, us-west1\n")
     assert "# note\nCloud Run, us-west1" in intake.brief(REPO, 1, False)
+
+
+def test_both_briefs_carry_the_note_and_the_activation_rule(tmp_path, monkeypatch):
+    from muster import adhoc
+
+    monkeypatch.setitem(config.settings, "notes_dir", str(tmp_path / "repos"))
+    run = {"card": "t_1", "repo": REPO, "branch": "feat/a", "base": "main"}
+    for text in (intake.brief(REPO, 1, False), adhoc.footer(run)):
+        assert "No production note for this repository" in text
+        assert "## Production and activation" in text and "`## Activation`" in text
+        assert "Never run a step yourself" in text
+    (tmp_path / "repos").mkdir()
+    (tmp_path / "repos" / "Radical-Candor-LLC__radicalcandorai.md").write_text("# note\nCloud Run, us-west1\n")
+    assert "# note\nCloud Run, us-west1" in adhoc.footer(run)
 
 
 def fake_world(tmp_path, calls, failing_repo=None, card_age=0, fail_on=None, branches=(),
