@@ -902,8 +902,9 @@ def settle(dry):
 
 def resolve(dry):
     """Close the topic of every run whose work is resolved: its ledger reads done and the newest pull request from its
-    branch merged, none open. Nothing about its worktree holds this. Its open build, feedback and design requests end
-    first, so no saved approval outlives the work. True on a failure."""
+    branch merged, none open. Nothing about its worktree holds this. The merge's activation handoff comes first (also
+    for a merge made outside the Merge button), then its open build, feedback and design requests end, so no saved
+    approval outlives the work. True on a failure."""
     failed = False
     for ref in conversation.every():
         ledger = ref["ledger"]
@@ -927,14 +928,20 @@ def resolve(dry):
             if dry:
                 say(f"{ledger}: would resolve: PR #{newest['number']} merged; would close its topic")
                 continue
+            try:  # before its requests end: a merge outside the Merge button gets the same handoff, read from them
+                kind = decisions.handoff(ledger, link["repo"], newest["number"], newest["head"]["sha"])
+            except Exception as error:  # noqa: BLE001 - subscribe raises LaunchError too; unresolved, retried next pass
+                say(f"{ledger}: not resolved yet, activation handoff failed: {error}")
+                failed = True
+                continue
             for req in decisions.for_ledger(ledger):
                 if req["kind"] in ("build", "feedback", "design") and req["status"] == "open":
                     decisions.transition(req["id"], ("open",), "stale",
                                          outcome=f"The work is resolved: PR #{newest['number']} merged")
             conversation.update(ledger, resolved_at=clock())
             conversation.finish(ledger)
-            say(f"{ledger}: work resolved, PR #{newest['number']} merged; its topic closes, its worktree is cleaned "
-                f"up separately")
+            say(f"{ledger}: work resolved, PR #{newest['number']} merged; activation {kind}; its topic closes, its "
+                f"worktree is cleaned up separately")
         except NotReady as why:
             say(f"{ledger}: not resolved yet, {why}")
         except FAILURES as error:
