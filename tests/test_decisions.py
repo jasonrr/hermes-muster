@@ -167,8 +167,32 @@ class World:
         self.merges_anyway = False
         self.merge_lag = 0  # readbacks that still show OPEN after the merge call
         self.lagging = None
+        self.cards, self.keys, self.blocks, self.subscribed = {}, {}, {}, []  # the board, as Hermes keeps it
+        self.kanban_error = None
+
+    def kanban(self, argv):
+        """`hermes kanban` create (by idempotency key), show and block, as Hermes answers them."""
+        verb = argv[4]
+        if self.kanban_error:
+            raise self.kanban_error
+        if verb == "create":
+            key = argv[argv.index("--idempotency-key") + 1]
+            card = self.keys.setdefault(key, f"t_act{len(self.keys) + 1}")
+            self.cards.setdefault(card, {"status": "ready", "body": argv[argv.index("--body") + 1], "title": argv[-1]})
+            return json.dumps({"id": card, "status": self.cards[card]["status"]})
+        if verb == "show":
+            return json.dumps({"task": {"id": argv[5], "status": self.cards[argv[5]]["status"]}, "comments": []})
+        if verb == "block":
+            card = argv[7]
+            assert self.cards[card]["status"] == "ready"
+            self.cards[card].update(status="blocked", reason=argv[8])
+            self.blocks[card] = self.blocks.get(card, 0) + 1
+            return ""
+        raise AssertionError(argv)
 
     def run(self, argv, env=None):
+        if argv[:4] == ["hermes", "kanban", "--board", config.settings["board"]]:
+            return self.kanban(argv)
         self.calls.append((argv, env))
         if argv[0] == "gh" and self.gh_missing:
             raise FileNotFoundError(2, "No such file or directory: 'gh'")
@@ -217,6 +241,7 @@ def world(tmp_path, monkeypatch):
     w = World(tmp_path)
     run = {**RUN, "evidence_dir": str(w.evidence)}
     monkeypatch.setattr(core, "run", w.run)
+    monkeypatch.setattr(core, "subscribe", lambda card, ledger=None: w.subscribed.append((card, ledger)))
     monkeypatch.setattr(decisions, "run_of", lambda ledger: dict(run))
     monkeypatch.setattr(decisions, "READBACK_WAIT", 0, raising=False)
     monkeypatch.setattr(decisions, "SEEN_WAIT", 0, raising=False)
@@ -416,7 +441,8 @@ def test_merge_revalidates_then_squash_merges_pinned_to_the_head_with_the_humans
     monkeypatch.setenv("KEEP_ME", "1")
     rid = build(world, {"action": "merge"})
     decisions.execute(rid, "boot1")
-    assert state(rid) == ("done", "✅ Merged\nMerged into main, as reviewed. Muster does not deploy.")
+    assert state(rid) == ("done", ("✅ Merged\nMerged into main, as reviewed. Activation unknown: no reviewed handoff "
+                                   "matches this merge; see the Activate card."))  # this request predates --activation
     kinds = [a[2] for a, _ in world.calls]
     assert kinds == ["view", "merge", "view"]
     assert world.merge_calls() == [["gh", "pr", "merge", URL, "--squash", "--match-head-commit", HEAD]]
@@ -848,7 +874,82 @@ def test_recover_a_merge_that_landed(world):
     world.pr.update(state="MERGED", mergeCommit={"oid": "c" * 40})
     req = executing(world, "merge")
     decisions.recover(req)
-    assert state(req["id"]) == ("done", decisions.merged(req)) and world.merge_calls() == []
+    assert state(req["id"]) == ("done", decisions.merged(req, *decisions.activate(req, "acme/app")))
+    assert world.merge_calls() == [] and len(world.cards) == 1
+
+
+# -- the activation handoff: one Activate card per merged head, whoever saw the merge ---------------------------
+
+STEPS = "Merge triggers: nothing.\nSteps:\n1. hermes plugins update muster\n2. hermes gateway restart\nVerify live: …"
+
+
+def launched_run():
+    progress.touch("t_1", "launched", "{}")  # the run's activity directory, where the handoff's evidence goes
+
+
+def test_a_merge_with_steps_opens_one_blocked_activate_card_in_the_runs_thread(world):
+    from muster import conversation
+    launched_run()
+    conversation.update("t_1", state="open", chat_id="c", thread_id="790", cards=[])
+    rid = build(world, {"action": "merge"}, activation=STEPS)
+    decisions.execute(rid, "boot1")
+    assert state(rid) == ("done", ("✅ Merged\nMerged into main, as reviewed. Activation not verified: its steps and "
+                                   "check are on the Activate card."))
+    [(card, rec)] = world.cards.items()
+    assert world.keys == {f"muster-activate:t_1:{HEAD}": card} and world.subscribed == [(card, "t_1")]
+    assert rec["status"] == "blocked" and rec["reason"] == "Merged; activation not verified.\n" + STEPS
+    assert rec["title"] == "Activate · T (PR #9)" and URL in rec["body"]
+    assert (progress.activity("t_1") / "activation").read_text() == f"steps {card}"
+
+
+def test_a_matching_none_opens_no_card_and_says_why(world):
+    launched_run()
+    rid = build(world, {"action": "merge"}, activation="none: documentation only.")
+    decisions.execute(rid)
+    assert state(rid)[1].endswith("Nothing to activate: documentation only.") and world.cards == {}
+    assert (progress.activity("t_1") / "activation").read_text() == "none"
+
+
+@pytest.mark.parametrize("text", ["None of the steps but a restart.",
+                                  "Merge triggers a deploy (deploy.yml).\nVerify live: gh run list --workflow deploy.yml"])
+def test_only_none_with_a_colon_is_nothing_and_a_deploy_on_merge_is_not_verified(world, text):
+    rid = build(world, {"action": "merge"}, activation=text)
+    decisions.execute(rid)
+    [rec] = world.cards.values()
+    for shown in (state(rid)[1], rec["reason"]):
+        assert "activation not verified" in shown.lower() and "not active" not in shown.lower()
+
+
+def test_another_recommendation_for_the_merged_head_is_flagged(world):
+    rid = build(world, {"action": "merge"}, activation=STEPS, recommended="send-back")
+    decisions.execute(rid)
+    [rec] = world.cards.values()
+    assert rec["reason"].startswith("Merged; activation not verified.\nCoordinator recommended send-back, not merge")
+
+
+def test_the_handoff_is_idempotent_across_the_tap_its_recovery_and_a_replay(world):
+    world.pr.update(state="MERGED", mergeCommit={"oid": "c" * 40})
+    req = executing(world, "merge")
+    decisions.update(req["id"], activation=STEPS)
+    for _ in range(2):
+        decisions.handoff("t_1", "acme/app", 9, HEAD)
+    decisions.recover(decisions.load(req["id"]))
+    assert len(world.cards) == 1 and list(world.blocks.values()) == [1] and len(world.subscribed) == 1
+
+
+def test_another_head_merged_later_gets_its_own_card(world):
+    decisions.handoff("t_1", "acme/app", 9, HEAD)
+    decisions.handoff("t_1", "acme/app", 9, "b" * 40)
+    assert len(world.cards) == 2
+
+
+def test_a_failed_handoff_never_fails_the_merge_that_landed(world):
+    world.kanban_error = core.LaunchError("the notify+wake subscription did not read back")
+    rid = build(world, {"action": "merge"}, activation=STEPS)
+    decisions.execute(rid)
+    status, outcome = state(rid)
+    assert status == "done" and outcome.startswith("✅ Merged\nMerged into main, as reviewed. Activation not verified")
+    assert "cleanup retries it" in outcome and URL in outcome
 
 
 def test_recover_a_merge_that_did_not_fails_and_offers_a_fresh_build_request(world):

@@ -316,8 +316,8 @@ def summary_of(args, kind, review):
                          f"shorten it (the full review is attached as a file)")
     shown = (text or review).lower()
     if kind == "build" and not ("merge triggers" in shown and "after merge" in shown):
-        raise ValueError("the summary must say what a merge triggers and what is left after it "
-                         "(\"Merge triggers: …\" and \"After merge: …\")")
+        raise ValueError(f"the {'summary' if text is not None else 'review (the card shows it whole)'} must say what a "
+                         f"merge triggers and what is left after it (\"Merge triggers: …\" and \"After merge: …\")")
     return text
 
 
@@ -379,7 +379,8 @@ def recommend(args):
     text = card(f"🟡 {pr} · {short(run)}", LEADS[args.choice].format(who=who()), feedback, summary or review,
                 sending=args.choice == "send-back")
     req = create("build", args.ledger, run=run, head=args.head, base=run["base"], pr=args.pr, review=review,
-                 summary=summary, feedback=feedback, activation=activation, cycle=1 + sent, proposal=None, wait=None, actions=order,
+                 summary=summary, feedback=feedback,
+                 activation=activation, cycle=1 + sent, proposal=None, wait=None, actions=order,
                  choices=[[labels[a] for a in order]], recommended=args.choice,
                  hints=[f"• {labels[a]}: {hints[a]}" for a in order],
                  questions=[{"text": text, "header": "Build", "multi": False,
@@ -784,7 +785,7 @@ def _merge(req, boot):
         except (core.CommandError, ValueError):
             continue
         if state.get("state") == "MERGED":
-            transition(rid, ("executing",), "done", outcome=merged(req))
+            transition(rid, ("executing",), "done", outcome=merged(req, *activate(req, run["repo"])))
             return
     if error:
         fail(rid, error)
@@ -803,8 +804,85 @@ def fresh(req):
         "actions", "choices", "questions", "recommended", "hints") if k in req})
 
 
-def merged(req):
-    return f"✅ Merged\nMerged into {req['base']}, as reviewed. Muster does not deploy."
+def merged(req, kind, text):
+    """The Merge tap's outcome: merged, and what is known about activation (`activate`'s kind and text). A merge
+    proves only the merge, so it never says the change is live, nor that it is not."""
+    after = {"steps": "Activation not verified: its steps and check are on the Activate card.",
+             "unknown": "Activation unknown: no reviewed handoff matches this merge; see the Activate card.",
+             "none": f"Nothing to activate: {text.rstrip('.')}.",
+             "pending": f"Activation not verified: Muster could not open the Activate card yet; cleanup retries it. "
+                        f"Steps: the pull request's Activation section, {text}"}[kind]
+    return f"✅ Merged\nMerged into {req['base']}, as reviewed. {after}"
+
+
+# -- the activation handoff: what is left after a merge, on one Activate card per merged head -----------------
+
+NONE = re.compile(r"none:", re.IGNORECASE)
+
+
+def pr_number(url):
+    found = re.search(r"/pull/(\d+)", url or "")
+    return int(found[1]) if found else None
+
+
+def activation_for(ledger, repo, number, head):
+    """(kind, text, url) for the pull request `number` merged at `head`: the coordinator's checked handoff from a build
+    request for that head ("steps", or "none" with its reason), else "unknown". A merge recommendation wins; another
+    one's handoff is used but says what was recommended."""
+    url = f"https://github.com/{repo}/pull/{number}"
+    found = [r for r in for_ledger(ledger, "build")
+             if pr_number(r.get("pr")) == number and r.get("head") == head and r.get("activation")]
+    match = next((r for r in found if r.get("recommended") == "merge"), found[0] if found else None)
+    if match is None:
+        return "unknown", (f"Activation unknown: no reviewed handoff matches the merged commit. The builder's unreviewed "
+                           f"Activation section is in {url}. Ask {who()} to check it."), url
+    text = match["activation"]
+    if NONE.match(text):
+        return "none", text[len("none:"):].strip(), url
+    if match.get("recommended") not in (None, "merge"):
+        text = f"{who()} recommended {match.get('recommended')}, not merge, for this commit; check before activating.\n{text}"
+    return "steps", f"Merged; activation not verified.\n{text}", url
+
+
+def handoff(ledger, repo, number, head):
+    """Every merge Muster learns of (the Merge tap, its recovery, cleanup.resolve): open the Activate card for that head
+    unless there is nothing to activate, and record the kind for the status line. Safe to repeat, from either process:
+    the card's idempotency key is the head, and the lock keeps the gateway and cron from both blocking it. Returns the
+    kind."""
+    from . import conversation
+
+    kind, text, url = activation_for(ledger, repo, number, head)
+    if kind == "none":
+        progress.touch(ledger, "activation", "none")
+        return kind
+    builds = for_ledger(ledger, "build")
+    run = next((r["run"] for r in builds if r.get("run")), None) or {"title": "", "repo": repo, "card": ledger}
+    with locked(f"activate-{ledger}"):
+        card = json.loads(core.kanban(
+            "create", "--body", f"Activation handoff. ledger {ledger} | {url} | head {head}\n{text}\n{core.PROVENANCE}",
+            "--idempotency-key", f"muster-activate:{ledger}:{head}", "--created-by", core.CREATED_BY, "--json",
+            "--", f"Activate · {short(run)} ({progress.pr_name(url)})"))
+        if card["status"] == "ready":
+            ref = conversation.load(ledger) or {}
+            # in the run's thread while it is open; a closed one may refuse the ping, so the main chat then
+            core.subscribe(card["id"], ledger if ref.get("state") == "open" and not ref.get("resolved_at") else None)
+            core.kanban("block", "--kind", "needs_input", card["id"], text)  # text starts "Merged;" or "Activation"
+            events.expect(card["id"], "blocked", "activation handoff")
+    progress.touch(ledger, "activation", f"{kind} {card['id']}")
+    return kind
+
+
+def activate(req, repo):
+    """The handoff for the merge a Merge tap made: (kind, text) for `merged`. Never raises: the pull request merged,
+    so a failure here is logged and `pending`, and cleanup.resolve opens the card on its next pass."""
+    number = pr_number(req["pr"])
+    try:
+        kind, text, _ = activation_for(req["ledger"], repo, number, req["head"])
+        handoff(req["ledger"], repo, number, req["head"])
+        return kind, text
+    except Exception as caught:  # noqa: BLE001 - a side step after an irreversible merge must not fail it
+        core.log("decisions", f"{req['id']}: activation handoff: {caught}")
+        return "pending", f"https://github.com/{repo}/pull/{number}"
 
 
 def wire_text(req, run, text):
@@ -888,7 +966,7 @@ def _recover(req):
             fail(rid, "interrupted; not merged (could not read the pull request)")
             return
         if pr.get("state") == "MERGED" and pr.get("headRefOid") == req["head"]:
-            transition(rid, ("executing",), "done", outcome=merged(req))
+            transition(rid, ("executing",), "done", outcome=merged(req, *activate(req, req["run"]["repo"])))
             return
         if pr.get("state") == "OPEN" and pr.get("headRefOid") == req["head"]:  # unchanged: the human may click again
             fresh(req)
