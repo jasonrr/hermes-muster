@@ -46,6 +46,8 @@ def setup(parser):
     p.add_argument("--review", required=True, help="file with the review text")
     p.add_argument("--feedback", default=None, help="file with the feedback to send the agent (needed for send-back)")
     p.add_argument("--summary", default=None, help="file with the card's short summary; the review stays whole above it")
+    p.add_argument("--activation", required=True, help="file with the checked activation handoff; its text is "
+                                                         "'none: <why>' when there is nothing to activate")
     p = sub.add_parser("recommend-design", help="record the coordinator's review of one proposal version")
     p.add_argument("ledger")
     p.add_argument("--proposal", required=True, help="v<n>:<sha>, as in the design review card's heading")

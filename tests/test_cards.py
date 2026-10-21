@@ -19,9 +19,10 @@ GOLDEN = Path(__file__).parent / "golden" / "cards"
 FEEDBACK = ("In README.md, remove “Decide from your phone” from the benefits list. Describe chat (Slack or Telegram) "
             "as where you make decisions, not as a distinguishing benefit. Change nothing else.")
 SEND_BACK = ("README still lists “Decide from your phone” as a benefit; you asked for chat to be described as the "
-             "interface. Everything else meets the brief.\nDeploy on merge: none (documentation only).")
+             "interface. Everything else meets the brief.\nMerge triggers: nothing (documentation only).\n"
+             "After merge: nothing to activate.")
 MERGE = ("Docs-only change; README is now a 140-line manual and every link resolves.\n"
-         "Deploy on merge: none (documentation only).")
+         "Merge triggers: nothing (documentation only).\nAfter merge: nothing to activate.")
 DESIGN = ("It splits Muster into three parts: intake reads GitHub issues and starts runs, the launcher starts and "
           "recovers coding agents, and delivery carries their events to you. Nothing changes in behavior.\n"
           "- Limit: imports move, so open branches may need a rebase.")
@@ -110,7 +111,7 @@ def test_decision_cards(cards):
     compare(cards.shown)
     off = cards.shown["pr-send-back-hints-off"]
     assert "What each button does" not in off and "Enter sends" not in off
-    for kept in ("recommends sending it back", "> In README.md", "Deploy on merge", "[ Send back with this feedback ]*",
+    for kept in ("recommends sending it back", "> In README.md", "Merge triggers", "[ Send back with this feedback ]*",
                  "[ Merge PR #9 ]", "[ Leave PR open ]"):
         assert kept in off, kept
     for text in cards.shown.values():  # no hash, ledger id or "(recommended)" in what the human decides from

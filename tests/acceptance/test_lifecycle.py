@@ -277,11 +277,12 @@ def to_pr_card(rig, token, subtests, choice, feedback=None):
     works(rig, card_id, brief)
     rig.world.pr = PR
     head = rig.world.pr_record()["headRefOid"]
-    review, summary = rig.root / "review.md", rig.root / "summary.md"
+    review, summary, activation = rig.root / "review.md", rig.root / "summary.md", rig.root / "activation.md"
     review.write_text("The change is small and tested.\n")
-    summary.write_text("Small and tested.\nDeploy on merge: none.\n")
+    summary.write_text("Small and tested.\nMerge triggers: nothing.\nAfter merge: nothing to activate.\n")
+    activation.write_text("none: tests only.\n")
     command = f"hermes muster recommend {card_id} --pr {PR} --head {head} --choice {choice} --review {review} " \
-              f"--summary {summary}"
+              f"--summary {summary} --activation {activation}"
     if feedback:
         (rig.root / "feedback.md").write_text(feedback)
         command += f" --feedback {rig.root / 'feedback.md'}"

@@ -33,7 +33,8 @@ def parse(argv):
         ["hook", "duplicate", "494", "same"],
         ["launch", "--cwd", ".", "--branch", "feat/x", "--title", "t", "--brief", "b"],
         ["open", "--cwd", ".", "--label", "x"],
-        ["recommend", "t_1", "--pr", "u", "--head", "h", "--choice", "send-back", "--review", "r", "--feedback", "f"],
+        ["recommend", "t_1", "--pr", "u", "--head", "h", "--choice", "send-back", "--review", "r", "--feedback", "f",
+         "--activation", "a"],
     ],
 )
 def test_parser_accepts(argv):
@@ -118,7 +119,8 @@ def test_recommend_needs_a_valid_choice():
 
 def test_recommend_dispatches_to_decisions(monkeypatch):
     monkeypatch.setitem(sys.modules, "muster.decisions", types.SimpleNamespace(recommend=lambda args: 1))
-    args = parse(["recommend", "t_1", "--pr", "u", "--head", "h", "--choice", "merge", "--review", "r"])
+    args = parse(["recommend", "t_1", "--pr", "u", "--head", "h", "--choice", "merge", "--review", "r",
+                  "--activation", "a"])
     assert cli.main(args, StubCtx()) == 1
 
 

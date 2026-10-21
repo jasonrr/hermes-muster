@@ -305,19 +305,19 @@ def short(run):
 
 def summary_of(args, kind, review):
     """The coordinator's card summary (`--summary`), or None: the card then shows the whole review, so a review longer
-    than a summary needs one. Refused, never cut, when it is too long; a build's must state the deploy consequence,
-    which no card may hide."""
-    if not getattr(args, "summary", None):
-        if len(review) > SUMMARY_MAX:
-            raise ValueError(f"the review is {len(review)} characters, over {SUMMARY_MAX}: give the card a --summary "
-                             f"(the full review is attached as a file)")
-        return None
-    text = read_text(args.summary, "summary")
-    if len(text) > SUMMARY_MAX:
+    than a summary needs one. Refused, never cut, when it is too long. A build card, summary or review, must say what a
+    merge triggers and what is left after it, which no card may hide."""
+    text = read_text(args.summary, "summary") if getattr(args, "summary", None) else None
+    if text is None and len(review) > SUMMARY_MAX:
+        raise ValueError(f"the review is {len(review)} characters, over {SUMMARY_MAX}: give the card a --summary "
+                         f"(the full review is attached as a file)")
+    if text is not None and len(text) > SUMMARY_MAX:
         raise ValueError(f"the summary is {len(text)} characters, over {SUMMARY_MAX}: the card shows it whole, so "
                          f"shorten it (the full review is attached as a file)")
-    if kind == "build" and "deploy" not in text.lower():
-        raise ValueError("the summary must state the deploy consequence (\"Deploy on merge: …\" or \"unknown\")")
+    shown = (text or review).lower()
+    if kind == "build" and not ("merge triggers" in shown and "after merge" in shown):
+        raise ValueError("the summary must say what a merge triggers and what is left after it "
+                         "(\"Merge triggers: …\" and \"After merge: …\")")
     return text
 
 
@@ -350,6 +350,10 @@ def recommend(args):
             raise ValueError(f"the feedback is {len(feedback)} characters, over {FEEDBACK_MAX}: the human must see "
                              f"all of it on the message, so shorten it")
         summary = summary_of(args, "build", review)
+        activation = read_text(args.activation, "activation")
+        if len(activation) > FEEDBACK_MAX:
+            raise ValueError(f"the activation is {len(activation)} characters, over {FEEDBACK_MAX}: shorten it; the "
+                             f"pull request's own Activation section can hold the rest")
         for req in for_ledger(args.ledger, "build"):
             if req["status"] == "open" and req.get("head") == args.head:
                 print("an open build request already exists for this head; the new text was ignored", file=sys.stderr)
@@ -375,7 +379,7 @@ def recommend(args):
     text = card(f"🟡 {pr} · {short(run)}", LEADS[args.choice].format(who=who()), feedback, summary or review,
                 sending=args.choice == "send-back")
     req = create("build", args.ledger, run=run, head=args.head, base=run["base"], pr=args.pr, review=review,
-                 summary=summary, feedback=feedback, cycle=1 + sent, proposal=None, wait=None, actions=order,
+                 summary=summary, feedback=feedback, activation=activation, cycle=1 + sent, proposal=None, wait=None, actions=order,
                  choices=[[labels[a] for a in order]], recommended=args.choice,
                  hints=[f"• {labels[a]}: {hints[a]}" for a in order],
                  questions=[{"text": text, "header": "Build", "multi": False,
@@ -795,8 +799,8 @@ def _merge(req, boot):
 def fresh(req):
     """The same build card again, open, for a tap that could not act: the human decides again from it."""
     return create("build", req["ledger"], **{k: req[k] for k in (  # only what it has: no `hints` on a pre-#58 card
-        "run", "head", "base", "pr", "review", "summary", "feedback", "cycle", "proposal", "wait", "actions", "choices",
-        "questions", "recommended", "hints") if k in req})
+        "run", "head", "base", "pr", "review", "summary", "feedback", "activation", "cycle", "proposal", "wait",
+        "actions", "choices", "questions", "recommended", "hints") if k in req})
 
 
 def merged(req):

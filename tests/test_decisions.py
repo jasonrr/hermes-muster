@@ -231,28 +231,55 @@ def files(tmp_path, review="Looks good.", feedback=None):
     return str(tmp_path / "review.md"), (str(tmp_path / "fb.md") if feedback is not None else None)
 
 
-def rec_args(tmp_path, choice="merge", head=HEAD, pr=URL, review="Looks good.", feedback=None, summary=None):
+LINES = "\nMerge triggers: nothing.\nAfter merge: nothing to activate."  # every build card states both
+
+
+def rec_args(tmp_path, choice="merge", head=HEAD, pr=URL, review="Looks good." + LINES, feedback=None, summary=None,
+             activation="none: tests only."):
     r, f = files(tmp_path, review, feedback)
     if summary is not None:
         (tmp_path / "summary.md").write_text(summary)
+    (tmp_path / "activation.md").write_text(activation)
     return argparse.Namespace(ledger="t_1", pr=pr, head=head, choice=choice, review=r, feedback=f,
-                              summary=str(tmp_path / "summary.md") if summary is not None else None)
+                              summary=str(tmp_path / "summary.md") if summary is not None else None,
+                              activation=str(tmp_path / "activation.md"))
 
 
 def test_a_summary_is_the_card_and_the_review_stays_whole(world, tmp_path, capsys):
     long = "Detail. " * 1000
-    assert decisions.recommend(rec_args(tmp_path, review=long, summary="Right and tested.\nDeploy on merge: none.")) == 0
+    assert decisions.recommend(rec_args(tmp_path, review=long, summary="Right and tested." + LINES)) == 0
     req = decisions.load(capsys.readouterr().out.strip())
-    assert req["review"] == long.strip() and req["summary"] == "Right and tested.\nDeploy on merge: none."
+    assert req["review"] == long.strip() and req["summary"] == "Right and tested." + LINES
     assert req["questions"][0]["text"] == ("**🟡 PR #9 · T**\n**Coordinator recommends merging it.**\n\n"
-                                           "Right and tested.\nDeploy on merge: none.")
+                                           "Right and tested." + LINES)
 
 
-@pytest.mark.parametrize("summary, why", [("x deploy " * 200, "over 900"), ("Right and tested.", "deploy consequence")])
-def test_a_summary_too_long_or_without_the_deploy_consequence_is_refused_not_cut(world, tmp_path, capsys, summary,
-                                                                                 why):
+@pytest.mark.parametrize("summary, why", [("x deploy " * 200, "over 900"), ("Right and tested.", "merge triggers"),
+                                          ("Right.\nDeploy on merge: none.", "merge triggers"),
+                                          ("Right.\nMerge triggers: nothing.", "merge triggers")])
+def test_a_summary_too_long_or_without_the_merge_and_activation_lines_is_refused_not_cut(world, tmp_path, capsys,
+                                                                                         summary, why):
     assert decisions.recommend(rec_args(tmp_path, summary=summary)) == 1
     assert why in capsys.readouterr().err and decisions.for_ledger("t_1") == []
+
+
+def test_a_short_review_shown_whole_needs_the_lines_too(world, tmp_path, capsys):
+    assert decisions.recommend(rec_args(tmp_path, review="Looks good.")) == 1
+    assert "merge triggers" in capsys.readouterr().err and decisions.for_ledger("t_1") == []
+
+
+def test_the_checked_handoff_is_stored_whole_and_refused_when_too_long(world, tmp_path, capsys):
+    handoff = "Merge triggers: nothing.\nSteps:\n1. hermes plugins update muster\n2. hermes gateway restart"
+    assert decisions.recommend(rec_args(tmp_path, activation=handoff)) == 0
+    req = decisions.load(capsys.readouterr().out.strip())
+    assert req["activation"] == handoff and decisions.fresh(req)["activation"] == handoff
+    for r in decisions.for_ledger("t_1", "build"):
+        decisions.transition(r["id"], ("open",), "stale")
+    made = len(decisions.for_ledger("t_1", "build"))
+    assert decisions.recommend(rec_args(tmp_path, activation="x" * (decisions.FEEDBACK_MAX + 1))) == 1
+    err = capsys.readouterr().err
+    assert "activation" in err and str(decisions.FEEDBACK_MAX) in err
+    assert len(decisions.for_ledger("t_1", "build")) == made  # refused, never cut: nothing new was recorded
 
 
 def test_recommend_creates_the_build_request(world, tmp_path, capsys):
@@ -264,7 +291,7 @@ def test_recommend_creates_the_build_request(world, tmp_path, capsys):
     assert req["actions"] == ["send-back", "merge", "nothing"] and req["recommended"] == "send-back"
     # the feedback the tap sends is on the card, whole and quoted, before the reason
     assert req["questions"] == [{"text": "**🟡 PR #9 · T**\n**Coordinator recommends sending it back with this "
-                                         "feedback:**\n> Fix the null case.\n\n**Why**\nLooks good.",
+                                         "feedback:**\n> Fix the null case.\n\n**Why**\nLooks good." + LINES,
                                  "header": "Build", "multi": False, "options": [
         {"label": label, "description": ""} for label in req["choices"][0]]}]
     assert req["hints"] == [
@@ -272,7 +299,7 @@ def test_recommend_creates_the_build_request(world, tmp_path, capsys):
         "merged.", "• Merge PR #9: puts it into main now, as it stands. Muster does not deploy.",
         "• Leave PR open: nothing changes."]
     assert (req["head"], req["base"], req["pr"], req["cycle"]) == (HEAD, "main", URL, 1)
-    assert req["review"] == "Looks good." and req["feedback"] == "Fix the null case."
+    assert req["review"] == "Looks good." + LINES and req["feedback"] == "Fix the null case."
     assert req["run"]["pane"] == "p_1" and req["run"]["repo"] == "acme/app"
 
 
@@ -286,7 +313,7 @@ def test_recommended_choice_goes_first(world, tmp_path, capsys, choice, first):
 
 def test_texts_are_redacted(world, tmp_path, capsys):
     token = "ghp_" + "x" * 20
-    decisions.recommend(rec_args(tmp_path, "send-back", review=f"saw {token}", feedback=f"use {token}"))
+    decisions.recommend(rec_args(tmp_path, "send-back", review=f"saw {token}" + LINES, feedback=f"use {token}"))
     req = decisions.load(capsys.readouterr().out.strip())
     assert token not in json.dumps(req) and "[redacted]" in req["review"] and "[redacted]" in req["feedback"]
 
@@ -349,12 +376,12 @@ def test_older_open_build_requests_are_staled(world, tmp_path, capsys):
 
 
 def test_the_same_head_again_returns_the_open_request_and_ignores_the_new_text(world, tmp_path, capsys):
-    decisions.recommend(rec_args(tmp_path, review="first"))
+    decisions.recommend(rec_args(tmp_path, review="first" + LINES))
     first = capsys.readouterr().out.strip()
-    assert decisions.recommend(rec_args(tmp_path, "nothing", review="second")) == 0
+    assert decisions.recommend(rec_args(tmp_path, "nothing", review="second" + LINES)) == 0
     captured = capsys.readouterr()
     assert captured.out.strip() == first and "ignored" in captured.err
-    assert decisions.load(first)["review"] == "first" and len(decisions.for_ledger("t_1")) == 1
+    assert decisions.load(first)["review"] == "first" + LINES and len(decisions.for_ledger("t_1")) == 1
 
 
 # -- execute (task 6) -----------------------------------------------------------------------------
@@ -1314,7 +1341,7 @@ def test_a_long_review_without_a_summary_is_refused_so_no_card_carries_it_whole(
     (tmp_path / "review.md").write_text(long)
     assert decisions.recommend_design(args) == 1
     assert "--summary" in capsys.readouterr().err
-    assert decisions.recommend(rec_args(tmp_path, review="x" * decisions.SUMMARY_MAX)) == 0  # short: the card holds it
+    assert decisions.recommend(rec_args(tmp_path, review="x" * (decisions.SUMMARY_MAX - len(LINES)) + LINES)) == 0  # short: the card holds it
 
 
 def test_a_cards_documents_are_the_pinned_proposal_and_the_whole_review(world, tmp_path, capsys):
@@ -1332,9 +1359,9 @@ def test_a_cards_documents_are_the_pinned_proposal_and_the_whole_review(world, t
     (events.proposals("t_1") / "v2.md").write_text("changed after the review")
     with pytest.raises(ValueError, match="Design v2"):
         shared.documents(design)  # a changed file is never sent under the reviewed version's name
-    assert decisions.recommend(rec_args(tmp_path, review="Detail. " * 300, summary="Right.\nDeploy on merge: none.")) == 0
+    assert decisions.recommend(rec_args(tmp_path, review="Detail. " * 300, summary="Right." + LINES)) == 0
     build = decisions.load(capsys.readouterr().out.strip())
     assert shared.documents(build) == [(f"{slug}-pr-9-review-{HEAD[:7]}.md", ("Detail. " * 300).strip())]
     decisions.transition(build["id"], ("open",), "stale")
-    assert decisions.recommend(rec_args(tmp_path, review="Short.")) == 0  # no summary: the card is the review
+    assert decisions.recommend(rec_args(tmp_path, review="Short." + LINES)) == 0  # no summary: the card is the review
     assert shared.documents(decisions.load(capsys.readouterr().out.strip())) == []
