@@ -809,7 +809,7 @@ def merged(req, kind, text):
     proves only the merge, so it never says the change is live, nor that it is not."""
     after = {"steps": "Activation not verified: its steps and check are on the Activate card.",
              "unknown": "Activation unknown: no reviewed handoff matches this merge; see the Activate card.",
-             "none": f"Nothing to activate: {text.rstrip('.')}.",
+             "none": f"Nothing to activate: {text.rstrip('.')}." if text.strip(" .") else "Nothing to activate.",
              "pending": f"Activation not verified: Muster could not open the Activate card yet; cleanup retries it. "
                         f"Steps: the pull request's Activation section, {text}"}[kind]
     return f"✅ Merged\nMerged into {req['base']}, as reviewed. {after}"
@@ -872,17 +872,19 @@ def handoff(ledger, repo, number, head):
     return kind
 
 
-def activate(req, repo):
+def activate(req, repo=None):
     """The handoff for the merge a Merge tap made: (kind, text) for `merged`. Never raises: the pull request merged,
     so a failure here is logged and `pending`, and cleanup.resolve opens the card on its next pass."""
-    number = pr_number(req["pr"])
     try:
+        repo = repo or (req.get("run") or run_of(req["ledger"]))["repo"]
+        number = pr_number(req["pr"])
         kind, text, _ = activation_for(req["ledger"], repo, number, req["head"])
         handoff(req["ledger"], repo, number, req["head"])
         return kind, text
     except Exception as caught:  # noqa: BLE001 - a side step after an irreversible merge must not fail it
-        core.log("decisions", f"{req['id']}: activation handoff: {caught}")
-        return "pending", f"https://github.com/{repo}/pull/{number}"
+        with contextlib.suppress(OSError):  # nor may an unwritable log
+            core.log("decisions", f"{req['id']}: activation handoff: {caught}")
+        return "pending", req.get("pr") or "the pull request"
 
 
 def wire_text(req, run, text):
@@ -966,7 +968,7 @@ def _recover(req):
             fail(rid, "interrupted; not merged (could not read the pull request)")
             return
         if pr.get("state") == "MERGED" and pr.get("headRefOid") == req["head"]:
-            transition(rid, ("executing",), "done", outcome=merged(req, *activate(req, req["run"]["repo"])))
+            transition(rid, ("executing",), "done", outcome=merged(req, *activate(req)))
             return
         if pr.get("state") == "OPEN" and pr.get("headRefOid") == req["head"]:  # unchanged: the human may click again
             fresh(req)

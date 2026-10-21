@@ -943,6 +943,22 @@ def test_another_head_merged_later_gets_its_own_card(world):
     assert len(world.cards) == 2
 
 
+def test_a_none_without_a_reason_reads_cleanly(world):
+    rid = build(world, {"action": "merge"}, activation="none:")
+    decisions.execute(rid)
+    assert state(rid)[1].endswith("as reviewed. Nothing to activate.")
+
+
+def test_a_recovered_merge_whose_request_lacks_a_run_and_an_unwritable_log_still_end_done(world, monkeypatch):
+    world.pr.update(state="MERGED", mergeCommit={"oid": "c" * 40})
+    req = executing(world, "merge")
+    decisions.update(req["id"], run=None)
+    world.kanban_error = core.CommandError("hermes kanban: exit 1")
+    monkeypatch.setattr(core, "log", lambda *a: (_ for _ in ()).throw(OSError("read-only")))
+    decisions.recover(decisions.load(req["id"]))
+    assert state(req["id"])[0] == "done" and "Activation not verified" in state(req["id"])[1]
+
+
 def test_a_failed_handoff_never_fails_the_merge_that_landed(world):
     world.kanban_error = core.LaunchError("the notify+wake subscription did not read back")
     rid = build(world, {"action": "merge"}, activation=STEPS)
