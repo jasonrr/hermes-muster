@@ -179,6 +179,29 @@ def test_finished_only_once_the_work_resolved():
     assert state(ref={"state": "closing", "resolved_at": 5})[1] == "✅ Finished · PR #9 merged"
 
 
+def test_a_resolved_runs_final_line_is_history_and_points_at_its_activate_card():
+    launched()
+    at("review", NOW - 600, "https://github.com/o/r/pull/9")
+    resolved = {"state": "closing", "resolved_at": 5}
+    lines = {}
+    for activation in ("steps t_act1", "unknown t_act1", "none"):
+        at("activation", NOW - 60, activation)
+        lines[activation] = state(ref=resolved)
+        assert lines[activation][0] == "finished" and lines[activation][2] is True
+    assert lines["steps t_act1"][1] == ("✅ PR #9 merged · activation not verified at merge; current state on its "
+                                       "Activate card")
+    assert lines["unknown t_act1"][1] == "✅ PR #9 merged · activation unknown; current state on its Activate card"
+    assert lines["none"][1] == "✅ Finished · PR #9 merged · nothing to activate"
+    for line in (lines["steps t_act1"][1], lines["unknown t_act1"][1]):  # true after a verified completion too
+        assert "not active" not in line and "Finished" not in line
+
+
+def test_a_run_resolved_before_activation_handoffs_keeps_its_line():
+    launched()
+    at("review", NOW - 600, "https://github.com/o/r/pull/9")
+    assert state(ref={"state": "closing", "resolved_at": 5})[1] == "✅ Finished · PR #9 merged"
+
+
 def test_archived_is_final():
     launched()
     assert state(archived=True) == ("archived", "Archived", True)

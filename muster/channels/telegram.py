@@ -619,7 +619,7 @@ async def topic_step(ref):
     elif state == "closing" and shared.now() >= ref.get("retry_at", 0):
         if not ref.get("said"):  # once
             try:
-                await T.adapter.send(chat, "Finished. This topic is now closed.",
+                await T.adapter.send(chat, "Merged. This topic is now closed.",
                                      metadata={"thread_id": ref["thread_id"]})
             except Exception as caught:  # noqa: BLE001
                 log(f"{ledger}: finish note: {caught}")

@@ -207,7 +207,12 @@ def state(ledger, now, waits, ref, archived):
     if archived is True or ref.get("state") in ("retiring", "deleted"):
         return "archived", "Archived", True
     if ref.get("resolved_at"):  # cleanup saw the merge; a human's close of the topic is not this
-        return "finished", f"✅ Finished · {pr_name(read('review'))} merged", True
+        # Final, so never read again: it states the merge and what was known then; the Activate card is current.
+        pr, kind = pr_name(read("review")), read("activation").split(" ")[0]
+        if kind in ("steps", "unknown"):
+            known = "activation not verified at merge" if kind == "steps" else "activation unknown"
+            return "finished", f"✅ {pr} merged · {known}; current state on its Activate card", True
+        return "finished", f"✅ Finished · {pr} merged" + (" · nothing to activate" if kind == "none" else ""), True
     try:
         launch = json.loads((activity(ledger) / "launched").read_text())
         seen = launcher.seen_at(launch["dir"], launch["sha256"])
