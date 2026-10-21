@@ -834,13 +834,14 @@ def activation_for(ledger, repo, number, head):
              if pr_number(r.get("pr")) == number and r.get("head") == head and r.get("activation")]
     match = next((r for r in found if r.get("recommended") == "merge"), found[0] if found else None)
     if match is None:
-        return "unknown", (f"Activation unknown: no reviewed handoff matches the merged commit. The builder's unreviewed "
-                           f"Activation section is in {url}. Ask {who()} to check it."), url
+        return "unknown", (f"Activation unknown: no reviewed handoff matches the merged commit. The builder's "
+                           f"unreviewed Activation section is in {url}. Ask {who()} to check it."), url
     text = match["activation"]
     if NONE.match(text):
         return "none", text[len("none:"):].strip(), url
     if match.get("recommended") not in (None, "merge"):
-        text = f"{who()} recommended {match.get('recommended')}, not merge, for this commit; check before activating.\n{text}"
+        text = (f"{who()} recommended {match.get('recommended')}, not merge, for this commit; check before "
+                f"activating.\n{text}")
     return "steps", f"Merged; activation not verified.\n{text}", url
 
 

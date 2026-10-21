@@ -1168,6 +1168,7 @@ def test_the_launchs_fallback_beats_a_late_create(forum):
 
 def test_a_finished_run_closes_its_topic_once_and_keeps_it(forum):
     thread = opened(forum)
+    conversation.update("led1", resolved_at=1)  # cleanup saw the merge
     conversation.finish("led1")
     tick(forum, 0, n=3)
     assert conversation.load("led1")["state"] == "closed" and int(thread) in forum.bot.closed
@@ -1175,6 +1176,13 @@ def test_a_finished_run_closes_its_topic_once_and_keeps_it(forum):
     assert [n for n in forum.adapter.notes if "closed" in n[1]] == [
         (GROUP_CHAT, "Merged. This topic is now closed.",  # merged, not "finished": activation is the Activate card's
          thread)]
+
+
+def test_a_run_closed_without_a_merge_never_says_merged(forum):
+    opened(forum)
+    conversation.finish("led1")  # e.g. archived unmerged, then its worktree removed
+    tick(forum, 0, n=3)
+    assert [n[1] for n in forum.adapter.notes if "closed" in n[1]] == ["This topic is now closed."]
 
 
 def test_a_request_for_a_closed_run_reopens_its_topic_first(forum):

@@ -619,7 +619,8 @@ async def topic_step(ref):
     elif state == "closing" and shared.now() >= ref.get("retry_at", 0):
         if not ref.get("said"):  # once
             try:
-                await T.adapter.send(chat, "Merged. This topic is now closed.",
+                # "Merged" only when cleanup saw the merge: a run archived unmerged closes here too
+                await T.adapter.send(chat, ("Merged. " if ref.get("resolved_at") else "") + "This topic is now closed.",
                                      metadata={"thread_id": ref["thread_id"]})
             except Exception as caught:  # noqa: BLE001
                 log(f"{ledger}: finish note: {caught}")
