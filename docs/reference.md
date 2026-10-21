@@ -26,7 +26,7 @@ You run few of these by hand. Cron runs `tick`, `cleanup` and `flush`; your Herm
 | `hermes muster recover <card> [--resend] [--adopt]` | you | Retries a failed launch. See [recovery](#recovery). |
 | `hermes muster cleanup [--dry-run]` | cron, every 5 minutes | Removes finished workspaces. `--dry-run` reports what it would do. |
 | `hermes muster flush` | cron, every minute | Delivers hook events a pane could not deliver itself. |
-| `hermes muster recommend <ledger> --pr <url> --head <sha> --choice merge\|send-back\|nothing --review <file> [--summary <file>] [--feedback <file>]` | Hermes agent | Records the build review you decide on. |
+| `hermes muster recommend <ledger> --pr <url> --head <sha> --choice merge\|send-back\|nothing --review <file> --activation <file> [--summary <file>] [--feedback <file>]` | Hermes agent | Records the build review you decide on, with its checked activation handoff. |
 | `hermes muster recommend-design <ledger> --proposal v<n>:<sha> --choice approve\|revise\|judgment --review <file> [--summary <file>] [--feedback <file>]` | Hermes agent | Records the design review you decide on. |
 | `hermes muster hook <event> [--card <card>]` | builder and its hooks | Events: `notification`, `prompt`, `stop`, `session-end`, `permission` (hooks); `done <PR url>`, `propose <file>`, `duplicate <n> same\|different` (builder). |
 
@@ -159,8 +159,10 @@ Your Hermes agent cannot answer the builder's question itself.
 
 When the pull request is ready, the run's status message says "<coordinator> is reviewing PR #<n> · nothing
 to decide yet" (no separate ping). Your Hermes agent reads the diff, the surrounding code, the checks, the builder's review log and
-the production note, and records one recommendation: merge, send back, or nothing. You get its full
-review, then a decision card whose summary (at most 900 characters) states what a merge deploys.
+the production note, and records one recommendation: merge, send back, or nothing. It also checks the
+pull request's `## Activation` section against the diff and records the checked handoff. You get its full
+review, then a decision card whose summary (at most 900 characters) says what a merge triggers ("Merge
+triggers: …") and what is left after it ("After merge: …").
 
 - **Leave PR open** records your choice.
 - **Merge** first re-checks that the pull request is still the run's own (same branch, base and
@@ -168,7 +170,8 @@ review, then a decision card whose summary (at most 900 characters) states what 
   mergeable (`mergeStateStatus` CLEAN, HAS_HOOKS or UNSTABLE). Required checks are GitHub's call, so
   without branch protection a red check does not block it. Muster then runs
   `gh pr merge --squash --match-head-commit <sha>` with **your own** `gh` login, not the bot's, and reads
-  back MERGED before saying it merged. A merge never implies a deploy.
+  back MERGED before saying it merged. A merge never implies a deploy: the message says "Activation not
+  verified" (or "Nothing to activate: …"), never that the change is live.
 - **Review feedback…** shows the proposed revision instructions. Send them, add your own words, or start
   your words with `replace:` to replace them. They go to the same builder in the same pane and count as
   sent only once the pane confirms they arrived; a busy or absent builder gets nothing, and you get
@@ -177,6 +180,34 @@ review, then a decision card whose summary (at most 900 characters) states what 
 **Re-review.** After a send-back, the builder pushes a revision (an issue builder runs `hook done` again).
 Once the pull request is clean and non-draft at a new head, the status message says your agent is
 reviewing it again, and you get a new recommendation. Buttons on older recommendations answer "stale".
+
+### Activation after merge
+
+A merge is not activation. Each repository installs or deploys differently, and some steps live outside the
+pull request (a Hermes setting, a cron script, a gateway restart). So the work carries a handoff:
+
+1. **The builder prepares it.** Every brief asks for a `## Activation` section in the pull request body:
+   what a merge triggers, ordered steps (including changes outside the pull request, with exact config text and
+   secrets named, never given), who runs each, a live check with its expected output, and rollback; or
+   "Nothing to activate: <why>". The builder never runs a step.
+2. **Your Hermes agent checks it** against the diff, the production note and the repository's docs, and records
+   the checked version with `--activation`. A missing or wrong section is a reason to send the build back.
+3. **Every merge Muster learns of gets it:** your Merge tap, a merge found after a restart, and a merge made on
+   GitHub or by hand, which cleanup finds. If a reviewed handoff matches the merged commit, an **Activate card**
+   carries it; if none matches, the card says "Activation unknown" and points to the builder's unreviewed
+   section. A matching `none` makes no card. One card per merged commit, however often Muster sees the merge.
+4. **The card is the current record.** It pings you with the steps (in the run's thread while that is open,
+   else the main chat) and stays blocked on the board, so `hermes kanban list --board muster` shows everything
+   merged but not verified. The run's final status line is history: "✅ PR #9 merged · activation not verified
+   at merge; current state on its Activate card".
+5. **You decide.** Run the steps yourself, or ask your Hermes agent to; that request authorizes only that
+   card's steps, and it shows a config change as a diff before writing it. When you say it is done, it runs the
+   card's live check, comments the evidence and completes the card "✅ Active · verified: …", or "Reported done
+   by you · not verified: …" when it could not check. It never activates anything on its own.
+
+Limits: cleanup finds merges made outside the Merge button only for runs with a topic or thread
+(`notify_topics: true`). Once a run is archived, its cards' thread subscriptions end, so completing an Activate
+card after that may not ping; your Hermes agent's reply is the notice.
 
 ## Cards
 
@@ -188,13 +219,16 @@ Each run is tracked on Muster's Hermes kanban board.
 - **Wait card:** opened each time the builder waits for you, archived once you answer.
 - **Review cards:** wake your Hermes agent, one per design version and one per revised pull request head.
 - **Cleanup warnings:** see [cleanup](#cleanup).
+- **Activate cards:** one per merged commit with something left to activate; see
+  [activation after merge](#activation-after-merge).
 
 Cards that should reach you are subscribed `notify+wake`: the gateway pings you, then gives your Hermes
 agent a turn. Review starts are subscribed `wake` (a turn, no ping), since the status message already says the
 review started: the review cards, and the ledger once it completes with an open pull request. A ledger that
 blocks is switched back to `notify+wake` first, so a block always pings. Your Hermes agent never types into a pane on its own, answers the builder, moves a card or
-merges; it tells you what happened and recommends. The one exception is a message you ask it to send to a
-running agent, which it delivers with `herdr agent prompt`. Its instructions are the skills `muster:escalation`,
+merges; it tells you what happened and recommends. The exceptions are a message you ask it to send to a
+running agent, which it delivers with `herdr agent prompt`, and completing an Activate card when you say the
+activation is done or ask it to carry it out. Its instructions are the skills `muster:escalation`,
 `muster:review-standard` and `muster:dispatch`.
 
 ## Recovery
@@ -248,10 +282,10 @@ Your Hermes agent never pushes, commits, discards or removes anything for you.
 Every instruction Muster gives an agent or a model is a file in [`prompts/`](../prompts/README.md):
 
 - **Issue builder:** `launch-envelope.md` wraps `issue-dispatch.md`, which includes `ask-the-human.md`,
-  `builder-workflow.md` and the production note (or `no-production-note.md`). `reused-worktree.md` is
+  `builder-workflow.md`, the production note (or `no-production-note.md`) and `activation-handoff.md`. `reused-worktree.md` is
   added when a launch reuses a checkout with work in it.
 - **Ad-hoc builder:** `launch-envelope.md` wraps your brief plus `ad-hoc-run.md`, which includes the same
-  `ask-the-human.md` and `builder-workflow.md`.
+  `ask-the-human.md`, `builder-workflow.md`, production note and `activation-handoff.md`.
 - **Later in a run:** `build-revision.md` (with `build-revision-issue.md` or `build-revision-ad-hoc.md`),
   `design-reply-approve.md`, `design-reply-revise.md` and `duplicate-handoff.md`.
 - **Your Hermes agent:** `escalation.md`, `review-standard.md` and `dispatch.md` are the skills

@@ -165,10 +165,13 @@ names worktrees `<worktrees>/<clone dir name>/<branch>`; give one an explicit pa
 ## Production notes
 
 Each repository can have a note at `<notes_dir>/<owner>__<repo>.md`, for example `you__app.md`. It goes
-into every issue brief for that repository, and your Hermes agent reads it to say what a merge deploys.
-Cover where production runs, how to read its config and logs, the tools and read-only credentials the work
-needs, and what the builder must not touch. Without a note, the brief tells the builder to ask. You (or
-your agent) edit the note; the builder only reads it.
+into every brief for that repository, issue or ad-hoc, and your Hermes agent reads it to say what a merge
+triggers. Cover where production runs, how to read its config and logs, the tools and read-only credentials
+the work needs, and what the builder must not touch. Also cover activation, which the builder's handoff and
+your agent's check build on: what a merge triggers (often nothing), how a merged change is installed or
+deployed, how to check it is live, and how to roll it back. Without a note, the brief tells the builder to
+ask. You (or your agent) edit the note; the builder only reads it. See
+[activation after merge](reference.md#activation-after-merge).
 
 ## Automatic approvals
 

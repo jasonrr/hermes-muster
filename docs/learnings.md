@@ -180,3 +180,8 @@
 ## stale-review-notices (2026-10-20)
 
 - A card subscribed `notify+wake` → Hermes's notifier posts its completion as a thread reply that Muster never gets an id for, so it can never be retired. For a notice the status message already carries, subscribe `wake` (Hermes still wakes the coordinator with the summary as handoff), and switch a long-lived card's mode in place with `notify-subscribe` naming only its row key and `--delivery-mode` (last-write-wins).
+
+## activation-after-merge (2026-10-21)
+
+- A prompt edit committed straight to main without `MUSTER_REGOLD=1` (1296583, c459877) → main carried two failing tests (`test_brief_keeps_forbidden_list`, the prompt goldens) until the next prompt change; regenerate the goldens and fix the needles in the same commit as any prompt edit.
+- A side step after an irreversible action caught only the exceptions its author listed, while `core.subscribe` raises `core.LaunchError` → a merge that landed would have been recorded as failed; after the irreversible part, guard a follow-on step with `except Exception`, log it (and the log write itself), and let a later pass retry it.
