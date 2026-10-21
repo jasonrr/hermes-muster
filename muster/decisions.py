@@ -810,8 +810,8 @@ def merged(req, kind, text):
     after = {"steps": "Activation not verified: its steps and check are on the Activate card.",
              "unknown": "Activation unknown: no reviewed handoff matches this merge; see the Activate card.",
              "none": f"Nothing to activate: {text.rstrip('.')}." if text.strip(" .") else "Nothing to activate.",
-             "pending": f"Activation not verified: Muster could not open the Activate card yet; cleanup retries it. "
-                        f"Steps: the pull request's Activation section, {text}"}[kind]
+             "pending": f"Activation not verified: Muster could not open the Activate card yet; cleanup tries again "
+                        f"when it closes the run. Steps: the pull request's Activation section, {text}"}[kind]
     return f"✅ Merged\nMerged into {req['base']}, as reviewed. {after}"
 
 
@@ -867,7 +867,7 @@ def handoff(ledger, repo, number, head):
             ref = conversation.load(ledger) or {}
             # in the run's thread while it is open; a closed one may refuse the ping, so the main chat then
             core.subscribe(card["id"], ledger if ref.get("state") == "open" and not ref.get("resolved_at") else None)
-            core.kanban("block", "--kind", "needs_input", card["id"], text)  # text starts "Merged;" or "Activation"
+            core.kanban("block", "--kind", "needs_input", card["id"], text)  # never "-": "Merged;" or "Activation …"
             events.expect(card["id"], "blocked", "activation handoff")
     progress.touch(ledger, "activation", f"{kind} {card['id']}")
     return kind

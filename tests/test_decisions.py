@@ -965,7 +965,7 @@ def test_a_failed_handoff_never_fails_the_merge_that_landed(world):
     decisions.execute(rid)
     status, outcome = state(rid)
     assert status == "done" and outcome.startswith("✅ Merged\nMerged into main, as reviewed. Activation not verified")
-    assert "cleanup retries it" in outcome and URL in outcome
+    assert "cleanup tries again" in outcome and URL in outcome
 
 
 def test_recover_a_merge_that_did_not_fails_and_offers_a_fresh_build_request(world):
