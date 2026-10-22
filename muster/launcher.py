@@ -24,11 +24,19 @@ def startup_prompt(text):
 
 
 def pane_env():
-    """The pane's env pairs: the hermes home always; the bot's gh login, with token vars blanked, when configured.
-    gh prefers a token env var over GH_CONFIG_DIR, so both are blanked."""
-    env = [f"HERMES_HOME={os.environ['HERMES_HOME']}"]
-    if os.environ.get("HERMES_KANBAN_HOME", os.environ["HERMES_HOME"]) != os.environ["HERMES_HOME"]:
-        env.append(f"HERMES_KANBAN_HOME={os.environ['HERMES_KANBAN_HOME']}")
+    """The pane's env pairs: this profile's hermes home always (core.hermes_home: a served profile's, not the
+    gateway host's), and the shared board home when it differs; the bot's gh login, with token vars blanked, when
+    configured. gh prefers a token env var over GH_CONFIG_DIR, so both are blanked."""
+    home = core.hermes_home()
+    try:
+        from hermes_cli.kanban_db import kanban_home
+    except ImportError:
+        board = Path(os.environ.get("HERMES_KANBAN_HOME") or home)
+    else:
+        board = kanban_home()
+    env = [f"HERMES_HOME={home}"]
+    if board != home:
+        env.append(f"HERMES_KANBAN_HOME={board}")
     if config.settings["gh_config_dir"]:
         env += [f"GH_CONFIG_DIR={core.gh_config_dir()}", "GH_TOKEN=", "GITHUB_TOKEN="]
     return env

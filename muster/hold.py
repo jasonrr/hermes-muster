@@ -165,7 +165,7 @@ def message(rec):
     cand = rec["candidates"][0]
     return (f"Possible duplicate of {rec['repo']}#{cand['issue']} (card {cand['card']}); sent to that run's agent to "
             f"evaluate; not dispatched. Model's reason (untrusted): {rec['reason']}\nTo launch it anyway: "
-            f"`{config.hermes_bin()} muster recover {rec['card']}`. If it is a duplicate, closing the issue drops it.")
+            f"`{' '.join(core.hermes_cmd())} muster recover {rec['card']}`. If it is a duplicate, closing the issue drops it.")
 
 
 def hold(repo, issue, card, event, auto, cand, reason):
@@ -218,7 +218,7 @@ def remind(rec, why):
     if rec["reminder"]:
         return
     text = (f"{rec['repo']}#{rec['issue']} is held as a possible duplicate and was not dispatched (held card "
-            f"{rec['card']}): {why}. Release it with `{config.hermes_bin()} muster recover {rec['card']}`, or close "
+            f"{rec['card']}): {why}. Release it with `{' '.join(core.hermes_cmd())} muster recover {rec['card']}`, or close "
             f"the issue if it is a duplicate. This is the only reminder.")
     made = json.loads(core.kanban(
         "create", "--body", f"{text}\n{core.PROVENANCE}", "--idempotency-key", f"muster-hold-reminder:{rec['card']}",

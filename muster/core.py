@@ -35,8 +35,44 @@ def adapter():
     return _adapter or claude.get_adapter(config.settings["agent_kind"])
 
 
+def operating_profile():
+    """The Hermes profile muster runs as: the one Hermes resolves for this process (a served profile's home in a
+    multiplexed gateway or cron tick, `-p` or HERMES_HOME elsewhere), the owner Hermes's own notify-subscribe stamps.
+    Outside Hermes (tests), `default`. The operating_profile setting only confirms it: config and state live in the
+    profile that loaded muster, so any other name is refused, never routed to."""
+    try:
+        from hermes_cli.profiles import current_profile_name, profile_exists
+    except ImportError:
+        running, profile_exists = "default", None
+    else:
+        running = current_profile_name("user") or "user"  # hermes_cli/kanban.py _profile_author
+    chosen = config.settings["operating_profile"]
+    if not isinstance(chosen, str):
+        raise config.ConfigError("muster: operating_profile must be a profile name, or empty for this profile")
+    chosen = chosen.strip()
+    if chosen and profile_exists and not profile_exists(chosen):
+        raise config.ConfigError(f"muster: operating_profile {chosen!r} is not a Hermes profile")
+    if chosen and chosen != running:
+        raise config.ConfigError(f"muster: operating_profile is {chosen!r} but muster is running in profile "
+                                 f"{running!r}; the setting checks the profile that runs muster and never moves it")
+    return running
+
+
+def hermes_cmd():
+    """hermes, pinned with -p to muster's profile when that is a named one, so a hook or a human's `recover` reaches
+    this profile's muster whatever HERMES_HOME or the sticky active profile says. `default` and a custom HERMES_HOME
+    (no profile name to pin) stay bare, as before; the pane's HERMES_HOME carries them."""
+    profile = operating_profile()
+    if profile != "default":
+        from hermes_cli.profiles import profile_exists  # operating_profile resolved it through Hermes
+
+        if profile_exists(profile):
+            return [config.hermes_bin(), "-p", profile]
+    return [config.hermes_bin()]
+
+
 def hook_cmd():
-    return [config.hermes_bin(), "muster", "hook"]
+    return [*hermes_cmd(), "muster", "hook"]
 
 
 def intake_dir():
@@ -68,7 +104,13 @@ def lock_path(name):
 
 
 def hermes_home():
-    return Path(os.environ["HERMES_HOME"])
+    """This profile's home: in a multiplexed gateway, the served profile's (a context-local override), not the
+    host's os.environ one."""
+    try:
+        from hermes_constants import get_hermes_home
+    except ImportError:
+        return Path(os.environ["HERMES_HOME"])
+    return get_hermes_home()
 
 
 def board_db():
@@ -179,13 +221,14 @@ def subscribe(card, ledger=None, mode="notify+wake"):
     subscription's thread, so the coordinator's commentary lands there too."""
     from . import conversation  # conversation imports core
 
+    owner = operating_profile()  # the gateway that delivers and wakes; raises before anything is subscribed
     target = conversation.target(ledger) if ledger else {**notify_target(), "thread_id": None}
     thread = target.pop("thread_id")
     kanban("notify-subscribe", card, "--platform", config.settings["notify_platform"], "--chat-id", target["chat_id"],
            *(["--thread-id", thread] if thread else []), "--user-id", target["user_id"], "--chat-type",
-           target["chat_type"], "--notifier-profile", "default", "--delivery-mode", mode)
+           target["chat_type"], "--notifier-profile", owner, "--delivery-mode", mode)
     subs = json.loads(kanban("notify-list", card, "--json"))
-    want = {**target, **({"thread_id": thread} if thread else {}), "notifier_profile": "default",
+    want = {**target, **({"thread_id": thread} if thread else {}), "notifier_profile": owner,
             "delivery_mode": mode}
     if not any(all(str(s.get(k)) == str(v) for k, v in want.items()) for s in subs):
         raise LaunchError(f"the {mode} subscription did not read back")
