@@ -107,6 +107,19 @@ def test_every_skill_a_prompt_or_the_readme_names_is_registered():
     assert named <= registered, named - registered
 
 
+def test_both_briefs_carry_the_dependency_setup_section():
+    """The builder owns setup: find it, never start a second run, verify it, report a failure as setup trouble."""
+    body = config.prompt("dependency-setup")
+    for phrase in ("never start a second run", "setup trouble, not a finding about your task",
+                   "Ask the human with your ask tool"):
+        assert phrase in body
+    section = "## Dependency setup\n\n" + body + "\n\n"
+    issue = intake.brief("o/r", 1, True)
+    assert issue.index("## Asking the human") < issue.index(section) < issue.index("## How to work")
+    footer = adhoc.footer({"card": "t_1", "repo": "o/r", "branch": "feat/a", "base": "main"})
+    assert footer.index("Never push to main") < footer.index(section) < footer.index("## Production and activation")
+
+
 def test_a_placeholder_without_a_value_raises():
     with pytest.raises(KeyError):
         config.prompt("design-reply-approve")

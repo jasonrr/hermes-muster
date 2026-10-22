@@ -510,6 +510,7 @@ def test_launch_brief_is_the_callers_text_plus_the_run_footer(board, clone):
     assert brief.startswith("Fix the thing.\n")
     assert f"## This run: {card}" in brief and "`fix/x`" in brief and "You never report it yourself" in brief
     assert f"`{config.hermes_bin()} muster hook --card {card} propose <file>`" in brief and "the header `Approval`" in brief
+    assert "## Dependency setup" in brief  # the builder owns setup (prompts/dependency-setup.md)
 
 
 def test_launch_opens_a_trusted_worktree_and_starts_claude_in_auto_mode(board, clone):

@@ -185,3 +185,7 @@
 
 - A prompt edit committed straight to main without `MUSTER_REGOLD=1` (1296583, c459877) → main carried two failing tests (`test_brief_keeps_forbidden_list`, the prompt goldens) until the next prompt change; regenerate the goldens and fix the needles in the same commit as any prompt edit.
 - A side step after an irreversible action caught only the exceptions its author listed, while `core.subscribe` raises `core.LaunchError` → a merge that landed would have been recorded as failed; after the irreversible part, guard a follow-on step with `except Exception`, log it (and the log write itself), and let a later pass retry it.
+
+## agent-owned-setup (2026-10-22)
+
+- A 308 s `herdr worktree create` (radicalcandorai#518) looked like slow dependency installs → 300 s of it was one `npm audit` bulk request that hung until npm's default 300 s `fetch-timeout`, inside the repo's synchronous post-checkout bootstrap; checkout, LFS, `uv sync` and both installs took ~8 s. Time a stall from npm's own debug logs (`~/.npm/_logs`: each file's birth is an install's start and its mtime its end; `verbose audit error` names the call) and from file birth times in the worktree, before redesigning the launch path.
