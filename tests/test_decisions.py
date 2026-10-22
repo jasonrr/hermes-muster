@@ -1082,9 +1082,13 @@ def test_gateway_up_reads_hermess_runtime_status(monkeypatch):
     assert decisions.gateway_up() is False  # no Hermes gateway.status here
     rec = {"platforms": {"telegram": {"state": "connected"}}}
     status = types.ModuleType("gateway.status")
-    status.read_runtime_status = lambda: rec
+    status.read_runtime_status = lambda path=None: rec
+    status.get_runtime_status_running_pid = lambda r, *, expected_home: 42
     status.runtime_status_is_stale = lambda r: False
     status.runtime_status_pid_is_live = lambda r: True
+    constants = types.ModuleType("hermes_constants")
+    constants.get_hermes_home = lambda: config.data_dir().parent.parent
+    monkeypatch.setitem(sys.modules, "hermes_constants", constants)
     package = types.ModuleType("gateway")
     package.status = status
     monkeypatch.setitem(sys.modules, "gateway", package)
