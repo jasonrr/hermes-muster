@@ -22,6 +22,10 @@ govern you, so follow them.
 
 $ask
 
+## Dependency setup
+
+$setup
+
 ## How to work
 
 $workflow

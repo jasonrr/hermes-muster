@@ -73,6 +73,18 @@ def saved_before(w, call):
 # --- the two phases ---------------------------------------------------------------------------
 
 
+def test_the_launch_runs_no_setup_command_before_the_brief(world):
+    """Dependency setup is the builder's (prompts/dependency-setup.md): the launch only makes the checkout, the tab
+    and the agent, then sends the brief once."""
+    assert ensure(world, new_rec(world)) == "working"
+    calls = [c for c in world.calls if isinstance(c, list)]
+    assert {c[0] for c in calls} <= {"herdr", "git", "gh"}
+    assert {c[1] for c in calls if c[0] == "herdr"} <= {"worktree", "tab", "agent", "pane"}
+    assert {c[3] for c in calls if c[0] == "git"} <= {"fetch", "rev-parse", "rev-list", "update-ref", "status"}
+    [start], [submit] = herdr_calls(world, "agent", "start"), herdr_calls(world, "agent", "prompt")
+    assert calls.index(start) < calls.index(submit)
+
+
 def test_start_without_a_task_waits_for_idle_then_submits_the_brief_and_sees_it_working(world):
     rec = new_rec(world)
     assert ensure(world, rec) == "working"
@@ -373,7 +385,7 @@ def test_a_base_git_would_refuse_is_refused_before_any_side_effect(world, base):
         launcher.plan("t", "o/r", world.clone, "fix/x", base, "l", "run-x", "opus", "/s", "run")
 
 
-@pytest.mark.parametrize("missing", ["issue-dispatch", "ad-hoc-run", "builder-workflow", "launch-envelope"])
+@pytest.mark.parametrize("missing", ["issue-dispatch", "ad-hoc-run", "builder-workflow", "launch-envelope", "dependency-setup"])
 def test_a_missing_prompt_file_fails_the_launch_before_any_agent_starts(world, monkeypatch, tmp_path, missing):
     prompts = tmp_path / "prompts"
     shutil.copytree(config.PROMPTS, prompts)
