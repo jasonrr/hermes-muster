@@ -34,14 +34,27 @@ def root():
 
 
 def gateway_up():
-    """Hermes's own runtime status says its gateway runs with the notify platform connected
-    (gateway_state.json, re-stamped every 60 s by the gateway's housekeeping)."""
+    """A fresh, live gateway serving this home has the notify transport connected.
+
+    A multiplexed profile has no status file of its own. Ask Hermes for its serving host;
+    prefer the profile's adapter, otherwise use the host's shared transport (e.g. Slack).
+    """
     try:
         from gateway import status
+        from hermes_constants import get_hermes_home
     except ImportError:
         return False
-    rec = status.read_runtime_status()
-    platform = ((rec or {}).get("platforms") or {}).get(config.settings["notify_platform"]) or {}
+    home = get_hermes_home()
+    rec = status.read_runtime_status(home / "gateway_state.json")
+    platforms = (rec or {}).get("platforms") or {}
+    if status.get_runtime_status_running_pid(rec or {}, expected_home=home) is None:
+        served = status.multiplexer_liveness_for_profile(home)
+        if served is None:
+            return False
+        _, rec = served
+        platforms = {**(rec.get("platforms") or {}), **status.profile_platforms_from_multiplexer(
+            rec, status.profile_name_for_home(home) or "default")}
+    platform = platforms.get(config.settings["notify_platform"]) or {}
     return (not status.runtime_status_is_stale(rec) and status.runtime_status_pid_is_live(rec)
             and platform.get("state") == "connected")
 

@@ -48,6 +48,13 @@ A double tap, replay or gateway restart never repeats an effect. Details of each
 
 ## Run topics
 
+Muster checks the gateway serving its Hermes home before requesting a topic or thread. For a
+multiplexed profile, Hermes resolves the live shared host even when the profile has no local
+`gateway_state.json`. The profile's own notify-platform adapter takes precedence; when it has no
+adapter entry, Muster uses the host's shared transport. Other bots' connection states do not gate
+readiness. The selected snapshot must still be fresh, its PID live, and that transport connected.
+This does not move runs already recorded as channel fallback or resend their decisions.
+
 Turn on `notify_topics: true` to give each run its own Telegram forum topic in the notify group. The
 topic is named `<short title> · #<issue>` or `<short title> · <branch>` (with several repositories,
 `<repo>#<issue>`). Everything about the run happens there: its status message, questions, designs,
