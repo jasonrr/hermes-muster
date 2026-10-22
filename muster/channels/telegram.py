@@ -78,10 +78,15 @@ def register(ctx):
 
 def telegram_factory(app, adapter):
     """Called by the Telegram adapter's connect(), again with a new app when it rebuilds."""
-    from telegram.ext import CallbackQueryHandler, MessageHandler, filters
-
     config.load(shared.CTX)
     shared.configured = True
+    try:
+        core.operating_profile()
+    except config.ConfigError as caught:  # never present or act as another profile's muster
+        log(f"{caught}; muster's prompts are not shown")
+        return
+    from telegram.ext import CallbackQueryHandler, MessageHandler, filters
+
     core.prepare_env()
     app.add_handler(CallbackQueryHandler(guard, pattern=r"^cl:mu"), -1)
     app.add_handler(CallbackQueryHandler(approval_guard, pattern=r"^ea:"), -1)

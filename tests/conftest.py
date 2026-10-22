@@ -16,6 +16,8 @@ def sandbox(tmp_path, monkeypatch):
     (hermes / ".env").write_text("OTHER=1\nTELEGRAM_HOME_CHANNEL=4242\n")
     monkeypatch.setenv("HERMES_HOME", str(hermes))
     monkeypatch.setenv("HERMES_KANBAN_HOME", str(hermes))
+    for pin in ("HERMES_PROFILE_NAME", "HERMES_PROFILE"):  # a shell's pin would rename this home's profile
+        monkeypatch.delenv(pin, raising=False)
     # prepare_env() rewrites PATH; setenv first so pytest restores it afterwards.
     monkeypatch.setenv("PATH", os.environ.get("PATH", ""))
     bot = tmp_path / "gh-bot"
