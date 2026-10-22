@@ -133,9 +133,13 @@ Full list of what Muster reads, writes and registers: [security and disclosure](
 ## Development
 
 ```bash
-python3 -m pytest -q
+"${HERMES_PYTHON:-$HOME/.hermes/hermes-agent/.venv/bin/python}" -m pytest -q
 hermes plugins validate .
 ```
+
+Run the tests with Hermes's development interpreter. Hermes's own `CONTRIBUTING.md` names it `HERMES_PYTHON`.
+The test sandbox clears the Hermes environment you launch it from, such as a profile pin or a board pin, so the
+result does not depend on which profile your shell is in.
 
 For how the code is organized, which process runs what, and where state lives, read
 [`docs/architecture.md`](docs/architecture.md).
