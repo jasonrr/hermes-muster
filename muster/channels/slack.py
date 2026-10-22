@@ -72,6 +72,11 @@ def factory(app, adapter):
     app when it reconnects."""
     config.load(shared.CTX)
     shared.configured = True
+    try:
+        core.operating_profile()
+    except config.ConfigError as caught:  # never present or act as another profile's muster
+        log(f"{caught}; muster's prompts are not shown")
+        return
     core.prepare_env()
     T.client, T.adapter = app.client, adapter
     problems = validate(config.settings)

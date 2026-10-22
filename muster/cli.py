@@ -66,6 +66,9 @@ def main(args, ctx):
     failed = 1 if is_hook and args.event in AGENT_RUN else 0
     try:
         config.load(ctx)
+        from . import core
+
+        core.operating_profile()  # a mismatch stops every command and hook here, before any side effect
         module, fn = SUBCOMMANDS[args.muster_command]
         return getattr(importlib.import_module(f"{__package__}.{module}"), fn)(args) or 0
     except config.ConfigError as e:

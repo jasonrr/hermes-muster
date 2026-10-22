@@ -190,6 +190,11 @@
 
 - A 308 s `herdr worktree create` (radicalcandorai#518) looked like slow dependency installs → 300 s of it was one `npm audit` bulk request that hung until npm's default 300 s `fetch-timeout`, inside the repo's synchronous post-checkout bootstrap; checkout, LFS, `uv sync` and both installs took ~8 s. Time a stall from npm's own debug logs (`~/.npm/_logs`: each file's birth is an install's start and its mtime its end; `verbose audit error` names the call) and from file birth times in the worktree, before redesigning the launch path.
 
+## configurable-operating-profile (2026-10-22)
+
+- Treating "which profile muster runs under" as a value muster could route to → Hermes loads each plugin, its `config.yaml` settings and its `plugin_data_dir` per profile home (`hermes_cli/plugins.py` `_plugin_managers_by_home`), so the only safe setting confirms the loading profile; naming another would split config from state. The plugin settings form also has only static `choices`, so a profile picker is a text field. Name the profile from the home (`get_active_profile_name`), as the gateway names itself to its notifier, not `current_profile_name`, which an env pin can override.
+- `core.hermes_home()` now returns the served profile's home under a multiplexed gateway → anything read from it (the Telegram DM fallback's `TELEGRAM_HOME_CHANNEL` in `.env`) is that profile's, not the host's; a test that overrides the home must give that home its own `.env` or a set `notify_chat_id`.
+
 ## profile-safe-test-setup (2026-10-22)
 
 - A test sandbox that replaced only `HERMES_HOME`/`HERMES_KANBAN_HOME` → run inside a Hermes agent (Bean: `HERMES_PROFILE=bean`), Hermes's `current_profile_name` took the inherited pin over the sandbox home and 72 subscription read-backs failed; a board pin (`HERMES_KANBAN_DB`) could likewise reach the live board once Hermes imports. The sandbox now drops every inherited `HERMES_*`; a test that wants another profile sets its own pin.

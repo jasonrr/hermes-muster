@@ -14,6 +14,7 @@ DEFAULTS = {
     "repos": [],  # REQUIRED: ["owner/name", "owner/name=/abs/clone/path", ...]
     "clone_root": "~/Code",  # clone = clone_root/<name> when no =path given
     "board": "muster",  # hermes kanban board slug; give muster its own board (idempotency keys are per board)
+    "operating_profile": "",  # "" → the profile Hermes resolves; else it must name that profile (core.operating_profile)
     "agent_kind": "claude",  # v1: claude only
     "agent_model": "opus",  # passed to the agent CLI
     "branch_prefix": "muster/",  # issue branch = f"{branch_prefix}{number}"
