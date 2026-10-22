@@ -189,3 +189,8 @@
 ## agent-owned-setup (2026-10-22)
 
 - A 308 s `herdr worktree create` (radicalcandorai#518) looked like slow dependency installs → 300 s of it was one `npm audit` bulk request that hung until npm's default 300 s `fetch-timeout`, inside the repo's synchronous post-checkout bootstrap; checkout, LFS, `uv sync` and both installs took ~8 s. Time a stall from npm's own debug logs (`~/.npm/_logs`: each file's birth is an install's start and its mtime its end; `verbose audit error` names the call) and from file birth times in the worktree, before redesigning the launch path.
+
+## profile-safe-test-setup (2026-10-22)
+
+- A test sandbox that replaced only `HERMES_HOME`/`HERMES_KANBAN_HOME` → run inside a Hermes agent (Bean: `HERMES_PROFILE=bean`), Hermes's `current_profile_name` took the inherited pin over the sandbox home and 72 subscription read-backs failed; a board pin (`HERMES_KANBAN_DB`) could likewise reach the live board once Hermes imports. The sandbox now drops every inherited `HERMES_*`; a test that wants another profile sets its own pin.
+- Hermes's dev `.venv` editable install maps root modules statically, so a root module added after the install (`hermes_yaml`) is unimportable there while production works (its launcher puts the checkout root on `sys.path`) → conftest appends that root. `hermes --run-module pytest` is not a test runner: with a temporary `HERMES_HOME` it builds a ~1 GB dependency environment per data root, which `tests/test_kanban_contract.py`'s real-CLI fixture also triggers on every test.

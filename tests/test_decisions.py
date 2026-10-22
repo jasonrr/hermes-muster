@@ -1086,8 +1086,9 @@ def test_gateway_up_reads_hermess_runtime_status(monkeypatch):
     status.get_runtime_status_running_pid = lambda r, *, expected_home: 42
     status.runtime_status_is_stale = lambda r: False
     status.runtime_status_pid_is_live = lambda r: True
+    home = config.data_dir().parent.parent  # before the stub: with Hermes importable, data_dir() calls the stub
     constants = types.ModuleType("hermes_constants")
-    constants.get_hermes_home = lambda: config.data_dir().parent.parent
+    constants.get_hermes_home = lambda: home
     monkeypatch.setitem(sys.modules, "hermes_constants", constants)
     package = types.ModuleType("gateway")
     package.status = status
