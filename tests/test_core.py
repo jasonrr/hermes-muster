@@ -301,6 +301,7 @@ def test_an_approved_issue_gets_one_card_one_subscription_and_one_agent_pane(tmp
     decoded = json.loads(prompt.split("Task brief (JSON): ", 1)[1])
     assert decoded == (git_dir / core.BRIEF_FILE).read_text()
     assert decoded.startswith(f"# muster: {REPO}#397") and "jasonrr approved" in decoded
+    assert "## Dependency setup" in decoded  # the builder owns setup (prompts/dependency-setup.md)
     assert "How to work" in prompt and "Read " + str(git_dir) not in prompt
     assert "Add a unit test" not in prompt  # issue text never enters the startup prompt
     links = json.loads((git_dir / core.CARD_FILE).read_text())

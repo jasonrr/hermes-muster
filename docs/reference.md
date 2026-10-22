@@ -43,6 +43,12 @@ To read any card: `hermes kanban --board <board> show <card> --json`.
 3. Muster creates a herdr worktree on branch `<branch_prefix><issue number>`, cut from the base branch,
    starts Claude Code in it, and submits the brief as its first prompt. Issue text never enters the brief:
    the builder reads the issue with `gh` and treats it as data.
+   Muster installs no dependencies, in this route or the ad-hoc one. The brief's "Dependency setup" section
+   makes setup the builder's job: it finds the repository's own setup, waits for a run already going in the
+   background (a post-checkout or SessionStart hook's) instead of starting a second, confirms it succeeded
+   before a test or build needs it, and asks you about a failure as setup trouble, not as a finding. A
+   repository whose post-checkout hook installs synchronously still holds up `herdr worktree create` until
+   that hook ends, because herdr runs git, and with it the hook, before it answers.
 4. The builder comments "Picked up by muster." on the issue and works it.
 5. It opens one pull request whose body ends with `Closes #<n>`, then runs `hermes muster hook done <PR url>`.
    Muster accepts it only if `gh` names the run's branch as the pull request's head. The ledger card is
@@ -285,10 +291,10 @@ Your Hermes agent never pushes, commits, discards or removes anything for you.
 Every instruction Muster gives an agent or a model is a file in [`prompts/`](../prompts/README.md):
 
 - **Issue builder:** `launch-envelope.md` wraps `issue-dispatch.md`, which includes `ask-the-human.md`,
-  `builder-workflow.md`, the production note (or `no-production-note.md`) and `activation-handoff.md`. `reused-worktree.md` is
+  `dependency-setup.md`, `builder-workflow.md`, the production note (or `no-production-note.md`) and `activation-handoff.md`. `reused-worktree.md` is
   added when a launch reuses a checkout with work in it.
 - **Ad-hoc builder:** `launch-envelope.md` wraps your brief plus `ad-hoc-run.md`, which includes the same
-  `ask-the-human.md`, `builder-workflow.md`, production note and `activation-handoff.md`.
+  `ask-the-human.md`, `dependency-setup.md`, `builder-workflow.md`, production note and `activation-handoff.md`.
 - **Later in a run:** `build-revision.md` (with `build-revision-issue.md` or `build-revision-ad-hoc.md`),
   `design-reply-approve.md`, `design-reply-revise.md` and `duplicate-handoff.md`.
 - **Your Hermes agent:** `escalation.md`, `review-standard.md` and `dispatch.md` are the skills
