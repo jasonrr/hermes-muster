@@ -147,8 +147,12 @@ Set `operating_profile` in the Hermes desktop app: Settings, pick the profile, P
 `config.yaml`. It is a text field, because Hermes's plugin settings form has no list of profiles to choose from.
 
 - **Empty** (the default): Muster uses the profile Hermes resolves. A single-profile install behaves as before.
-- **A profile name** confirms it. Any other name stops every `hermes muster` command and hook before it does
-  anything, with an error naming both profiles. An unknown name does the same.
+- **A profile name** confirms it. Any other name, or an unknown one, stops Muster before it does anything, and
+  the error names both profiles. That covers every `hermes muster` command and hook, and in the gateway the
+  connect hook, every tap and every typed reply.
+  - Hook events a running builder fires while the setting is wrong are lost, not queued. Its `done`,
+    `propose` and `duplicate` commands fail visibly.
+  - Fix the setting promptly. Clearing it brings nothing back.
 
 The setting checks the profile that already runs Muster. **It never moves Muster to another profile.** Saving it
 does not re-home anything. It rewrites no card, subscription, notifier cursor, decision, receipt or ACK, and

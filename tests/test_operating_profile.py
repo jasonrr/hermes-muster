@@ -3,11 +3,12 @@
 import json
 import os
 import sys
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
 from muster import cli, config, core, decisions, hold, launcher
+from muster.channels import shared, slack, telegram
 from tests.test_gateway_readiness import record, runtime  # noqa: F401 - runtime: PR #68's multiplex fixture
 
 
@@ -16,7 +17,7 @@ def profiles(monkeypatch):
     """A stand-in hermes_cli.profiles: `running` is the profile this process serves, `known` the live ones."""
     mod = ModuleType("hermes_cli.profiles")
     mod.running, mod.known = "default", {"default", "bean"}
-    mod.current_profile_name = lambda default=None: mod.running
+    mod.get_active_profile_name = lambda: mod.running
     mod.profile_exists = lambda name: name in mod.known
     package = ModuleType("hermes_cli")
     package.profiles = mod
@@ -148,7 +149,7 @@ def test_a_served_profile_binds_hooks_panes_and_subscription_with_real_hermes(tm
         (home / "config.yaml").write_text("{}\n")
     monkeypatch.setenv("HERMES_HOME", str(root))
     monkeypatch.setenv("HERMES_KANBAN_HOME", str(root))
-    monkeypatch.setenv("HERMES_PROFILE_NAME", "default")  # the host's pin: must not win under the override
+    monkeypatch.setenv("HERMES_PROFILE_NAME", "default")  # an env pin never renames the home's profile
     for key, value in {"operating_profile": setting, "notify_platform": "slack", "notify_chat_id": "C1",
                        "notify_user_id": "U1"}.items():  # the Bean shape: the host's shared Slack, a set channel
         monkeypatch.setitem(config.settings, key, value)
@@ -231,3 +232,25 @@ def test_the_native_settings_form_lists_and_saves_the_field(tmp_path):
     settings = load_config_readonly()["plugins"]["entries"]["muster"]["settings"]
     assert settings == {"operating_profile": "bean"}
     assert next(f for f in plugin_settings_fields("muster", repo) if f["key"] == "operating_profile")["value"] == "bean"
+
+
+@pytest.mark.parametrize("channel", [slack, telegram])
+def test_the_gateway_refuses_a_mismatch_before_any_handler_or_scan(profiles, monkeypatch, channel):
+    """The gateway never passes cli.main: its connect hook and every tap and reply check (ensure_config) stop instead,
+    before a handler, a scan or a kanban call."""
+    profiles.running = "bean"
+    monkeypatch.setitem(config.settings, "operating_profile", "default")
+
+    class Ctx:
+        def get_config(self, key, default):
+            return config.settings.get(key, default)
+    monkeypatch.setattr(shared, "CTX", Ctx())
+    monkeypatch.setattr(shared, "configured", False)
+    scans, commands = [], []
+    monkeypatch.setattr(shared, "start_scan", lambda: scans.append(1))
+    monkeypatch.setattr(core, "run", lambda argv, env=None: commands.append(argv))
+    app = SimpleNamespace(client=None, add_handler=lambda *a: commands.append(a))
+    (channel.factory if channel is slack else channel.telegram_factory)(app, object())
+    with pytest.raises(config.ConfigError, match="running in profile 'bean'"):
+        shared.ensure_config()
+    assert scans == [] and commands == []

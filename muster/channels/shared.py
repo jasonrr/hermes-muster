@@ -29,10 +29,13 @@ def log(line):
 
 
 def ensure_config():
+    """Settings, loaded once; then the operating profile, every time: a mismatch raises here, so each tap or reply
+    handler (all fail closed) refuses before any side effect."""
     global configured
     if not configured:
         config.load(CTX)
         configured = True
+    core.operating_profile()
 
 
 def session(rid, n):

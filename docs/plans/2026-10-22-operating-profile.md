@@ -141,3 +141,12 @@ in scope.
 | Real-Hermes test: `HERMES_KANBAN_HOME` is pinned by conftest | p2 | The test sets it to the root, as the shared board home is. |
 | `hold.wire()` (the pane agent's duplicate handoff) keeps bare `hermes` | p3 | Kept: the pane's `HERMES_HOME` (now the served profile's) carries it. `kanban()` stays unpinned: the board root is shared, and the owner is stamped explicitly. |
 | Snapshot hashing of the data dir would see new `logs/` | p2 | The mismatch test stops in `cli.main` before `start()` makes any log or lock file. The snapshot is taken after seeding. |
+
+## Final review and what changed
+
+| Finding | Severity | Verdict | Outcome |
+|---|---|---|---|
+| The gateway never passes `cli.main`; a mismatch would surface mid-action after a card exists | p2 | CONFIRMED (trace) | Fixed: `shared.ensure_config` (every tap and reply check, all fail closed) and both channel factories check first. A mismatch starts no scan and registers no handler. Test `test_the_gateway_refuses_a_mismatch_before_any_handler_or_scan`. |
+| Hook events during a mismatch are dropped, not queued | p2 | PLAUSIBLE | Documented in setup.md. Queuing them would re-deliver later, which is the replay the brief forbids. |
+| An env pin (`HERMES_PROFILE_NAME`) could name a profile the home does not, stamping subscriptions no gateway delivers | p3 | CONFIRMED (probe) | Fixed: the resolver uses `get_active_profile_name()`, the home-derived name the gateway itself gives its notifier (`gateway/run.py` `_active_profile_name`). This also removes the `"user"` fallback. |
+| `' '.join` in the recover text | p3 | CONFIRMED | Fixed: `shlex.join`. |

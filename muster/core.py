@@ -36,16 +36,17 @@ def adapter():
 
 
 def operating_profile():
-    """The Hermes profile muster runs as: the one Hermes resolves for this process (a served profile's home in a
-    multiplexed gateway or cron tick, `-p` or HERMES_HOME elsewhere), the owner Hermes's own notify-subscribe stamps.
-    Outside Hermes (tests), `default`. The operating_profile setting only confirms it: config and state live in the
-    profile that loaded muster, so any other name is refused, never routed to."""
+    """The Hermes profile muster runs as: the one its home names (a served profile's home in a multiplexed gateway or
+    cron tick, `-p` or HERMES_HOME elsewhere), which is how a gateway names itself to its kanban notifier
+    (gateway/run.py _active_profile_name), so a subscription stamped with it is one that gateway delivers. Outside
+    Hermes (tests), `default`. The operating_profile setting only confirms it: config and state live in the profile
+    that loaded muster, so any other name is refused, never routed to."""
     try:
-        from hermes_cli.profiles import current_profile_name, profile_exists
+        from hermes_cli.profiles import get_active_profile_name, profile_exists
     except ImportError:
         running, profile_exists = "default", None
     else:
-        running = current_profile_name("user") or "user"  # hermes_cli/kanban.py _profile_author
+        running = get_active_profile_name()
     chosen = config.settings["operating_profile"]
     if not isinstance(chosen, str):
         raise config.ConfigError("muster: operating_profile must be a profile name, or empty for this profile")
