@@ -185,3 +185,8 @@
 
 - A prompt edit committed straight to main without `MUSTER_REGOLD=1` (1296583, c459877) → main carried two failing tests (`test_brief_keeps_forbidden_list`, the prompt goldens) until the next prompt change; regenerate the goldens and fix the needles in the same commit as any prompt edit.
 - A side step after an irreversible action caught only the exceptions its author listed, while `core.subscribe` raises `core.LaunchError` → a merge that landed would have been recorded as failed; after the irreversible part, guard a follow-on step with `except Exception`, log it (and the log write itself), and let a later pass retry it.
+
+## configurable-operating-profile (2026-10-22)
+
+- Treating "which profile muster runs under" as a value muster could route to → Hermes loads each plugin, its `config.yaml` settings and its `plugin_data_dir` per profile home (`hermes_cli/plugins.py` `_plugin_managers_by_home`), so the only safe setting confirms the loading profile; naming another would split config from state. The plugin settings form also has only static `choices`, so a profile picker is a text field.
+- `core.hermes_home()` now returns the served profile's home under a multiplexed gateway → anything read from it (the Telegram DM fallback's `TELEGRAM_HOME_CHANNEL` in `.env`) is that profile's, not the host's; a test that overrides the home must give that home its own `.env` or a set `notify_chat_id`.

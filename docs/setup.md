@@ -122,11 +122,43 @@ or malformed.
 | `agent_kind` | `claude` | The coding agent. Only `claude` is accepted. |
 | `agent_model` | `opus` | The model passed to Claude Code. |
 | `board` | `muster` | The Hermes kanban board. Give Muster its own board, and create it before the first tick. |
+| `operating_profile` | `""` | The Hermes profile Muster runs as. Empty: the profile it is enabled in. See [Operating profile](#operating-profile). |
 | `coordinator_name` | `Coordinator` | The name Muster's messages give your Hermes agent ("Ella is reviewing design v2"). |
 | `button_hints` | `true` | `false` drops the "What each button does" list and the input hints from decision cards. The recommendation, the feedback, the reason and the deploy line always stay. |
 | `gh_config_dir` | `""` | Empty: the pane uses your own `gh` login. Set it to a `GH_CONFIG_DIR` holding another login, such as a bot's, and the pane's `gh` and `git push` act as that login. The directory must contain `hosts.yml`. |
 | `notes_dir` | `""` | Where [production notes](#production-notes) live. Empty means `$HERMES_HOME/plugin-data/muster/repos`. |
 | `workflow_prompt_file` | `""` | A non-empty file that replaces [`prompts/builder-workflow.md`](../prompts/builder-workflow.md) in every brief. |
+
+### Operating profile
+
+Hermes loads Muster, its settings and its state (`plugin-data/muster`) separately in each profile. Muster runs
+as the profile it is enabled in. That profile:
+
+- is pinned in every hook command it writes (`hermes -p <profile> muster hook`, none for `default`);
+- owns its notifier subscriptions (`--notifier-profile`), so that profile's gateway delivers the pings and
+  wakes its agent;
+- gives the pane its `HERMES_HOME`.
+
+In a multiplexed gateway this is the served profile, not the host's. A shared transport, such as the host's
+Slack adapter, is only the transport and does not change it.
+
+Set `operating_profile` in the Hermes desktop app: Settings, pick the profile, Plugins, muster,
+"Operating profile". You can also set it under `plugins.entries.muster.settings` in that profile's
+`config.yaml`. It is a text field, because Hermes's plugin settings form has no list of profiles to choose from.
+
+- **Empty** (the default): Muster uses the profile Hermes resolves. A single-profile install behaves as before.
+- **A profile name** confirms it. Any other name stops every `hermes muster` command and hook before it does
+  anything, with an error naming both profiles. An unknown name does the same.
+
+The setting checks the profile that already runs Muster. **It never moves Muster to another profile.** Saving it
+does not re-home anything. It rewrites no card, subscription, notifier cursor, decision, receipt or ACK, and
+it does not start or stop a gateway scan. Runs already under way keep the hook commands they were launched
+with. Moving Muster to another profile needs its own state-preserving handoff, planned and approved
+separately. Enabling it in a second profile is not such a move: each profile has its own state.
+
+- **When a change takes effect:** commands, hooks and cron ticks read it on their next run. The gateway
+  reads it when it starts, so restart the gateway after changing it.
+- **Rollback:** clear the field, or remove the key.
 
 ### Chat
 
