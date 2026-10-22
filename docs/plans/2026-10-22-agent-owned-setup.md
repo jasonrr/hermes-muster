@@ -65,6 +65,10 @@ already pin that a recover sends the saved bytes. No new test; run them.
 
 Prompt text (`prompts/dependency-setup.md`, no `$`):
 
+(The Task 1 review changed four things: a lock with no live process is Failed, Never run re-checks once,
+only files that were clean before setup are restored, and the herdr allowlist checks exact verb pairs. The
+shipped file is the source of truth.)
+
 > Muster does not install dependencies for you. When you start, this checkout's setup may be finished, still
 > running in the background (a post-checkout or session-start hook may have started it), or not run at all.
 > Before the first test, build or command that needs dependencies, and only if your task needs one:

@@ -79,7 +79,9 @@ def test_the_launch_runs_no_setup_command_before_the_brief(world):
     assert ensure(world, new_rec(world)) == "working"
     calls = [c for c in world.calls if isinstance(c, list)]
     assert {c[0] for c in calls} <= {"herdr", "git", "gh"}
-    assert {c[1] for c in calls if c[0] == "herdr"} <= {"worktree", "tab", "agent", "pane"}
+    assert {tuple(c[1:3]) for c in calls if c[0] == "herdr"} <= {
+        ("worktree", "list"), ("worktree", "create"), ("worktree", "open"), ("tab", "create"), ("pane", "get"),
+        ("pane", "list"), ("agent", "get"), ("agent", "start"), ("agent", "prompt")}
     assert {c[3] for c in calls if c[0] == "git"} <= {"fetch", "rev-parse", "rev-list", "update-ref", "status"}
     [start], [submit] = herdr_calls(world, "agent", "start"), herdr_calls(world, "agent", "prompt")
     assert calls.index(start) < calls.index(submit)
