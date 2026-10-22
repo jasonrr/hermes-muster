@@ -9,18 +9,23 @@ Before the first test, build or command that needs dependencies, and only if you
    an install command, and never install what your task does not need.
 2. Judge its state, and never start a second run of it:
    - **Done:** its completion marker exists, or its documented check passes. Use it.
-   - **Running:** a live process of its script exists (`pgrep -fl <script name>`), or its lock exists and its
-     log is still growing. Wait for it to end: `sleep 30` between short checks, then judge again. If its log
-     shows no new output for 15 minutes, stop waiting and ask the human.
-   - **Failed:** it ended without its marker, its log shows an error, or its lock is left with no live process
-     and no new log output. Read the end of the log, then run the setup once yourself, in the foreground.
-   - **Never run:** no marker, lock, log or process. Check once more after `sleep 30`, since a session-start
-     hook may not have begun yet, then run it once, in the foreground.
+   - **Running:** a live process of its script exists (`pgrep -fl <the script's path in this checkout>`). Wait
+     for it to end, checking about every 30 seconds with whatever waiting your tools allow, then judge again.
+     If its log shows no new output for 15 minutes, stop waiting and ask the human.
+   - **Failed:** no live process and no marker, but a lock or log shows it ran. Read the end of the log, then
+     run the setup once yourself.
+   - **Never run:** no marker, lock, log or process. Check once more about 30 seconds later, since a
+     session-start hook may not have begun yet, then run it once yourself.
+
+   When you run it yourself, give the command a timeout long enough for it (up to 10 minutes), or run it in
+   the background with its output in a log you watch. A call that timed out is not a failure and not a reason
+   to start it again: judge its state as above.
 3. Confirm it succeeded (exit status 0, and the marker if there is one) before you rely on it.
 4. Setup must leave no tracked change. Note `git status --porcelain` before you run it. Afterwards, restore
    with `git checkout -- <file>` each tracked file it changed that was clean before, such as a lockfile. If it
    changed a file you had already edited, ask the human.
 
-If setup fails, that is setup trouble, not a finding about your task. Do not report it as a product bug, and do
-not work around it with an install of your own. Ask the human with your ask tool, giving the command, its exit
-status and the end of its log.
+This setup inside your worktree is not an activation step: the Activation rule against installs does not
+apply to it. If setup fails, that is setup trouble, not a finding about your task. Do not report it as a
+product bug, and do not work around it with an install of your own. Ask the human with your ask tool, giving
+the command, its exit status and the end of its log.
