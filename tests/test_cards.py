@@ -214,6 +214,6 @@ def test_a_question_card_shows_agent_text_as_hermes_shows_its_own_clarify(world)
          "options": [{"label": label, "description": "token ghp_abcdef123456"}, {"label": "No", "description": ""}]}],
         choices=[[label, "No"]])
     shown = shared.render(req, 0, cap=2000, label_max=30, tail=[]) + " ".join(
-        shared.buttons(req, 0, label_max=30, number_multi=False))
+        shared.buttons(req, 0, label_max=30, number_multi=False)) + shared.fallback(req, 0)  # + the notification
     assert key not in shown and "ghp_abcdef123456" not in shown and "‮" not in shown
     assert decisions.load(req["id"])["choices"] == [[label, "No"]]

@@ -68,7 +68,7 @@ def plain(text):
 
 def fallback(req, n):
     """A message's notification and screen-reader text: its first lines, never a whole review."""
-    first = plain(req["questions"][n]["text"]).strip().split("\n\n")[0]
+    first = plain(core.display(req["questions"][n]["text"], prose=True)).strip().split("\n\n")[0]
     if decisions.approval_slot(req) == n:
         first = plain(lead(req, n)).split("\n")[0]
     return (first if req["kind"] != "question" or decisions.approval_slot(req) == n else f"{title(req)}: {first}")[:300]
