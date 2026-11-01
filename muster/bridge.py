@@ -72,14 +72,15 @@ def normalize(question):
 
 
 def approval_card(name, tool_input, sub=None):
-    """What Hermes's approval card shows: the command (a Bash command as is, any other tool's input as JSON,
-    secrets redacted) and why. The card offers Allow once and Deny only: a session rule did not stop the next
-    prompt for the same command (seen live, 2.1.295; Claude's own "don't ask again" did not either)."""
+    """What Hermes's approval card shows: the command (a Bash command as is, any other tool's input as JSON) and
+    why, both as Hermes displays its own (core.display). The card offers Allow once and Deny only: a session rule
+    did not stop the next prompt for the same command (seen live, 2.1.295; Claude's own "don't ask again" did not
+    either)."""
     bash = name == "Bash" and isinstance(tool_input, dict) and isinstance(tool_input.get("command"), str)
     command = tool_input["command"] if bash else json.dumps(tool_input, indent=2, sort_keys=True)
     why = (tool_input.get("description") if bash else None) or f"Claude wants to use {name}"
     who = f" (the {sub} subagent)" if sub else ""
-    return {"command": core.SECRET.sub("[redacted]", command), "why": f"{why}{who}"}
+    return {"command": core.display(command), "why": core.display(f"{why}{who}")}
 
 
 TERMINATED = []  # set by SIGTERM: Claude closed the dialog (answered in the pane) or is stopping

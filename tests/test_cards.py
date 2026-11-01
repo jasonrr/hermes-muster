@@ -203,3 +203,17 @@ def test_decisions_with_their_markdown_files_on_both_platforms(cards):
     assert names == ["make-muster-docs-a-manual-design-v1-review.md", "make-muster-docs-a-manual-design-v1.md"]
     for name in ("design-files-slack", "design-files-telegram"):
         assert "> " + REVISIONS in cards.shown[name] and "Small and right." not in cards.shown[name]
+
+
+def test_a_question_card_shows_agent_text_as_hermes_shows_its_own_clarify(world):
+    # agent/redact.py redact_approval_display(prose=True), as Hermes's clarify tool: secrets redacted and hidden
+    # characters shown, on every channel's card; the request keeps the raw labels an answer maps back to by index
+    key, label = "sk-proj-abcdefghijklmnop1234567890", "Yes ‮ok"
+    req = decisions.create("question", "t_1", questions=[
+        {"text": f"Use key {key}?", "header": "Key", "multi": False,
+         "options": [{"label": label, "description": "token ghp_abcdef123456"}, {"label": "No", "description": ""}]}],
+        choices=[[label, "No"]])
+    shown = shared.render(req, 0, cap=2000, label_max=30, tail=[]) + " ".join(
+        shared.buttons(req, 0, label_max=30, number_multi=False)) + shared.fallback(req, 0)  # + the notification
+    assert key not in shown and "ghp_abcdef123456" not in shown and "‮" not in shown
+    assert decisions.load(req["id"])["choices"] == [[label, "No"]]

@@ -446,6 +446,9 @@ def install(monkeypatch):
     agent.i18n, i18n.t = i18n, t
     redact = types.ModuleType("agent.redact")  # Hermes's redactor, for a bot token in a transport error
     redact.redact_sensitive_text = lambda text, force=False: __import__("re").sub(r"bot\d+:[\w-]+", "bot***", text)
+    # what core.display calls; the real one is tested against Hermes in test_bridge and test_cards
+    redact.redact_approval_display = lambda text, force=False, prose=False: redact.redact_sensitive_text(
+        str(text or ""), force=force)
     agent.redact = redact
     for name, mod in (("telegram.constants", constants), ("agent", agent), ("agent.i18n", i18n), ("agent.redact", redact), ("tools", tools), ("tools.clarify_gateway", clarify), ("tools.approval", approval),
                       ("tools.approval_gateway_wait", wait), ("telegram", telegram),
