@@ -114,6 +114,17 @@ def scripts(rig, py):
         (bin_ / name).chmod(0o755)
 
 
+def slack_published(hermes):
+    """The gateway has published Slack as connected. An open socket is not enough: Hermes publishes `retrying` until
+    its Socket Mode watchdog confirms the transport (up to ~15 s later), and muster's decisions.gateway_up reads the
+    published state, so a launch before then falls back to the channel."""
+    try:
+        state = json.loads((hermes / "gateway_state.json").read_text())["platforms"]["slack"]["state"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+    return state == "connected"
+
+
 def build(factory, settings=None, display=None, prepend=None, plugin=None):
     """An unstarted rig; the keyword arguments are what the negative tests break."""
     from tests.acceptance import hermes_kit as kit
@@ -148,7 +159,8 @@ def build(factory, settings=None, display=None, prepend=None, plugin=None):
     config = {"plugins": {"enabled": ["muster"], "isolation": "in_process", "entries": {"muster": {"settings": settings}}},
               "display": display or DISPLAY, **driver.gateway_config()}
     config["platforms"]["slack"]["extra"]["allowed_channels"] = [CHANNEL]
-    rig.gw = kit.GatewayUnderTest(root, llm_base_url=llm.base_url, config=config, env=env, ready=driver.connected)
+    rig.gw = kit.GatewayUnderTest(root, llm_base_url=llm.base_url, config=config, env=env,
+                                  ready=lambda: driver.connected() and slack_published(hermes))
     scripts(rig, sys.executable)
     return rig
 

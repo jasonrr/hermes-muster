@@ -131,6 +131,15 @@ def board_db():
 SECRET = re.compile(r"\b(?:gh[pousr]_\w+|github_pat_\w+)")  # GitHub token shapes
 
 
+def display(text, prose=False):
+    """Agent-written text as Hermes shows its own approval (prose=False) and clarify (prose=True) prompts: every
+    secret shape redacted and hidden characters made visible (agent/redact.py redact_approval_display). Forced:
+    muster's cards reach a shared channel, so `security.redact_secrets: false` does not put a secret there."""
+    from agent.redact import redact_approval_display
+
+    return redact_approval_display(text, force=True, prose=prose)
+
+
 class CommandError(Exception):
     """A command exited non-zero; the message names the command and its exit code."""
 

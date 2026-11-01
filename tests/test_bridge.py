@@ -132,7 +132,7 @@ def test_a_permission_request_carries_the_card_and_no_questions(tmp_path, capsys
     req = only()
     assert req["kind"] == "permission" and req["tool"] == {"name": "Bash"}
     assert "questions" not in req and "choices" not in req
-    assert req["card"] == {"command": "echo [redacted]", "why": "Say hi"}
+    assert "ghp_abcdef123456" not in req["card"]["command"] and req["card"]["why"] == "Say hi"
     assert out(capsys) == {"hookSpecificOutput": {"hookEventName": "PermissionRequest",
                                                   "decision": {"behavior": "allow"}}}
 
@@ -142,6 +142,16 @@ def test_approval_card_for_each_kind_of_tool():
     edit = bridge.approval_card("Edit", {"file_path": "/a", "token": "ghp_abcdef123456"}, sub="Explore")
     assert "/a" in edit["command"] and "ghp_abcdef123456" not in edit["command"]
     assert edit["why"] == "Claude wants to use Edit (the Explore subagent)"
+
+
+def test_the_approval_card_shows_a_command_as_hermes_shows_its_own():
+    # agent/redact.py redact_approval_display: every secret shape Hermes knows, not only GitHub's, and hidden
+    # characters made visible, so a command cannot read as harmless on the card
+    key = "sk-proj-abcdefghijklmnop1234567890"
+    card = bridge.approval_card("Bash", {"command": f"export OPENAI_API_KEY={key}; rm -rf /‮ tmp",
+                                         "description": "Clean ‮up"})
+    assert key not in card["command"]
+    assert "‮" not in card["command"] + card["why"] and "\\u202e" in card["command"]
 
 
 def test_an_allow_never_carries_a_permission_update():

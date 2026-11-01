@@ -187,7 +187,7 @@ def lead(req, n):
 def render(req, n, *, cap, label_max, tail, number_multi=True):
     """Question n's message text, at most `cap` characters; `tail` is the channel's hint lines. The text names only
     what the buttons (see `buttons`) lack."""
-    q = req["questions"][n]
+    q, question = req["questions"][n], core.display(req["questions"][n]["text"], prose=True)
     head = [h for h in [lead(req, n)] if h]
     tail = list(tail)
     shown = buttons(req, n, label_max=label_max, number_multi=number_multi)
@@ -196,22 +196,22 @@ def render(req, n, *, cap, label_max, tail, number_multi=True):
         # The buttons carry the labels: add only what a button lacks, a description (dropped first) or a cut label,
         # under the button's number when it has one.
         notes = []
-        for i, (o, choice, button) in enumerate(zip(q["options"], req["choices"][n], shown)):
+        for i, (o, choice, button) in enumerate(zip(q["options"], choices(req, n), shown)):
             said = described and o.get("description") and o["description"].strip() != o["label"].strip()
             if said or choice not in button:
                 name = f"{i + 1}. {choice}" if button.startswith(f"{i + 1}. ") else choice
-                notes.append(f"• {name}: {o['description']}" if said else f"• {name}")
+                notes.append(f"• {name}: {core.display(o['description'], prose=True)}" if said else f"• {name}")
         return "\n\n".join([*head, body, *(["\n".join(notes)] if notes else []), *tail])
 
     if req.get("hints") and hints(req):  # kept whole like the tail: a cap cuts the reason first
         tail = ["**What each button does**\n" + "\n".join(req["hints"]), *tail]
-    text = build(True, q["text"])
+    text = build(True, question)
     if len(text) > cap:
         tail.append("Some option details did not fit in this message.")
-        text = build(False, q["text"])
+        text = build(False, question)
     if len(text) > cap:
         room = cap - len(build(False, ""))
-        text = build(False, q["text"][:max(room - 1, 0)] + "…")
+        text = build(False, question[:max(room - 1, 0)] + "…")
     return text[:cap]
 
 
@@ -219,12 +219,18 @@ def buttons(req, n, *, label_max, number_multi):
     """Each choice's button text: its label cut to label_max, numbered when several may be picked and the typed
     answer names the numbers (number_multi), or when plain labels would leave a button blank or two alike after the
     cut."""
-    choices = req["choices"][n]
-    plain = [fit(c, label_max) for c in choices]
+    shown = choices(req, n)
+    plain = [fit(c, label_max) for c in shown]
     if (number_multi and req["questions"][n].get("multi")) or len(set(plain)) < len(plain) or not all(
             p.strip() for p in plain):
-        return [fit(f"{i + 1}. {c}", label_max) for i, c in enumerate(choices)]
+        return [fit(f"{i + 1}. {c}", label_max) for i, c in enumerate(shown)]
     return plain
+
+
+def choices(req, n):
+    """Question n's choices as shown (core.display). The request keeps the raw ones: an answer maps back by index, and
+    two that display alike get numbered buttons (see `buttons`)."""
+    return [core.display(c, prose=True) for c in req["choices"][n]]
 
 
 def fit(s, label_max):
