@@ -1778,9 +1778,38 @@ def test_dry_run_preserves_nothing(world, capsys):
 # 19. the host seam -----
 
 def test_host_never_enters_a_links_digest(world):
+    world.card["host"] = "herdr"
+    world._write_card()
     assert main([]) == 0
     found, _ = cleanup.targets()
-    assert found and not any("host" in target.get("link", {}) for target in found)
+    assert found
+    for target in found:
+        link = target.get("link", {})
+        assert "host" not in link and "host" not in link.get("card", {})
+
+
+def test_a_card_naming_an_unknown_host_keeps_only_that_worktree(world, capsys):
+    world.card["host"] = "bogus"
+    world._write_card()
+    world.extra = []
+    _analysis(world, "wY-x.json", "wY", "x", "term_y")
+    assert main([]) in (0, 1)
+    out = capsys.readouterr().out
+    assert "kept" in out and "bogus" in out
+    assert "wY x: kept, quiet clock starts now" in out
+
+
+def test_a_corrupt_card_still_claims_its_path_against_a_run_record(world):
+    (world.git_dir / core.CARD_FILE).write_text("{not json")
+    as_run_rec = {"kind": "coding", "repo": REPO, "clone": str(world.clone), "branch": world.branch, "base": "main",
+                  "worktree": world.path, "workspace": world.workspace, "card": "t_run1"}
+    directory = runs.runs_dir() / "t_run1"
+    directory.mkdir(parents=True)
+    (directory / "run.json").write_text(json.dumps(as_run_rec))
+    for _ in range(7):
+        assert main([]) == 1  # the unreadable card fails every pass
+        world.t[0] += 300
+    assert removes(world) == []
 
 
 def _cannot_remove(world, capsys, error):

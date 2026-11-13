@@ -165,7 +165,8 @@ def intake_link(repo, wt, host):
                        f"{host.NAME} has {wt.get('branch')} {path} {workspace}")
     return {"repo": repo, "branch": f"{config.settings['branch_prefix']}{number}",
             "base": card.get("base", "main"),  # cards from before the base was recorded
-            "worktree": path, "workspace": workspace, "issue": number, "card": card}
+            "worktree": path, "workspace": workspace, "issue": number,
+            "card": {k: v for k, v in card.items() if k != "host"}}
 
 
 def regular(root, rel):
@@ -934,14 +935,20 @@ def targets(dry=False):
                 card_file = Path(git(wt["path"], "rev-parse", "--absolute-git-dir").strip(), core.CARD_FILE)
                 if not card_file.is_file():
                     continue  # the user's own branch, or a run's: not an issue worktree
-                card = json.loads(card_file.read_text())
             except FAILURES as error:
                 say(f"{repo}: {wt['path']}: kept, check failed: {error}")
                 failed = True
                 continue
-            paths.add(wt["path"])
-            found.append(coding_target(f"{repo}#{branch[len(prefix):]}", repo, clone, wt["path"],
-                                       host=hosts.of(card)))
+            paths.add(wt["path"])  # claimed even when its card is unreadable: no record may take it over
+            try:
+                host = hosts.of(json.loads(card_file.read_text()))
+            except config.ConfigError as error:
+                say(f"{repo}: {wt['path']}: kept, {error}")
+                failed = True
+                continue
+            except FAILURES:
+                host = hosts.get("herdr")  # its check reads the card again and raises
+            found.append(coding_target(f"{repo}#{branch[len(prefix):]}", repo, clone, wt["path"], host=host))
     # Newest first: a branch reused after its old card was archived is claimed by its current run.
     records = sorted(runs.runs_dir().glob("*/run.json"), key=lambda p: p.stat().st_mtime, reverse=True)
     for record in records + sorted(owned_dir().glob("*.json")):
@@ -973,7 +980,7 @@ def targets(dry=False):
                 found.append(coding_target(f"{rec['repo']} {rec['branch']}", rec["repo"], rec["clone"],
                                            rec["worktree"], link, record if owned else None,
                                            None if owned else record.parent.name, host=host))
-        except FAILURES as error:
+        except (*FAILURES, config.ConfigError) as error:
             say(f"{record}: kept, unreadable: {error}")
             failed = True
     return found, failed
