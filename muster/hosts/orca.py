@@ -124,7 +124,7 @@ def own(row):
 
 
 def shown(row):
-    """The name a live terminal shows: its pane title, or, on a headless `orca serve` (no window, so no pane titles;
+    """The name a live terminal shows: its pane title, or, on `orca serve` (no pane titles, even with a window attached;
     live check 2026-11-13), the tab title `terminal create --title` set. A running agent repaints the tab title, so
     this only finds a terminal by name before its agent starts; the pane key (tab:leaf) is the identity."""
     return None if row.get("orphaned") else row.get("paneTitle") or row.get("title")
