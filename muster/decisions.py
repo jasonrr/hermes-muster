@@ -975,7 +975,7 @@ def _send(req, boot):
         try:
             hosts.of(run).prompt(run["pane"], wire)
         except core.CommandError as caught:  # not proof the prompt did not arrive: the hook's evidence decides
-            core.log("decisions", f"{rid}: herdr prompt: {caught}")
+            core.log("decisions", f"{rid}: {hosts.of(run).NAME} prompt: {caught}")
     end = time.monotonic() + SEEN_WAIT
     while not launcher.seen(evidence, sha):
         if time.monotonic() >= end:

@@ -330,6 +330,7 @@ def recover(card, resend=False, adopt=False):
                                  launcher.agent_name("run", run["branch"].split("/", 1)[1]), config.settings["agent_model"],
                                  directory / "settings.json", "run", launcher.pane_env())
                 plan["host"] = "herdr"  # a run from before launch records lives in herdr, whatever the setting says now
+                plan["path"] = plan["planned"] = hosts.get("herdr").worktree_path(run["clone"], run["branch"])
                 live = hosts.of(plan).agent(run["pane"]) if run.get("pane") else None
                 plan.update(workspace=run.get("workspace"), pane=run.get("pane") if live else None,
                             prompt={"state": "unknown", "at": None, "seq": None} if live else None)

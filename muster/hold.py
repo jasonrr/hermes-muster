@@ -261,7 +261,7 @@ def deliver(rec):
     try:
         hosts.of(run["launch"]).prompt(run["launch"]["pane"], delivery["text"])
     except core.CommandError as error:  # not proof it did not arrive: the hook's evidence decides
-        core.log("hold", f"{rec['card']}: herdr prompt: {error}")
+        core.log("hold", f"{rec['card']}: {hosts.of(run['launch']).NAME} prompt: {error}")
 
 
 def resolve(rec, state, reason):
