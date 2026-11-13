@@ -209,3 +209,5 @@
 ## orca-host (PR #73, 2026-11-12)
 
 - A plan that adds a key to a record, claiming "existing tests pass unchanged" → exact-dict assertions break (test_core links, test_decisions run_of); grep tests for `== {` on that dict before claiming it.
+- Reading a record earlier inside a loop (here: parsing the card before `paths.add`) can drop a side effect another branch relied on → a corrupt card stopped claiming its path and a run record could remove that worktree; keep claims before anything that can fail.
+- A test that inspects lazily-filled state (a target link filled only in check()) passes vacuously; run the test against the pre-fix code before trusting it.
