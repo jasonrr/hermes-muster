@@ -213,3 +213,5 @@
 - A test that inspects lazily-filled state (a target link filled only in check()) passes vacuously; run the test against the pre-fix code before trusting it.
 - A reviewer's "fail closed" fix on a lookup every launch makes (raise on any orphaned terminal) turns a rare crash-window miss into a stall of all launches after a routine restart → before applying an invariant fix, check how often its trigger state occurs on the hot path.
 - A plan's verify command for an opt-in suite (tests/acceptance) copied only the opt-in flag → it fails at import without HERMES_AGENT_DIR; copy the whole invocation from the suite's README.
+- Discovery that lists through the configured host (here `hosts.configured()` in cleanup) makes that host's outage stall every other host's cleanup → list from the shared substrate (git) and let a down host read as "unknown", never as an error for the whole repo.
+- A side effect placed only on the create path (Orca's external-worktree visibility) is skipped by crash recovery and adopt, which reuse an existing checkout → put idempotent preconditions on the step every path passes through (open_tab), not on create.
