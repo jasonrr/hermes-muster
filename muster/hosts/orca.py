@@ -174,19 +174,18 @@ def open_tab(workspace, path, label, env, title):
 
 def agent(target):
     """The agent in a pane (a key) or under a name (a pane title anywhere), in herdr's shape; None when there is
-    none. Raises when Orca cannot tell: an orphaned terminal, or a name that matches nothing while orphaned
-    terminals (which carry no title) exist. A pane key's name is the title in the key, which Claude's own terminal
-    title updates cannot change."""
+    none. Raises when Orca cannot tell (an orphaned terminal). A pane key's name is the title in the key, which
+    Claude's own terminal title updates cannot change."""
     if target.startswith("orca:"):
         row = find(target)
     else:
-        every = terminals()
-        rows = [t for t in every if t.get("paneTitle") == target and not t.get("orphaned")]
+        # ponytail: an orphaned terminal has no title, so a name lookup cannot see it. Every fresh launch looks its
+        # name up, so raising on any orphan would stall all launches after an Orca restart. The miss only matters
+        # after a crash between open_tab and its save AND an Orca restart; record the workspace with the name if
+        # that ever happens.
+        rows = [t for t in terminals() if t.get("paneTitle") == target and not t.get("orphaned")]
         if len(rows) > 1:
             raise core.CommandError(f"orca: {len(rows)} terminals in Orca are titled {target}; close the extra one")
-        if not rows and any(t.get("orphaned") for t in every):
-            raise core.CommandError(f"orca: no terminal titled {target}, but some are detached from Orca's window "
-                                    f"(Orca restarted?); open their workspace in Orca")
         row = rows[0] if rows else None
     if row is None:
         return None

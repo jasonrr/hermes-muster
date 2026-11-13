@@ -173,12 +173,11 @@ def test_an_unknown_orca_state_is_neither_ready_nor_delivered(world):
     assert status not in hosts.READY and status not in hosts.DELIVERED
 
 
-def test_after_a_restart_a_name_lookup_is_unknown_not_none(world):
+def test_an_orphan_elsewhere_does_not_stall_a_name_lookup(world):
     _, p = tab(world)
     orca.start_agent("run-x", "claude", p, [], [])
     world.restart()
-    with pytest.raises(core.CommandError, match="Orca restarted"):
-        orca.agent("run-x")
+    assert orca.agent("run-y") is None
 
 
 def test_a_delivered_prompt_stays_delivered_if_the_state_read_fails(world, monkeypatch):
