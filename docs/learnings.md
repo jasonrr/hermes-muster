@@ -205,3 +205,7 @@
 - The acceptance rig called the gateway ready once the Slack socket opened → the local Hermes Slack-health commit (2d7a947838) publishes `retrying` until its first Socket Mode watchdog tick (~15 s), and `decisions.gateway_up` reads the published state, so every lifecycle launch fell back to the channel and the gate failed on both the old and new install. The rig now waits for the published `connected`, as muster does.
 - muster's cards bypass Hermes's `_ask_human`/`clarify_tool`, so they missed `agent.redact.redact_approval_display` (all secret shapes, hidden characters shown) → `core.display` applies it at render; requests keep raw labels because answers map back by index. `tests/fake_hermes.py` replaces `agent.redact` wholesale, so a new function muster calls there must be added to the fake or the Telegram gateway tests fail silently in a background handler.
 - A card has a second text besides its blocks: `shared.fallback` builds the notification/screen-reader text from the raw question → redacting only `render`/`buttons` left the secret in the push notification; any display rule must cover `fallback` too.
+
+## orca-host (PR #73, 2026-11-12)
+
+- A plan that adds a key to a record, claiming "existing tests pass unchanged" → exact-dict assertions break (test_core links, test_decisions run_of); grep tests for `== {` on that dict before claiming it.
