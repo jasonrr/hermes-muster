@@ -158,8 +158,10 @@ def run(argv, env=None):
         raise CommandError(SECRET.sub("[redacted]", f"{' '.join(argv[:3])}: no answer in 300 s")) from None
     if result.returncode != 0:
         # Redacted here, where every CommandError is made: its text reaches card bodies and logs.
-        raise CommandError(SECRET.sub("[redacted]", f"{' '.join(argv[:3])}: exit {result.returncode}\n"
-                                                    f"{result.stderr.strip()}"))
+        detail = result.stderr.strip()
+        if not detail and argv[0] == "orca":  # Orca prints its JSON error on stdout: keep it, for its error code
+            detail = result.stdout.strip()[:2000]
+        raise CommandError(SECRET.sub("[redacted]", f"{' '.join(argv[:3])}: exit {result.returncode}\n{detail}"))
     return result.stdout
 
 
@@ -168,9 +170,10 @@ def kanban(*args):
 
 
 def prepare_env():
-    """Point every hermes call at the configured home, and find hermes and herdr under cron's bare PATH."""
+    """Point every hermes call at the configured home, and find hermes, herdr, orca and lsof under cron's bare PATH."""
     os.environ["HERMES_HOME"] = os.environ.get("HERMES_HOME", str(Path.home() / ".hermes"))
-    os.environ["PATH"] = f"{Path.home() / '.local/bin'}:/opt/homebrew/bin:{os.environ.get('PATH', '')}"
+    os.environ["PATH"] = (f"{Path.home() / '.local/bin'}:/opt/homebrew/bin:/Applications/Orca.app/Contents/Resources/bin"
+                          f":/usr/sbin:{os.environ.get('PATH', '')}")
 
 
 def board_exists():

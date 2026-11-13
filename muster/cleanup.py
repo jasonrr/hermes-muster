@@ -90,6 +90,7 @@ from datetime import datetime
 from pathlib import Path
 
 from . import config, conversation, core, decisions, events, launcher, runs
+from .hosts import QUIET, NotReady, helper, processes, under
 
 
 def state_path():
@@ -114,14 +115,6 @@ OVERDUE = 86400  # s after a run's work resolved before a worktree still kept is
 MAX_GAP = 900
 # How far GitHub's merge time may run ahead of this clock before the clock is not trusted.
 SKEW = 300
-# The only foreground processes a pane without an agent may run.
-# The herdr layout's own tools: herdr-reviewr and herdr-file-view only show files; lazygit keeps
-# nothing but the repository, and a change it has not committed still fails `clean`.
-QUIET = {"zsh", "bash", "sh", "fish", "herdr-reviewr", "herdr-file-view", "lazygit"}
-# Long-lived helpers an agent keeps under it while idle: MCP servers and language servers, named by
-# the program or its first argument (`tally mcp`, `pyright-langserver`, `node .../langserver.index.js`),
-# never by a path or word further along. An MCP server named otherwise keeps the workspace (safe side).
-HELPER = re.compile(r"mcp|.+-mcp|mcp-.+|.*langserver.*|.+-language-server|.+-lsp", re.I)
 # Agent scaffolding files a tool copies into each new worktree.
 # Only these paths may be deleted as copies, and only when `copied` proves them one.
 SCAFFOLD = re.compile(r"AGENTS\.md|\.agents/.+|\.codex/.+")
@@ -134,10 +127,6 @@ ASK_LINE = config.prompt("cleanup-warning-cue")
 KEEP = ("- Keep it: leave it, or archive this warning card to clear it from the board. Nothing is removed while "
         "this stands.")
 clock = time.time
-
-
-class NotReady(Exception):
-    """A check failed; the message says which."""
 
 
 def say(line):
@@ -181,32 +170,6 @@ def intake_link(repo, wt):
     return {"repo": repo, "branch": f"{config.settings['branch_prefix']}{number}",
             "base": card.get("base", "main"),  # cards from before the base was recorded
             "worktree": path, "workspace": workspace, "issue": number, "card": card}
-
-
-def processes():
-    """pid -> (parent pid, command) of every process on this machine."""
-    table = {}
-    for line in core.run(["ps", "-A", "-o", "pid=,ppid=,command="]).splitlines():
-        pid, ppid, *command = line.split(None, 2)
-        table[int(pid)] = (int(ppid), command[0] if command else "")
-    return table
-
-
-def helper(command):
-    """True when the program or its first argument is an MCP or language server."""
-    return any(HELPER.fullmatch(word.rsplit("/", 1)[-1]) for word in command.split()[:2])
-
-
-def under(shell, table):
-    """(pid, depth below the shell, command) of every process the pane's shell started, however deep."""
-    found = []
-    for pid, (_, command) in table.items():
-        up, depth = pid, 0
-        while up in table and up != shell and up > 1 and depth < 64:
-            up, depth = table[up][0], depth + 1
-        if up == shell and pid != shell:
-            found.append((pid, depth, command))
-    return sorted(found)
 
 
 def quiet(workspace):
