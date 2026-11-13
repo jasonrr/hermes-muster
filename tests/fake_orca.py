@@ -31,6 +31,7 @@ class OrcaWorld(World):
         self.procs = {}         # pid -> (ppid, command) (ps)
         self.typed = []         # command lines typed into a shell
         self.title_late = 0     # terminal list calls before a new terminal shows its paneTitle
+        self.headless = False   # `orca serve` with no window: --title is the tab title only, set-pane-title refused
         self.agent_start = "done"   # what a typed `claude` shows first: done | waiting | working | none
         self.boot = []          # states a started agent passes through, one per `worktree ps`, before agent_start
         self.send_mode = "turn_started"  # turn_started | accepted (no turn proof) | blocked | lost (no hook)
@@ -55,7 +56,8 @@ class OrcaWorld(World):
         self.procs[login] = (1, "/usr/bin/login -flpq u /bin/zsh -l")
         self.procs[shell] = (login, "-/bin/zsh -l")
         self.cwds[shell] = path
-        self.terminals[handle] = {"worktreeId": wid, "worktreePath": path, "paneTitle": title,
+        self.terminals[handle] = {"worktreeId": wid, "worktreePath": path, "title": title,
+                                  "paneTitle": None if self.headless else title,
                                   "tabId": self.next_id("tab"), "leafId": self.next_id("leaf"),
                                   "ptyId": f"{wid}@@{handle}", "shell": shell, "login": login,
                                   "late": self.title_late, "orphaned": False, "recordedPaneKey": None}
@@ -81,7 +83,7 @@ class OrcaWorld(World):
         for handle, t in self.terminals.items():
             new = self.next_id("term_")
             moved[new] = {**t, "orphaned": True, "recordedPaneKey": f"{t['tabId']}:{t['leafId']}",
-                          "tabId": f"pty:{t['ptyId']}", "leafId": f"pty:{t['ptyId']}", "paneTitle": None,
+                          "tabId": f"pty:{t['ptyId']}", "leafId": f"pty:{t['ptyId']}", "paneTitle": None, "title": None,
                           "saved": t}
             if handle in self.orca_agents:
                 agents[new] = self.orca_agents[handle]
@@ -182,6 +184,7 @@ class OrcaWorld(World):
                 rows.append({"handle": h, "connected": True, "orphaned": t["orphaned"],
                              "recordedPaneKey": t["recordedPaneKey"],
                              "paneTitle": t["paneTitle"] if t["late"] <= 0 else None,
+                             "title": t.get("title") if t["late"] <= 0 else None,
                              **{k: t[k] for k in ("worktreeId", "worktreePath", "tabId", "leafId", "ptyId")}})
                 t["late"] -= 1
             return ok({"terminals": rows})
@@ -202,6 +205,8 @@ class OrcaWorld(World):
             return ok({"terminal": {"handle": handle, "processId": t["login"], "worktreeId": wid,
                                     "paneKey": self.pane_key(handle), "tabId": t["tabId"], "ptyId": t["ptyId"]}})
         if verb == ["terminal", "set-pane-title"]:
+            if self.headless:
+                fail(argv, "terminal_handle_stale")  # live: a headless runtime refuses it, even for a fresh handle
             t = self.terminals[opt("--terminal")]
             t["paneTitle"], t["late"] = opt("--title"), 0
             return ok({})

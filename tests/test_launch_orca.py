@@ -43,6 +43,25 @@ def test_a_fresh_orca_launch_types_claude_then_delivers_the_brief(w):
     assert w.submitted == [rec["text"]]
 
 
+def test_a_launch_on_a_headless_orca_serve_runs_on_the_tab_title(w):
+    w.headless = True
+    rec = new_rec(w)
+    assert ensure(w, rec) == "working"
+    assert w.submitted == [rec["text"]]
+    assert not calls(w, "orca", "terminal", "set-pane-title")
+    assert orca.agent(rec["name"])["pane_id"] == rec["pane"]
+
+
+def test_a_crash_after_tab_create_on_a_headless_orca_reuses_the_terminal(w):
+    w.headless = True
+    w.crash_after = lambda argv: argv[:3] == ["orca", "terminal", "create"]
+    with pytest.raises(KeyboardInterrupt):
+        ensure(w, new_rec(w))
+    ensure(w, last(w))
+    assert len(calls(w, "orca", "terminal", "create")) == 1
+    assert len(w.submitted) == 1
+
+
 def test_an_existing_branch_with_commits_launches_on_gits_checkout_with_adopt(w):
     w.branches[(str(w.clone), "fix/x")] = "sha_x"
     w.ahead["fix/x"] = 2

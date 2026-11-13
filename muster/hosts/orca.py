@@ -123,12 +123,18 @@ def own(row):
     return f"{row['tabId']}:{row['leafId']}"
 
 
+def shown(row):
+    """The name a live terminal shows: its pane title, or, on a headless `orca serve` (no window, so no pane titles;
+    live check 2026-11-13), the tab title `terminal create --title` set. A running agent repaints the tab title, so
+    this only finds a terminal by name before its agent starts; the pane key (tab:leaf) is the identity."""
+    return None if row.get("orphaned") else row.get("paneTitle") or row.get("title")
+
+
 def find(pane):
     """Orca's terminal row for a pane key (orphaned or not), or None when no terminal matches it."""
     workspace, title, pane_key = parse(pane)
     rows = [t for t in terminals(workspace)
-            if own(t) == pane_key or t.get("recordedPaneKey") == pane_key
-            or (t.get("paneTitle") == title and not t.get("orphaned"))]
+            if own(t) == pane_key or t.get("recordedPaneKey") == pane_key or shown(t) == title]
     if len({t["handle"] for t in rows}) > 1:
         raise core.CommandError(f"orca: {len(rows)} terminals in {workspace} match {title}; close the extra one")
     return rows[0] if rows else None
@@ -152,7 +158,7 @@ def pane(pane_id):
 
 def panes(workspace):
     showing = agents(workspace)
-    return [{"pane_id": key(workspace, t.get("paneTitle") or t["handle"], own(t)), "workspace_id": workspace,
+    return [{"pane_id": key(workspace, shown(t) or t["handle"], own(t)), "workspace_id": workspace,
              "terminal_id": t["ptyId"],
              "agent": (showing.get(own(t)) or {}).get("agentType") or ("unknown" if t.get("orphaned") else None)}
             for t in terminals(workspace)]
@@ -164,15 +170,20 @@ def open_tab(workspace, path, label, env, title):
     ps) only while its repo shows external worktrees, so that is set first (idempotent; recovery and --adopt reach
     here without create_worktree). path, label: unused (the workspace is the checkout)."""
     for t in terminals(workspace):
-        if t.get("paneTitle") == title and not t.get("orphaned"):
+        if shown(t) == title:
             return key(workspace, title, own(t))
     result("repo", "set", "--repo", f"id:{workspace.split('::', 1)[0]}", "--external-worktree-visibility", "show")
     made = result("terminal", "create", "--worktree", f"id:{workspace}", "--title", title)["terminal"]
     pane_id = key(workspace, title, made["paneKey"])
     deadline = clock() + TITLE_WAIT
-    while (find(pane_id) or {}).get("paneTitle") != title:
+    while shown(find(pane_id) or {}) != title:
         if clock() >= deadline:
-            result("terminal", "set-pane-title", "--terminal", made["handle"], "--title", title)
+            try:
+                result("terminal", "set-pane-title", "--terminal", made["handle"], "--title", title)
+            except core.CommandError as error:
+                if "terminal_handle_stale" not in str(error):
+                    raise
+                # The pane key finds the terminal without a title; only a name lookup (crash recovery) needs it.
             break
         sleep(0.5)
     return pane_id
@@ -189,7 +200,7 @@ def agent(target):
         # name up, so raising on any orphan would stall all launches after an Orca restart. The miss only matters
         # after a crash between open_tab and its save AND an Orca restart; record the workspace with the name if
         # that ever happens.
-        rows = [t for t in terminals() if t.get("paneTitle") == target and not t.get("orphaned")]
+        rows = [t for t in terminals() if shown(t) == target]
         if len(rows) > 1:
             raise core.CommandError(f"orca: {len(rows)} terminals in Orca are titled {target}; close the extra one")
         row = rows[0] if rows else None
@@ -202,7 +213,7 @@ def agent(target):
         return None
     state = found.get("state")
     workspace = row["worktreeId"]
-    pane_id = target if target.startswith("orca:") else key(workspace, row.get("paneTitle"), own(row))
+    pane_id = target if target.startswith("orca:") else key(workspace, shown(row), own(row))
     return {"agent": found.get("agentType"), "name": parse(pane_id)[1], "cwd": row.get("worktreePath"),
             "foreground_cwd": None, "agent_status": STATE.get(state, f"orca-{state}"),
             "state_change_seq": found.get("stateStartedAt"), "completion_seq": None,

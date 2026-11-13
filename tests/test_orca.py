@@ -88,6 +88,14 @@ def test_open_tab_sets_the_title_itself_when_orca_never_shows_it(world, monkeypa
     assert len(calls(world, "orca", "terminal", "set-pane-title")) == 1
 
 
+def test_open_tab_survives_a_headless_orca_refusing_set_pane_title(world, monkeypatch):
+    world.headless, world.title_late = True, 10**6
+    jump(monkeypatch, 0, 0, 100)
+    _, p = tab(world)
+    assert len(calls(world, "orca", "terminal", "set-pane-title")) == 1
+    assert orca.pane(p)
+
+
 def test_open_tab_reuses_a_titled_shell_left_by_a_crash(world):
     ws, p = tab(world)
     assert orca.open_tab(ws, "/unused", "l", [], "run-x") == p
