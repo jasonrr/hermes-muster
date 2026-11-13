@@ -212,3 +212,4 @@
 - Reading a record earlier inside a loop (here: parsing the card before `paths.add`) can drop a side effect another branch relied on → a corrupt card stopped claiming its path and a run record could remove that worktree; keep claims before anything that can fail.
 - A test that inspects lazily-filled state (a target link filled only in check()) passes vacuously; run the test against the pre-fix code before trusting it.
 - A reviewer's "fail closed" fix on a lookup every launch makes (raise on any orphaned terminal) turns a rare crash-window miss into a stall of all launches after a routine restart → before applying an invariant fix, check how often its trigger state occurs on the hot path.
+- A plan's verify command for an opt-in suite (tests/acceptance) copied only the opt-in flag → it fails at import without HERMES_AGENT_DIR; copy the whole invocation from the suite's README.
