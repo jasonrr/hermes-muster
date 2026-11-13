@@ -9,6 +9,7 @@ in its shells, so Claude is typed into a shell, never exec'd with `env`.
 
 import hashlib
 import json
+import os
 import secrets
 import shlex
 import time
@@ -260,11 +261,11 @@ def remove_argv(workspace, path, force):
 
 def cwd_pids(path):
     """pids of processes whose working directory is the checkout or inside it."""
-    found, pid = set(), None
+    found, pid, roots = set(), None, {path, os.path.realpath(path)}  # lsof prints resolved paths
     for line in core.run(["lsof", "-a", "-d", "cwd", "-Fpn"]).splitlines():
         if line.startswith("p"):
             pid = int(line[1:])
-        elif line.startswith("n") and (line[1:] == path or line[1:].startswith(path + "/")):
+        elif line.startswith("n") and any(line[1:] == r or line[1:].startswith(r + "/") for r in roots):
             found.add(pid)
     return found
 
@@ -294,11 +295,16 @@ def quiet(workspace):
                      hashlib.sha256(text.encode()).hexdigest()])
     table, inside = processes(), cwd_pids(path)
     roots = sorted(p for p in inside if p in table and table[p][0] not in inside)
-    odd = [p for p in roots if program(table[p][1]) not in QUIET]
+    # An Orca terminal's shell is a child of a /usr/bin/login wrapper (live check); ps shows it, lsof does not.
+    # ponytail: an Orca shell that left and an outside login shell in the checkout at the same moment balance out;
+    # attributing shells to terminals needs a shell pid from Orca's terminal list.
+    odd = [p for p in roots if program(table[p][1]) not in QUIET or program(table.get(table[p][0], (0, ""))[1]) != "login"]
     if odd:
         raise NotReady(f"{path}: {table[odd[0]][1][:80]} runs outside any terminal's shell")
     if len(roots) < len(rows):
         raise NotReady(f"{path}: {len(rows)} terminals but {len(roots)} shells: a shell left the checkout")
+    if len(roots) > len(rows):
+        raise NotReady(f"{path}: {len(roots)} shells but {len(rows)} terminals: a shell from outside Orca is here")
     kind, agents_running = core.adapter().KIND, 0
     for shell in roots:
         tree = under(shell, table)
@@ -336,8 +342,9 @@ def analysis_gone(rec):
 
 
 def analysis_check(rec):
-    live_or_not = find(rec["pane"])
-    if live_or_not is None:
+    if parse(rec["pane"])[0] != rec["workspace"]:
+        raise NotReady(f"terminal {rec['pane']} belongs to another workspace than {rec['workspace']}")
+    if find(rec["pane"]) is None:
         raise NotReady(f"terminal {rec['pane']} is gone")
 
 

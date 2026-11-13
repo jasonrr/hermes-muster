@@ -304,3 +304,38 @@ def test_analysis_close_and_gone(world, tmp_path):
     assert orca.analysis_gone(rec)
     with pytest.raises(hosts.NotReady):
         orca.close_argv(rec)
+
+
+def test_an_extra_login_shell_in_the_checkout_is_busy(world):
+    path, _, ws, _, _ = quiet_world(world)
+    world.procs[9200] = (1, "/usr/bin/login -flpq u /bin/zsh -l")
+    world.procs[9201] = (9200, "-/bin/zsh -l")
+    world.cwds[9201] = path
+    with pytest.raises(hosts.NotReady, match="shell from outside"):
+        orca.quiet(ws)
+
+
+def test_a_detached_shell_script_in_the_checkout_is_busy(world):
+    path, _, ws, _, _ = quiet_world(world)
+    world.cwds[9300] = path
+    world.procs[9300] = (1, "bash deploy.sh")
+    with pytest.raises(hosts.NotReady, match="outside any terminal"):
+        orca.quiet(ws)
+
+
+def test_cwd_pids_match_the_resolved_path(world, tmp_path):
+    real = tmp_path / "real"
+    real.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(real)
+    world.cwds[9400] = str(real.resolve())
+    assert 9400 in orca.cwd_pids(str(link))
+
+
+def test_analysis_check_rejects_a_pane_from_another_workspace(world, tmp_path):
+    folder = tmp_path / "notes"
+    folder.mkdir()
+    rec = orca.open_workspace(str(folder), "deal review")
+    orca.analysis_check(rec)
+    with pytest.raises(hosts.NotReady, match="belongs to"):
+        orca.analysis_check({**rec, "workspace": "repo99::/elsewhere"})
