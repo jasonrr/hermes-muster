@@ -16,7 +16,7 @@ Edit the file to change the prompt; nothing else holds a copy.
 
 ## Inventory
 
-Trust: **coordinator** = the Hermes agent the human talks to. **builder** = the coding agent in a herdr pane.
+Trust: **coordinator** = the Hermes agent the human talks to. **builder** = the coding agent in a terminal pane.
 **model** = the cheap `ctx.llm` call. Text marked *untrusted* is data that the prompt itself tells the reader is
 never to be taken as instructions.
 

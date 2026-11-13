@@ -48,6 +48,12 @@ accessible alongside Muster's orchestration.
 Muster currently supports Claude Code only. Other or multiple harnesses are a possible extension of
 this approach, not a supported capability today.
 
+### Orca
+
+The same reasons hold for Orca: a run there is a visible, ordinary Claude Code session in a terminal you can
+watch and take over. Orca is an alternative host behind `muster/hosts/`, chosen with the `host` setting. herdr
+stays the default.
+
 ## GitHub identity is a control, not a sandbox
 
 There are separate identity boundaries:

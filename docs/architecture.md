@@ -7,7 +7,7 @@ This page shows how a piece of work moves through muster's code. The [README](..
 1. **Approved work.** There are two routes in:
    - **Issue route:** the human labels a GitHub issue. The `tick` cron reads the label event and checks who applied it (`intake.approve`). It then creates one kanban card for that event (`intake.intake`).
    - **Ad-hoc route:** the Hermes agent runs `hermes muster launch` with a brief. That creates a card keyed `run:<repo>:<branch>` (`adhoc.launch_run`).
-2. **Builder launch.** Both routes subscribe the card notify+wake to the human's chat (`core.subscribe`). Both then call the same launch engine, `launcher.ensure`. It creates a trusted herdr worktree, opens a tab, starts Claude with no task, and sends the brief as the first prompt. Each step is recorded before it runs, so `hermes muster recover <card>` resumes the launch where it stopped (`intake.recover`).
+2. **Builder launch.** Both routes subscribe the card notify+wake to the human's chat (`core.subscribe`). Both then call the same launch engine, `launcher.ensure`. It creates a trusted worktree on the run's host (herdr or Orca), opens a terminal, starts Claude with no task, and sends the brief as the first prompt. Each step is recorded before it runs, so `hermes muster recover <card>` resumes the launch where it stopped (`intake.recover`).
 3. **Agent events.** The pane's Claude Code hooks run `hermes muster hook <event>` (`events.hook`); an ad-hoc pane passes `--card`, which goes to `adhoc.hook`. Every event is saved to the run's outbox first (`runs.enqueue`), then delivered in order (`runs.drain`). An issue run's events go through `events.replay`, an ad-hoc run's through `adhoc.deliver`. The `flush` cron (`runs.flush`) retries anything a hook could not deliver. For ad-hoc runs, it also notices hooks that never ran (`adhoc.reconcile`).
 4. **Human decisions.** When the builder asks a question or needs approval, the hook records a request in `muster.decisions` (`bridge` waits on permission prompts). The gateway shows the request in Telegram or Slack (`gateway`, `channels`) and passes the human's answer back. A finished build or design gets the coordinator's recommendation (`hermes muster recommend` / `recommend-design`). The human's tap carries it out (`decisions.execute`).
 5. **Verified completion.** A turn end alone is not success. An issue run's card completes when the builder runs `hook done <PR url>` and gh names the run's branch as that pull request's head (`events`). An ad-hoc run's card completes only when:
@@ -54,12 +54,12 @@ The three processes share no memory. They communicate only through files under `
 
 | Path | Written by | Holds |
 |---|---|---|
-| kanban board (`board` setting) | `intake`, `adhoc`, `events`, `runs`, `decisions` | One ledger card per run; wait, review and Activate cards; card comments such as the links and proposal versions |
-| `<data dir>/intake/<card>/` | `intake`, `launcher`, `hold` | `launch.json` (the issue launch record), `launch.lock`, `prompt-seen.jsonl`, and a held duplicate's record |
+| kanban board (`board` setting) | `intake`, `adhoc`, `events`, `runs`, `decisions` | One ledger card per run; wait, review and Activate cards; card comments such as the links (with `host`) and proposal versions |
+| `<data dir>/intake/<card>/` | `intake`, `launcher`, `hold` | `launch.json` (the issue launch record, with its `host`), `launch.lock`, `prompt-seen.jsonl`, and a held duplicate's record |
 | `<data dir>/runs/<card>/` | `runs`, `adhoc`, `events`, `progress`, `conversation` | `outbox/`, `sent/` and `lock` for every run. Only an ad-hoc run has `run.json` (its launch record is `run.json`'s `launch`), `brief.md`, `caller-brief.md`, `settings.json`, `launch.lock` and `prompt-seen.jsonl`. Every run has `proposals/`, `activity/`, `progress.json` and `conversation.json` |
-| `<git dir>/muster-card.json`, `muster-brief.md`, `muster-launch-owner.json` | `intake`, `launcher` | The issue worktree's link to its card, the audit copy of its brief, and which launch owns the checkout |
+| `<git dir>/muster-card.json`, `muster-brief.md`, `muster-launch-owner.json` | `intake`, `launcher` | The issue worktree's link to its card (it carries `host`), the audit copy of its brief, and which launch owns the checkout |
 | `<data dir>/decisions/` | `decisions`, `bridge`, `gateway` | One request per file; finished requests move to `archive/` |
-| `<data dir>/workspaces/`, `<data dir>/backups/cleanup/` | `cleanup` | Analysis workspaces muster opened, and backups made before cleanup |
+| `<data dir>/workspaces/`, `<data dir>/backups/cleanup/` | `cleanup` | Analysis workspaces muster opened (each with its `host`), and backups made before cleanup |
 | `<data dir>/logs/` | all | Cron and hook logs, and the `tick` lock |
 
 ## Tracing

@@ -1,7 +1,7 @@
 # muster: Radical-Candor-LLC/radicalcandorai#4
 
 jasonrr approved issue Radical-Candor-LLC/radicalcandorai#4 for work by labeling it `agent-ready`. You are an
-interactive agent in a visible herdr pane on this machine. Nothing isolates you: these rules
+interactive agent in a visible terminal pane on this machine. Nothing isolates you: these rules
 govern you, so follow them.
 
 1. Post one comment so watchers know: `gh issue comment 4 -R Radical-Candor-LLC/radicalcandorai --body "Picked up by muster."`

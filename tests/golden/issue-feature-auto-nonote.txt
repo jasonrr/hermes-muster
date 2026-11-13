@@ -1,7 +1,7 @@
 # muster: Radical-Candor-LLC/RC-Data-Tools#3
 
 Issue Radical-Candor-LLC/RC-Data-Tools#3 was approved automatically. bot{x}`$z` (id 7) opened it with labels `agent-ready` and `auto"q"`, under jasonrr's standing rule. jasonrr did not label it. You are an
-interactive agent in a visible herdr pane on this machine. `gh` and `git push` act as the login configured in `/gh/{cfg}/$x`. Nothing isolates you: these rules
+interactive agent in a visible terminal pane on this machine. `gh` and `git push` act as the login configured in `/gh/{cfg}/$x`. Nothing isolates you: these rules
 govern you, so follow them.
 
 1. Post one comment so watchers know: `gh issue comment 3 -R Radical-Candor-LLC/RC-Data-Tools --body "Picked up by muster."`

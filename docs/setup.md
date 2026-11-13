@@ -6,7 +6,7 @@ Muster does, start with the [README](../README.md).
 ## Requirements
 
 - Hermes >= 0.21.5, with its gateway running and connected to Telegram or Slack.
-- herdr >= 0.9.3, `git`, `gh` (logged in) and Claude Code (`claude`). Claude Code is the only supported
+- herdr >= 0.9.3 **or** Orca (the desktop app, running whenever cron ticks), `git`, `gh` (logged in) and Claude Code (`claude`). Claude Code is the only supported
   coding agent.
 - macOS or Linux.
 - Local clones of the repositories Muster will work in.
@@ -112,7 +112,7 @@ or malformed.
 | `auto_approvers` | `[]` | Bots allowed to start work on their own issues. See [automatic approvals](#automatic-approvals). |
 | `repos` | (required) | A list of `owner/name` (cloned at `clone_root/<name>`) or `owner/name=/abs/clone/path`. Add `@base` to name the base branch (`you/app@develop`, `you/site=/srv/site@master`). See [base branch](#base-branch). |
 | `clone_root` | `~/Code` | Where clones live when an entry gives no path. |
-| `worktrees` | `~/.herdr/worktrees` | herdr's worktree directory. |
+| `worktrees` | `~/.herdr/worktrees` | herdr's worktree directory. Orca uses its own, `~/orca/workspaces`. |
 | `branch_prefix` | `muster/` | Issue branches are named `<prefix><issue number>`. Must be non-empty and used only by Muster, because cleanup treats worktrees on those branches as its own. |
 
 ### The agent and the board
@@ -120,6 +120,7 @@ or malformed.
 | Key | Default | Meaning |
 |---|---|---|
 | `agent_kind` | `claude` | The coding agent. Only `claude` is accepted. |
+| `host` | `herdr` | Terminal host for new runs: `herdr` or `orca`. A run keeps the host it started on, so changing this never moves a running job. |
 | `agent_model` | `opus` | The model passed to Claude Code. |
 | `board` | `muster` | The Hermes kanban board. Give Muster its own board, and create it before the first tick. |
 | `operating_profile` | `""` | The Hermes profile Muster runs as. Empty: the profile it is enabled in. See [Operating profile](#operating-profile). |
@@ -188,6 +189,20 @@ Its outcome is one card comment, such as `project: In Progress` or `project: not
 first 300 items are searched). The `gh` login the tick uses needs the `project` scope:
 `gh auth refresh -s project`.
 
+### Using Orca
+
+herdr stays the default. Set `host: orca` to run new work in Orca instead.
+
+- Orca must be running when cron ticks. Muster finds it at `/Applications/Orca.app/Contents/Resources/bin`.
+- A configured clone is added to Orca on its first run.
+- A branch with commits of its own is checked out by git, because Orca would rename it. That repo is then set to
+  show external worktrees.
+- After Orca restarts, a run's terminal is "detached" until its workspace is open in Orca again. Muster reads it
+  as unknown and waits. It never ends or removes the run meanwhile, and it types nothing into a detached
+  terminal or one with no agent.
+- Orca's CLI cannot remove a folder project, so a `hermes muster open` folder stays listed in Orca. Closing the
+  workspace closes only its muster terminal.
+
 ### Base branch
 
 Worktrees are cut from, and pull requests target, the repository's base branch. Without an `@base` suffix,
@@ -195,8 +210,8 @@ Muster reads `origin/HEAD` in the clone, runs `git remote set-head origin -a` on
 falls back to `main` with a note on the card.
 
 An `@` right after `/` belongs to the path (`node_modules/@scope`); any other `@` in a path is read as the
-suffix, so give such a path an explicit `@base`. Two clones may not share a directory name, because herdr
-names worktrees `<worktrees>/<clone dir name>/<branch>`; give one an explicit path.
+suffix, so give such a path an explicit `@base`. Two clones may not share a directory name, because herdr and Orca
+name worktrees `<worktrees>/<clone dir name>/<branch>`; give one an explicit path.
 
 ## Production notes
 
