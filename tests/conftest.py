@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from muster import config, core
+import muster.hosts.orca as orca
 
 # Hermes's own launcher puts its checkout root on sys.path; its venv's editable-install map can predate newer
 # root modules (hermes_yaml). Appended, so this repo's own packages still win.
@@ -46,4 +47,5 @@ def sandbox(tmp_path, monkeypatch):
     }.items():
         monkeypatch.setitem(config.settings, key, value)
     monkeypatch.setattr(core, "_adapter", None)
+    monkeypatch.setattr(orca, "ROOT", str(tmp_path / "orca-workspaces"))
     return tmp_path
