@@ -85,8 +85,11 @@ def create_worktree(clone, branch, base, path, label):
 
 
 def open_worktree(clone, path, label):
-    """Orca needs no open: a checkout's workspace is its id."""
-    return f"{repo_id(clone)}::{path}"
+    """Orca needs no open: a checkout's workspace is its id. A checkout git made outside Orca is visible to Orca
+    (terminal create, worktree ps) only while the repo shows external worktrees, so that is set (idempotent)."""
+    rid = repo_id(clone)
+    result("repo", "set", "--repo", f"id:{rid}", "--external-worktree-visibility", "show")
+    return f"{rid}::{path}"
 
 
 def key(workspace, title, pane_key):
@@ -171,13 +174,19 @@ def open_tab(workspace, path, label, env, title):
 
 def agent(target):
     """The agent in a pane (a key) or under a name (a pane title anywhere), in herdr's shape; None when there is
-    none. Raises when Orca cannot tell (an orphaned terminal)."""
+    none. Raises when Orca cannot tell: an orphaned terminal, or a name that matches nothing while orphaned
+    terminals (which carry no title) exist. A pane key's name is the title in the key, which Claude's own terminal
+    title updates cannot change."""
     if target.startswith("orca:"):
         row = find(target)
     else:
-        rows = [t for t in terminals() if t.get("paneTitle") == target and not t.get("orphaned")]
+        every = terminals()
+        rows = [t for t in every if t.get("paneTitle") == target and not t.get("orphaned")]
         if len(rows) > 1:
             raise core.CommandError(f"orca: {len(rows)} terminals in Orca are titled {target}; close the extra one")
+        if not rows and any(t.get("orphaned") for t in every):
+            raise core.CommandError(f"orca: no terminal titled {target}, but some are detached from Orca's window "
+                                    f"(Orca restarted?); open their workspace in Orca")
         row = rows[0] if rows else None
     if row is None:
         return None
@@ -187,9 +196,9 @@ def agent(target):
     if not found:
         return None
     state = found.get("state")
-    workspace, title = row["worktreeId"], row.get("paneTitle")
-    pane_id = target if target.startswith("orca:") else key(workspace, title, own(row))
-    return {"agent": found.get("agentType"), "name": title or parse(pane_id)[1], "cwd": row.get("worktreePath"),
+    workspace = row["worktreeId"]
+    pane_id = target if target.startswith("orca:") else key(workspace, row.get("paneTitle"), own(row))
+    return {"agent": found.get("agentType"), "name": parse(pane_id)[1], "cwd": row.get("worktreePath"),
             "foreground_cwd": None, "agent_status": STATE.get(state, f"orca-{state}"),
             "state_change_seq": found.get("stateStartedAt"), "completion_seq": None,
             "pane_id": pane_id, "workspace_id": workspace}
@@ -217,8 +226,11 @@ def start_agent(name, kind, pane_id, args, env):
 
 def prompt(pane_id, text):
     """One prompt with Orca's proof: `turn_started` is delivered (working, or blocked when a dialog is already up);
-    agent_prompt_blocked sent nothing; anything else is unproven."""
+    agent_prompt_blocked sent nothing; anything else is unproven. A pane with no agent (Claude exited, a bare
+    shell) gets nothing typed. Once the turn is proven, a failed state read does not undo the delivery."""
     row = live(pane_id)
+    if agent(pane_id) is None:
+        raise core.CommandError(f"orca: no agent in {pane_id}; nothing sent")
     try:
         sent = result("terminal", "send", "--terminal", row["handle"], "--text", text, "--enter",
                       "--wait-submit", "30")["send"]
@@ -228,7 +240,10 @@ def prompt(pane_id, text):
         raise
     if "turn_started" not in ((sent.get("prompt") or {}).get("stages") or []):
         raise core.CommandError(f"orca: the prompt to {pane_id} was accepted; no turn start was seen in 30 s")
-    now = agent(pane_id)
+    try:
+        now = agent(pane_id)
+    except core.CommandError:
+        return "working"
     return "blocked" if now and now["agent_status"] == "blocked" else "working"
 
 

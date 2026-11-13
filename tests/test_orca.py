@@ -173,6 +173,47 @@ def test_an_unknown_orca_state_is_neither_ready_nor_delivered(world):
     assert status not in hosts.READY and status not in hosts.DELIVERED
 
 
+def test_after_a_restart_a_name_lookup_is_unknown_not_none(world):
+    _, p = tab(world)
+    orca.start_agent("run-x", "claude", p, [], [])
+    world.restart()
+    with pytest.raises(core.CommandError, match="Orca restarted"):
+        orca.agent("run-x")
+
+
+def test_a_delivered_prompt_stays_delivered_if_the_state_read_fails(world, monkeypatch):
+    _, p = tab(world)
+    orca.start_agent("run-x", "claude", p, [], [])
+    real = orca.agent
+
+    def agent(target):
+        if world.submitted:
+            raise core.CommandError("orca: flaky")
+        return real(target)
+    monkeypatch.setattr(orca, "agent", agent)
+    assert orca.prompt(p, "hi") == "working"
+
+
+def test_a_prompt_into_a_bare_shell_sends_nothing(world):
+    _, p = tab(world)
+    with pytest.raises(core.CommandError, match="nothing sent"):
+        orca.prompt(p, "hi")
+    assert not calls(world, "orca", "terminal", "send")
+
+
+def test_open_worktree_shows_external_checkouts(world):
+    world.repos[str(world.clone)] = "repo9"
+    assert orca.open_worktree(str(world.clone), "/p", "l") == "repo9::/p"
+    assert world.visible == {"repo9"}
+
+
+def test_agent_by_key_keeps_the_keys_title_when_claude_retitles_the_terminal(world):
+    _, p = tab(world)
+    orca.start_agent("run-x", "claude", p, [], [])
+    next(t for t in world.terminals.values() if t["paneTitle"] == "run-x")["paneTitle"] = "Claude: fixing a bug"
+    assert orca.agent(p)["name"] == "run-x"
+
+
 def test_remove_argv_names_the_checkout_by_path():
     assert orca.remove_argv("rid::/p", "/p", True) == [
         "orca", "worktree", "rm", "--worktree", "path:/p", "--force", "--json"]
