@@ -215,3 +215,4 @@
 - A plan's verify command for an opt-in suite (tests/acceptance) copied only the opt-in flag → it fails at import without HERMES_AGENT_DIR; copy the whole invocation from the suite's README.
 - Discovery that lists through the configured host (here `hosts.configured()` in cleanup) makes that host's outage stall every other host's cleanup → list from the shared substrate (git) and let a down host read as "unknown", never as an error for the whole repo.
 - A side effect placed only on the create path (Orca's external-worktree visibility) is skipped by crash recovery and adopt, which reuse an existing checkout → put idempotent preconditions on the step every path passes through (open_tab), not on create.
+- A live check run with the desktop window open does not cover the headless runtime (`orca serve`): pane titles need a renderer → run host live checks in every runtime mode the operator will use.
