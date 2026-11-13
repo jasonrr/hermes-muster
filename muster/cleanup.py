@@ -32,8 +32,8 @@ Those facts, with each pane's agent state counter, foreground processes and visi
 a fingerprint. herdr keeps no idle timestamp, so the state file records when this job first saw the
 current fingerprint. Once runs no more than MAX_GAP apart, on a clock that never went backwards,
 have seen the same fingerprint for IDLE seconds, everything is read again, and only if it still
-matches does `herdr worktree remove --workspace` (coding) or `herdr workspace close` (analysis)
-run, never with --force unless preserve() kept the checkout first (below). The branch stays, locally and on GitHub. Any failed check or command
+matches does the host's remove (herdr: `herdr worktree remove --workspace`; orca: `orca worktree rm`) or
+close (herdr: `herdr workspace close`; orca: close muster's own terminal) run, never with --force unless preserve() kept the checkout first (below). The branch stays, locally and on GitHub. Any failed check or command
 drops the record, so the 30-minute window starts over. Before that remove, the scaffolding copies
 are read again, backed up under backups/cleanup with a manifest, and deleted, since git refuses to
 remove a checkout with untracked files; any change to them since the check keeps the workspace.
@@ -89,7 +89,8 @@ import tomllib
 from datetime import datetime
 from pathlib import Path
 
-from . import config, conversation, core, decisions, events, launcher, runs
+from . import config, conversation, core, decisions, events, hosts, launcher, runs
+from .hosts import NotReady
 
 
 def state_path():
@@ -114,14 +115,6 @@ OVERDUE = 86400  # s after a run's work resolved before a worktree still kept is
 MAX_GAP = 900
 # How far GitHub's merge time may run ahead of this clock before the clock is not trusted.
 SKEW = 300
-# The only foreground processes a pane without an agent may run.
-# The herdr layout's own tools: herdr-reviewr and herdr-file-view only show files; lazygit keeps
-# nothing but the repository, and a change it has not committed still fails `clean`.
-QUIET = {"zsh", "bash", "sh", "fish", "herdr-reviewr", "herdr-file-view", "lazygit"}
-# Long-lived helpers an agent keeps under it while idle: MCP servers and language servers, named by
-# the program or its first argument (`tally mcp`, `pyright-langserver`, `node .../langserver.index.js`),
-# never by a path or word further along. An MCP server named otherwise keeps the workspace (safe side).
-HELPER = re.compile(r"mcp|.+-mcp|mcp-.+|.*langserver.*|.+-language-server|.+-lsp", re.I)
 # Agent scaffolding files a tool copies into each new worktree.
 # Only these paths may be deleted as copies, and only when `copied` proves them one.
 SCAFFOLD = re.compile(r"AGENTS\.md|\.agents/.+|\.codex/.+")
@@ -136,17 +129,9 @@ KEEP = ("- Keep it: leave it, or archive this warning card to clear it from the 
 clock = time.time
 
 
-class NotReady(Exception):
-    """A check failed; the message says which."""
-
-
 def say(line):
     """One log line: whitespace folded, anything shaped like a GitHub token redacted."""
     print(core.SECRET.sub("[redacted]", " ".join(str(line).split()))[:400])
-
-
-def herdr(*args):
-    return json.loads(core.run(["herdr", *args]))["result"]
 
 
 def git(path, *args):
@@ -157,19 +142,49 @@ def digest(data):
     return hashlib.sha256(json.dumps(data).encode()).hexdigest()
 
 
-def listed(clone):
-    return [w for w in herdr("worktree", "list", "--cwd", str(clone))["worktrees"] if w.get("is_linked_worktree")]
+class Fingerprint(str):
+    """digest(parts' values), carrying the evidence it was made from so a restarted quiet clock can say what moved."""
+    evidence: dict | None = None
 
 
-def find(clone, path):
-    """herdr's current entry for this checkout. NotReady when herdr no longer lists it."""
-    wt = next((w for w in listed(clone) if w.get("path") == path), None)
+def fingerprint(**parts):
+    made = Fingerprint(digest(list(parts.values())))  # the same digest as before: no clock restarts on upgrade
+    made.evidence = {"parts": {k: digest(v) for k, v in parts.items() if k != "seen"}, "seen": parts["seen"]}
+    return made
+
+
+def moved(old, new):
+    """What differs between two evidence records: part names, and each pane entry (keyed by its first field) as
+    old -> new."""
+    if not isinstance(old, dict):
+        return "no evidence from the last run"
+    names = [k for k in new["parts"] if old.get("parts", {}).get(k) != new["parts"][k]]
+    def by_id(seen):
+        return {str(e[0] if isinstance(e, list) and e else i): e for i, e in enumerate(seen or [])}
+    was, now = by_id(old.get("seen")), by_id(new["seen"])
+    names += [f"seen {k}: {json.dumps(was.get(k))} -> {json.dumps(now.get(k))}"
+              for k in sorted(was.keys() | now.keys()) if was.get(k) != now.get(k)]
+    return "; ".join(names) or "nothing in the evidence"
+
+
+def logged(line):
+    say(line)
+    core.log("cleanup", core.SECRET.sub("[redacted]", line))
+
+
+def listed(clone, host):
+    return [w for w in host.worktrees(clone) if w.get("is_linked_worktree")]
+
+
+def find(clone, path, host):
+    """The host's current entry for this checkout. NotReady when it no longer lists it."""
+    wt = next((w for w in listed(clone, host) if w.get("path") == path), None)
     if wt is None:
-        raise NotReady(f"herdr no longer lists {path}")
+        raise NotReady(f"{host.NAME} no longer lists {path}")
     return wt
 
 
-def intake_link(repo, wt):
+def intake_link(repo, wt, host):
     """An issue worktree's link, from the card the launch left in its git dir."""
     path, workspace = wt["path"], wt.get("open_workspace_id")
     card = json.loads(Path(git(path, "rev-parse", "--absolute-git-dir").strip(), core.CARD_FILE).read_text())
@@ -177,74 +192,11 @@ def intake_link(repo, wt):
     if (not isinstance(number, int)
             or (card.get("repo"), card.get("worktree"), card.get("workspace")) != (repo, path, workspace)):
         raise NotReady(f"card names {card.get('repo')}#{number} {card.get('worktree')} {card.get('workspace')}; "
-                       f"herdr has {wt.get('branch')} {path} {workspace}")
+                       f"{host.NAME} has {wt.get('branch')} {path} {workspace}")
     return {"repo": repo, "branch": f"{config.settings['branch_prefix']}{number}",
             "base": card.get("base", "main"),  # cards from before the base was recorded
-            "worktree": path, "workspace": workspace, "issue": number, "card": card}
-
-
-def processes():
-    """pid -> (parent pid, command) of every process on this machine."""
-    table = {}
-    for line in core.run(["ps", "-A", "-o", "pid=,ppid=,command="]).splitlines():
-        pid, ppid, *command = line.split(None, 2)
-        table[int(pid)] = (int(ppid), command[0] if command else "")
-    return table
-
-
-def helper(command):
-    """True when the program or its first argument is an MCP or language server."""
-    return any(HELPER.fullmatch(word.rsplit("/", 1)[-1]) for word in command.split()[:2])
-
-
-def under(shell, table):
-    """(pid, depth below the shell, command) of every process the pane's shell started, however deep."""
-    found = []
-    for pid, (_, command) in table.items():
-        up, depth = pid, 0
-        while up in table and up != shell and up > 1 and depth < 64:
-            up, depth = table[up][0], depth + 1
-        if up == shell and pid != shell:
-            found.append((pid, depth, command))
-    return sorted(found)
-
-
-def quiet(workspace):
-    """Each pane's evidence. NotReady when a pane is busy."""
-    panes = herdr("pane", "list", "--workspace", workspace)["panes"]
-    if not panes or any(p.get("workspace_id") != workspace for p in panes):
-        raise NotReady(f"workspace {workspace} lists no panes, or another workspace's")
-    table = processes()
-    seen = []
-    for pane in sorted(panes, key=lambda p: p["pane_id"]):
-        pid = pane["pane_id"]
-        info = herdr("pane", "process-info", "--pane", pid)["process_info"]
-        procs = info["foreground_processes"]
-        # A job started with & or an agent's background command: anything under the shell that is
-        # neither the pane's foreground program nor a helper. A job detached with nohup or setsid
-        # leaves this tree, and closing the pane does not stop it either.
-        if info.get("shell_pid") not in table:
-            raise NotReady(f"pane {pid}: its shell {info.get('shell_pid')} is not running")
-        tree = under(info["shell_pid"], table)
-        foreground = {p.get("pid") for p in procs}
-        busy = [c for p, depth, c in tree if not (depth == 1 and p in foreground) and not helper(c)]
-        if busy:
-            raise NotReady(f"pane {pid} runs in the background: {busy[0][:80]}")
-        if pane.get("agent"):
-            agent = herdr("agent", "get", pid)["agent"]
-            if agent.get("agent_status") not in launcher.READY:
-                raise NotReady(f"pane {pid}: {agent.get('agent')} is {agent.get('agent_status')}")
-            state = [agent.get("agent"), agent.get("agent_status"), agent.get("state_change_seq")]
-        else:
-            busy = sorted({str(p.get("name")) for p in procs} - QUIET)
-            if busy:
-                raise NotReady(f"pane {pid} runs {', '.join(busy)}")
-            state = None
-        screen = hashlib.sha256(core.run(["herdr", "pane", "read", pid, "--source", "visible"]).encode())
-        seen.append([pid, pane.get("terminal_id"), state,
-                     sorted(json.dumps([p.get("pid"), p.get("cmdline")]) for p in procs), screen.hexdigest(),
-                     [p for p, _, _ in tree]])
-    return seen
+            "worktree": path, "workspace": workspace, "issue": number,
+            "card": {k: v for k, v in card.items() if k != "host"}}
 
 
 def regular(root, rel):
@@ -494,15 +446,16 @@ def owner_free(ledger):
         raise NotReady(f"run ownership unknown: {error}") from None
 
 
-def coding(link, wt, now, clone, ledger=None):
+def coding(link, wt, now, clone, ledger=None, host=None):
     """(fingerprint, warning, gate, copies, retire, keep) of a quiet tracked worktree. warning is (reason, signature),
     or (reason, signature, "stranded"), when the human must decide; gate says why the pull requests do not allow
     removal yet; copies are the scaffolding files to delete before removal; retire is the closed issue's
     (reason, comment) when the run should be retired first; keep: preserve() it, then remove it with --force."""
+    host = host or hosts.get("herdr")
     path, workspace = wt["path"], wt.get("open_workspace_id")
     if not workspace or (link["worktree"], link["workspace"], link["branch"]) != (path, workspace, wt.get("branch")):
         raise NotReady(f"record names {link['branch']} {link['worktree']} {link['workspace']}; "
-                       f"herdr has {wt.get('branch')} {path} {workspace}")
+                       f"{host.NAME} has {wt.get('branch')} {path} {workspace}")
     repo, branch = link["repo"], link["branch"]
     head = git(path, "rev-parse", "HEAD").strip()
     status = git(path, "status", "--porcelain", "--untracked-files=all")
@@ -519,7 +472,7 @@ def coding(link, wt, now, clone, ledger=None):
     hard = unpreservable(path, rest)
     if hard:
         problems.append(hard)
-    seen = quiet(workspace)
+    seen = host.quiet(workspace)
     # An open pull request is work still under way: its own run pages for it.
     under_way = any(pr.get("state") == "open" for pr in prs)
     warning = ("; ".join(problems), digest([link, head, status])) if problems and not under_way else None
@@ -545,7 +498,8 @@ def coding(link, wt, now, clone, ledger=None):
         if ledger:
             owner_free(ledger)
         warning = gate = None
-    return (digest([link, head, status, copies, prs_seen, seen, standing]), warning, gate, copies, retire, keep)
+    return (fingerprint(link=link, head=head, status=status, copies=copies, prs=prs_seen, seen=seen, standing=standing),
+            warning, gate, copies, retire, keep)
 
 
 def closure(link, prs, ledger):
@@ -570,13 +524,9 @@ def closure(link, prs, ledger):
 
 def analysis(rec):
     """(fingerprint, None, None) of a quiet analysis workspace that is still the recorded one."""
-    workspace = rec["workspace"]
-    if herdr("workspace", "get", workspace)["workspace"].get("label") != rec["label"]:
-        raise NotReady(f"workspace {workspace} is no longer labelled {rec['label']}")
-    terminals = {p.get("terminal_id") for p in herdr("pane", "list", "--workspace", workspace)["panes"]}
-    if rec["terminal"] not in terminals:
-        raise NotReady(f"workspace {workspace} no longer has terminal {rec['terminal']}")
-    return digest([rec, quiet(workspace)]), None, None
+    host = hosts.of(rec)
+    host.analysis_check(rec)
+    return fingerprint(record=rec, seen=host.quiet(rec["workspace"])), None, None
 
 
 def escalate(link, reason, signature, ledger=None, stranded=False, overdue=False):
@@ -638,10 +588,11 @@ def step(target, state, dry):
     try:
         fingerprint, warning, gate = check(now)
     except NotReady as why:
-        say(f"{name}: kept, {why}")
+        (logged if key in old else say)(f"{name}: kept, {why}" + ("; quiet clock dropped" if key in old else ""))
         return overdue(target, str(why), warned, dry)
     except FAILURES as error:
-        say(f"{name}: kept, check failed: {error}")
+        (logged if key in old else say)(f"{name}: kept, check failed: {error}"
+                                        + ("; quiet clock dropped" if key in old else ""))
         return True
     held = warned.get(key, {})
     if held and (warning[1] != held["sig"] if warning else not (gate and held.get("overdue"))) and not dry:
@@ -651,11 +602,17 @@ def step(target, state, dry):
     watched = (was.get("fingerprint") == fingerprint
                and all(isinstance(t, (int, float)) for t in (since, last))
                and since <= last <= now <= last + MAX_GAP)
+    evidence = getattr(fingerprint, "evidence", None)
     if not watched:
-        new[key] = {"fingerprint": fingerprint, "since": now, "seen": now}
-        say(f"{name}: kept, quiet clock starts now")
+        new[key] = {"fingerprint": fingerprint, "since": now, "seen": now, "evidence": evidence}
+        if not was:
+            say(f"{name}: kept, quiet clock starts now")
+        elif was.get("fingerprint") != fingerprint and evidence:
+            logged(f"{name}: kept, quiet clock restarts: {moved(was.get('evidence'), evidence)}")
+        else:
+            logged(f"{name}: kept, quiet clock restarts: last seen {since=} {last=}, now {now}")
         return False
-    new[key] = {"fingerprint": fingerprint, "since": since, "seen": now}
+    new[key] = {"fingerprint": fingerprint, "since": since, "seen": now, "evidence": evidence}
     if now - since < IDLE:
         say(f"{name}: kept, quiet {int(now - since) // 60} of {IDLE // 60} min")
         return False
@@ -764,7 +721,14 @@ def remove(target, fingerprint, times, new, dry):
     except FAILURES as error:
         say(f"{name}: kept, recheck failed: {error}")
         return True
-    argv, what = target["remove"]()
+    try:
+        argv, what = target["remove"]()
+    except NotReady as why:
+        say(f"{name}: kept, {why}")
+        return False
+    except FAILURES as error:
+        say(f"{name}: remove failed: {error}")
+        return True
     if dry:
         say(f"{name}: would {what}")
         new[key] = held
@@ -858,7 +822,7 @@ def vanished(ledger, link):
     request from its branch is open, and nothing still owns it."""
     if ledger_status(ledger) != "done":
         raise NotReady(f"ledger {ledger} is not done")
-    if any(w.get("path") == link["worktree"] for w in listed(link["clone"])) or os.path.lexists(link["worktree"]):
+    if any(w.get("path") == link["worktree"] for w in listed(link["clone"], hosts.configured())) or os.path.lexists(link["worktree"]):
         raise NotReady(f"worktree {link['worktree']} still exists")
     if any(pr.get("state") == "open" for pr in pull_requests(link["repo"], link["branch"])):
         raise NotReady(f"a pull request from {link['branch']} is open")
@@ -950,25 +914,26 @@ def resolve(dry):
     return failed
 
 
-def coding_target(name, repo, clone, path, link=None, record=None, ledger=None):
+def coding_target(name, repo, clone, path, link=None, record=None, ledger=None, *, host):
     """A worktree whose link is known up front (run, coding) or read from its card each check (intake)."""
     held, copies, retire, keep = dict(link or {}), [], [], [False]
 
     def check(now):
-        wt = find(clone, path)
+        wt = find(clone, path, host)
         if link is None:
             held.clear()
-            held.update(intake_link(repo, wt))
-        fingerprint, warning, gate, copies[:], why, keep[0] = coding(held, wt, now, clone, ledger or card_of(held))
+            held.update(intake_link(repo, wt, host))
+        fingerprint, warning, gate, copies[:], why, keep[0] = coding(held, wt, now, clone, ledger or card_of(held),
+                                                                     host=host)
         retire[:] = [why] if why else []
         return fingerprint, warning, gate
 
     def remove():
         if keep[0]:  # preserve() checked the checkout against its backup last
-            return (["herdr", "worktree", "remove", "--workspace", held["workspace"], "--force"],
+            return (host.remove_argv(held["workspace"], path, True),
                     f"remove worktree {path} and workspace {held['workspace']}, after preserving it")
         also = f", after deleting {len(copies)} agent scaffolding copies" if copies else ""
-        return (["herdr", "worktree", "remove", "--workspace", held["workspace"]],
+        return (host.remove_argv(held["workspace"], path, False),
                 f"remove worktree {path} and workspace {held['workspace']}{also}")
     return {"name": name, "key": path, "link": held, "check": check, "remove": remove, "record": record,
             "ledger": ledger, "retire": retire,
@@ -979,22 +944,24 @@ def targets(dry=False):
     """Every workspace with an owner record, and whether a listing failed."""
     found, failed, paths, lists = [], False, set(), {}
 
-    def worktrees(label, clone):
-        """herdr's worktrees of a clone, listed once per run; None when the listing failed."""
-        if str(clone) not in lists:
+    def worktrees(label, clone, host):
+        """The host's worktrees of a clone, listed once per run; None when the listing failed."""
+        key = (str(clone), host.NAME)
+        if key not in lists:
             try:
-                lists[str(clone)] = listed(clone)
+                lists[key] = listed(clone, host)
             except FAILURES as error:
                 say(f"{label}: worktree list failed: {error}")
-                lists[str(clone)] = None
-        return lists[str(clone)]
+                lists[key] = None
+        return lists[key]
 
     prefix = config.settings["branch_prefix"]
+    discover = hosts.configured()
     for repo, (clone, _, _) in config.repos().items():
-        if worktrees(repo, clone) is None:
+        if worktrees(repo, clone, discover) is None:
             failed = True
             continue
-        for wt in worktrees(repo, clone):
+        for wt in worktrees(repo, clone, discover):
             branch = wt.get("branch") or ""
             if not branch.startswith(prefix):
                 continue
@@ -1003,15 +970,23 @@ def targets(dry=False):
                 failed = True
                 continue
             try:
-                if not Path(git(wt["path"], "rev-parse", "--absolute-git-dir").strip(), core.CARD_FILE).is_file():
+                card_file = Path(git(wt["path"], "rev-parse", "--absolute-git-dir").strip(), core.CARD_FILE)
+                if not card_file.is_file():
                     continue  # the user's own branch, or a run's: not an issue worktree
             except FAILURES as error:
                 say(f"{repo}: {wt['path']}: kept, check failed: {error}")
                 failed = True
                 continue
-            paths.add(wt["path"])
-            found.append(coding_target(f"{repo}#{branch[len(prefix):]}", repo, clone, wt["path"]))
-    workspaces = None
+            paths.add(wt["path"])  # claimed even when its card is unreadable: no record may take it over
+            try:
+                host = hosts.of(json.loads(card_file.read_text()))
+            except config.ConfigError as error:
+                say(f"{repo}: {wt['path']}: kept, {error}")
+                failed = True
+                continue
+            except FAILURES:
+                host = hosts.get("herdr")  # its check reads the card again and raises
+            found.append(coding_target(f"{repo}#{branch[len(prefix):]}", repo, clone, wt["path"], host=host))
     # Newest first: a branch reused after its old card was archived is claimed by its current run.
     records = sorted(runs.runs_dir().glob("*/run.json"), key=lambda p: p.stat().st_mtime, reverse=True)
     for record in records + sorted(owned_dir().glob("*.json")):
@@ -1019,9 +994,7 @@ def targets(dry=False):
             rec = json.loads(record.read_text())
             owned = record.parent == owned_dir()
             if owned and rec.get("kind") == "analysis":
-                if workspaces is None:
-                    workspaces = {w["workspace_id"] for w in herdr("workspace", "list")["workspaces"]}
-                if rec["workspace"] not in workspaces:  # closed by hand; herdr may hand its id to another
+                if hosts.of(rec).analysis_gone(rec):
                     if not dry:
                         record.unlink()
                     say(f"{record.name}: workspace {rec['workspace']} is gone; record dropped")
@@ -1029,10 +1002,11 @@ def targets(dry=False):
                 found.append({
                     "name": f"{rec['workspace']} {rec['label']}", "key": f"{rec['workspace']}:{rec['terminal']}",
                     "check": lambda now, rec=rec: analysis(rec), "record": record,
-                    "remove": lambda rec=rec: (["herdr", "workspace", "close", rec["workspace"]],
+                    "remove": lambda rec=rec: (hosts.of(rec).close_argv(rec),
                                                f"close workspace {rec['workspace']} ({rec['label']})")})
             elif (not owned or rec.get("kind") == "coding") and rec.get("worktree") and rec.get("workspace"):
-                listing = worktrees(rec["repo"], rec["clone"])
+                host = hosts.of(rec)
+                listing = worktrees(rec["repo"], rec["clone"], host)
                 if listing is None:
                     failed = True
                     continue
@@ -1043,8 +1017,8 @@ def targets(dry=False):
                 link = {k: rec[k] for k in ("repo", "branch", "base", "worktree", "workspace")}
                 found.append(coding_target(f"{rec['repo']} {rec['branch']}", rec["repo"], rec["clone"],
                                            rec["worktree"], link, record if owned else None,
-                                           None if owned else record.parent.name))
-        except FAILURES as error:
+                                           None if owned else record.parent.name, host=host))
+        except (*FAILURES, config.ConfigError) as error:
             say(f"{record}: kept, unreadable: {error}")
             failed = True
     return found, failed
@@ -1089,10 +1063,10 @@ def run_once(dry):
 def open_one(cwd, label):
     """An analysis workspace: open it and record its owner, so cleanup may close it later."""
     cwd = str(Path(cwd).expanduser().resolve())
-    made = herdr("workspace", "create", "--cwd", cwd, "--label", label, "--no-focus")
-    rec = {"kind": "analysis", "workspace": made["workspace"]["workspace_id"], "label": label, "cwd": cwd,
-           "terminal": made["root_pane"]["terminal_id"], "pane": made["root_pane"]["pane_id"],
-           "created": int(clock())}
+    host = hosts.configured()
+    made = host.open_workspace(cwd, label)
+    rec = {"kind": "analysis", "host": host.NAME, "workspace": made["workspace"], "label": label, "cwd": cwd,
+           "terminal": made["terminal"], "pane": made["pane"], "created": int(clock())}
     owned_dir().mkdir(parents=True, exist_ok=True)
     tmp = owned_dir() / f".{rec['terminal']}.tmp"
     tmp.write_text(json.dumps(rec))

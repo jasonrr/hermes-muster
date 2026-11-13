@@ -13,6 +13,7 @@ import muster.adhoc as adhoc
 import muster.claude as claude
 import muster.config as config
 import muster.core as core
+import muster.hosts as hosts
 import muster.intake as intake
 import muster.launcher as launcher
 import muster.progress as progress
@@ -739,6 +740,21 @@ def test_a_run_from_before_launch_records_needs_adopt_and_reuses_its_worktree(bo
     brief = json.loads(world.submitted[0].split("(JSON): ", 1)[1])
     assert brief.startswith("Old brief.\n") and "1 uncommitted or untracked files" in brief
     assert runs.load("t_old")["worktree"] == path and board["cards"]["t_old"] == "ready"
+
+
+def test_a_run_from_before_launch_records_is_planned_on_herdr_whatever_the_host_setting(board, clone, monkeypatch):
+    path = str(clone["path"].parent / "old-wt")
+    old = {"card": "t_old", "repo": "o/r", "clone": str(clone["path"].resolve()), "branch": "fix/x", "base": "main",
+           "title": "Old run", "workspace": "w9", "worktree": path, "pane": "w9:p9"}
+    core.save_json(runs.run_dir("t_old") / "run.json", old)
+    (runs.run_dir("t_old") / "brief.md").write_text("Old brief.\n\n## This run: t_old\nfooter\n")
+    board["cards"]["t_old"], board["kinds"]["t_old"] = "blocked", "capability"
+    monkeypatch.setitem(config.settings, "host", "orca")
+    planned = []
+    monkeypatch.setattr(launcher, "ensure", lambda rec, *a, **k: planned.append(dict(rec)) or "working")
+    assert recover("t_old", adopt=True) == 0
+    herdr_path = hosts.get("herdr").worktree_path(old["clone"], "fix/x")
+    assert (planned[0]["host"], planned[0]["path"], planned[0]["planned"]) == ("herdr", herdr_path, herdr_path)
 
 
 def test_the_same_branch_in_two_repos_launches_two_agents(board, clone):

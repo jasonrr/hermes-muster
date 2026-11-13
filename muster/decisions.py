@@ -18,7 +18,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import config, core, events, launcher, progress
+from . import config, core, events, hosts, launcher, progress
 
 OPEN = ("open", "answered", "executing")
 # An outcome's first line is the settled card's headline, the rest what follows (channels.shared.settled). Each claims
@@ -193,7 +193,7 @@ def run_of(ledger):
         run = runs.load(ledger)
         return {"repo": run["repo"], "branch": run["branch"], "base": run["base"], "worktree": run["launch"]["path"],
                 "pane": run["launch"]["pane"], "title": run["title"], "evidence_dir": str(run_dir),
-                "kind": "adhoc", "card": ledger}
+                "kind": "adhoc", "card": ledger, "host": run["launch"].get("host")}
     comments = json.loads(core.kanban("show", ledger, "--json"))["comments"]
     for comment in reversed(comments):
         if comment["body"].startswith(core.LINKS_PREFIX):
@@ -202,7 +202,7 @@ def run_of(ledger):
                     "branch": link.get("branch") or config.settings["branch_prefix"] + str(link["issue"]),
                     "base": link.get("base"), "worktree": link.get("worktree"), "pane": link.get("pane"),
                     "title": link.get("title"), "evidence_dir": link.get("launch_dir"),
-                    "kind": "issue", "card": ledger}
+                    "kind": "issue", "card": ledger, "host": link.get("host")}
     raise core.CommandError(f"no run found for card {ledger}")
 
 
@@ -965,7 +965,12 @@ def _send(req, boot):
         fail(rid, "this run predates delivery evidence; send it in the pane")
         return
     if not launcher.seen(evidence, sha):
-        agent = launcher.agent_at(run["pane"]) if run.get("pane") else None
+        try:
+            agent = hosts.of(run).agent(run["pane"]) if run.get("pane") else None
+        except core.CommandError as caught:  # unknown, not gone: an Orca terminal detached by a restart
+            core.log("decisions", f"{rid}: {hosts.of(run).NAME} agent: {caught}")
+            _retry(req, "Not sent: the host cannot show the builder's session right now, so Muster did not send it")
+            return
         if agent is None:
             _retry(req, "Not sent: the builder's session is gone, so Muster did not send it")
             return
@@ -973,10 +978,9 @@ def _send(req, boot):
             _retry(req, "Not sent: the builder was busy, so Muster did not send it")
             return
         try:
-            launcher.herdr_result("agent", "prompt", run["pane"], wire, "--wait", "--until", "working", "--until",
-                              "blocked", "--timeout", "30000")
+            hosts.of(run).prompt(run["pane"], wire)
         except core.CommandError as caught:  # not proof the prompt did not arrive: the hook's evidence decides
-            core.log("decisions", f"{rid}: herdr prompt: {caught}")
+            core.log("decisions", f"{rid}: {hosts.of(run).NAME} prompt: {caught}")
     end = time.monotonic() + SEEN_WAIT
     while not launcher.seen(evidence, sha):
         if time.monotonic() >= end:

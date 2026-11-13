@@ -307,7 +307,7 @@ def test_an_approved_issue_gets_one_card_one_subscription_and_one_agent_pane(tmp
     links = json.loads((git_dir / core.CARD_FILE).read_text())
     assert links == {"card": "t_abc123", "repo": REPO, "issue": 397, "title": "Add a unit test",
                      "pane": "w1:p2", "workspace": "w1",
-                     "worktree": str(worktree), "base": "main", "branch": "muster/397", "launch_dir": str(core.intake_dir() / "t_abc123")}
+                     "worktree": str(worktree), "base": "main", "branch": "muster/397", "host": "herdr", "launch_dir": str(core.intake_dir() / "t_abc123")}
     record = json.loads((core.intake_dir() / "t_abc123" / "launch.json").read_text())
     assert record["event"] == 407 and record["bug"] is False
     assert record["launch"]["prompt"]["state"] == "working" and record["launch"]["step"] == "done"
@@ -1056,3 +1056,29 @@ def test_switch_mode_changes_each_matching_row_in_place(monkeypatch):
     assert seen == [
         ("notify-subscribe", "t_1", "--platform", "slack", "--chat-id", "C1", "--thread-id", "171.5", "--delivery-mode", "wake"),
         ("notify-subscribe", "t_1", "--platform", "telegram", "--chat-id", "4242", "--delivery-mode", "wake")]
+
+
+def fake_exit(monkeypatch):
+    monkeypatch.setattr(core.subprocess, "run", lambda argv, **kw: core.subprocess.CompletedProcess(
+        argv, 1, stdout='{"ok": false, "error": {"code": "x_y"}}', stderr=""))
+
+
+def test_run_keeps_orcas_stdout_error(monkeypatch):
+    fake_exit(monkeypatch)
+    with pytest.raises(core.CommandError) as err:
+        core.run(["orca", "status"])
+    assert "x_y" in str(err.value)
+
+
+def test_run_does_not_add_stdout_for_other_commands(monkeypatch):
+    fake_exit(monkeypatch)
+    with pytest.raises(core.CommandError) as err:
+        core.run(["gh", "status"])
+    assert "x_y" not in str(err.value)
+
+
+def test_prepare_env_finds_orca_and_lsof_under_crons_path(monkeypatch):
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    core.prepare_env()
+    path = os.environ["PATH"].split(":")
+    assert "/Applications/Orca.app/Contents/Resources/bin" in path and "/usr/sbin" in path

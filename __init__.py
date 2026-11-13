@@ -9,7 +9,7 @@ def register(ctx):
     root = Path(__file__).resolve().parent
     ctx.register_cli_command(
         name="muster",
-        help="GitHub label → coding agent in a herdr pane, reporting to a kanban card",
+        help="GitHub label → coding agent in a herdr or Orca pane, reporting to a kanban card",
         setup_fn=cli.setup,
         handler_fn=lambda args: cli.main(args, ctx),
     )

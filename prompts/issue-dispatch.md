@@ -1,7 +1,7 @@
 # muster: $repo#$number
 
 $approved_by You are an
-interactive agent in a visible herdr pane on this machine.$bot Nothing isolates you: these rules
+interactive agent in a visible terminal pane on this machine.$bot Nothing isolates you: these rules
 govern you, so follow them.
 
 1. Post one comment so watchers know: `gh issue comment $number -R $repo --body "Picked up by muster."`

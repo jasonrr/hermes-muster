@@ -40,7 +40,7 @@ To read any card: `hermes kanban --board <board> show <card> --json`.
 2. Within a minute, `tick` checks the issue's timeline: the newest event for the label must come from
    `approver_login` with `approver_id`. A label applied or re-applied by anyone else refuses the issue.
    Each approving label event makes one ledger card, so re-applying the label later starts a new run.
-3. Muster creates a herdr worktree on branch `<branch_prefix><issue number>`, cut from the base branch,
+3. Muster creates a worktree (herdr's, or Orca's) on branch `<branch_prefix><issue number>`, cut from the base branch,
    starts Claude Code in it, and submits the brief as its first prompt. Issue text never enters the brief:
    the builder reads the issue with `gh` and treats it as data.
    Muster installs no dependencies, in this route or the ad-hoc one. The brief's "Dependency setup" section
@@ -82,7 +82,9 @@ Your Hermes agent's `muster:dispatch` skill writes your request to a brief file 
 For research that ends in no pull request, your Hermes agent runs
 `hermes muster open --cwd <dir> --label "<short label>"`. It opens a herdr workspace that Muster records
 and prints `workspace`, `pane` and `terminal` as JSON. No card tracks it. Cleanup closes it after every
-pane has been quiet for 30 minutes; closing deletes no file.
+pane has been quiet for 30 minutes; closing deletes no file. On Orca, `open` adds the folder to Orca and
+opens a terminal titled `muster-…` in it, then prints the same three fields. Closing closes only that terminal;
+Orca's CLI cannot remove a folder project, so the folder stays listed in Orca.
 
 ### Duplicate reports
 
@@ -236,7 +238,7 @@ agent a turn. Review starts are subscribed `wake` (a turn, no ping), since the s
 review started: the review cards, and the ledger once it completes with an open pull request. A ledger that
 blocks is switched back to `notify+wake` first, so a block always pings. Your Hermes agent never types into a pane on its own, answers the builder, moves a card or
 merges; it tells you what happened and recommends. The exceptions are a message you ask it to send to a
-running agent, which it delivers with `herdr agent prompt`, and completing an Activate card when you say the
+running agent, which it delivers through the run's host (herdr `agent prompt`, Orca `terminal send --wait-submit`), and completing an Activate card when you say the
 activation is done or ask it to carry it out. Its instructions are the skills `muster:escalation`,
 `muster:review-standard` and `muster:dispatch`.
 
@@ -258,7 +260,10 @@ Your Hermes agent never runs `recover`; it tells you when the retry is yours.
 worktrees, ad-hoc runs and analysis workspaces. Cleanup never discards anything it has not preserved.
 
 - **Finished work:** a worktree is removed, and its branch kept, once its pull requests are merged and
-  every pane has been quiet for 30 minutes (agents idle or done, no job running in a shell).
+  every pane has been quiet for 30 minutes (agents idle or done, no job running in a shell). On Orca, quiet is
+  judged by agent state, the screen and the processes whose working directory is the checkout. A detached
+  terminal keeps the worktree, and so does any shell other than Orca's own terminal shells (your own terminal
+  app, for one) or any other process in the checkout.
 - **Unsaved work is backed up first:** uncommitted or untracked files, local commits, or a HEAD past the
   merged head. Cleanup writes a git bundle of the history plus a commit of the index, tracked files and
   untracked non-ignored files, verifies it, and saves it under `<data dir>/backups/cleanup/<time>-<name>/`
@@ -307,7 +312,7 @@ Every instruction Muster gives an agent or a model is a file in [`prompts/`](../
 
 ## Security and disclosure
 
-- **Shells out to** `gh`, `git`, `herdr` and `hermes`. **Reads** GitHub issues and timelines, the board's
+- **Shells out to** `gh`, `git`, `herdr` or `orca`, `lsof` and `hermes`. **Reads** GitHub issues and timelines, the board's
   sqlite database (read-only), `$HERMES_HOME/.env` for the DM chat id, and the production notes.
 - **Writes** kanban cards, worktrees under `worktrees`, state and per-pane Claude Code hook settings under
   `$HERMES_HOME/plugin-data/muster/`. Your global Claude Code config is not changed.

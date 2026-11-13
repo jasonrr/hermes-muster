@@ -1,7 +1,7 @@
 """The acceptance shim: every child Python of the harness imports this at startup (it is first on PYTHONPATH).
 
 It swaps `run` (muster's only subprocess seam) in the muster under test, matched by file path, for `shim_run`:
-`hermes` runs for real against the test home, herdr, gh and git go to the test's world server, anything else is
+`hermes` runs for real against the test home, herdr, orca, gh and git go to the test's world server, anything else is
 refused. Each load leaves a marker the preflight reads (pid, argv). Design: docs/plans/2026-10-20-slack-acceptance-design.md §5.
 """
 
@@ -16,7 +16,7 @@ from pathlib import Path
 if os.environ.get("MUSTER_CHAIN_SITECUSTOMIZE"):  # the stand-in's own shim (points slack_sdk at the stand-in)
     runpy.run_path(os.environ["MUSTER_CHAIN_SITECUSTOMIZE"])
 
-WORLD = ("herdr", "gh", "git")
+WORLD = ("herdr", "orca", "lsof", "ps", "gh", "git")
 
 
 def append(path, entry):

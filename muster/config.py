@@ -16,6 +16,7 @@ DEFAULTS = {
     "board": "muster",  # hermes kanban board slug; give muster its own board (idempotency keys are per board)
     "operating_profile": "",  # "" → the profile Hermes resolves; else it must name that profile (core.operating_profile)
     "agent_kind": "claude",  # v1: claude only
+    "host": "herdr",  # terminal host for new runs: herdr or orca (muster.hosts)
     "agent_model": "opus",  # passed to the agent CLI
     "branch_prefix": "muster/",  # issue branch = f"{branch_prefix}{number}"
     "notify_platform": "telegram",
@@ -72,6 +73,9 @@ def require():
     from . import claude
 
     claude.get_adapter(settings["agent_kind"])  # raises ConfigError: fail before any worktree or card exists
+    from . import hosts
+
+    hosts.get(settings["host"])  # raises ConfigError: fail before any worktree or card exists
     try:
         valid = subprocess.run(["git", "check-ref-format", "--branch", f"{settings['branch_prefix']}1"],
                                capture_output=True).returncode == 0
@@ -83,7 +87,7 @@ def require():
     for slug, (clone, _, base) in repos().items():  # repos() raises on a malformed slug
         if base and subprocess.run(["git", "check-ref-format", "--branch", base], capture_output=True).returncode:
             raise ConfigError(f"muster: repos entry {slug}: @{base} is not a valid base branch name")
-        # herdr lays worktrees out by the clone's directory name (launcher.worktree_path); lower: APFS ignores case.
+        # both hosts lay worktrees out by the clone's directory name (hosts.*.worktree_path); lower: APFS ignores case.
         other = names.setdefault(clone.name.lower(), slug)
         if other != slug:
             raise ConfigError(f"repos {other} and {slug} share the clone directory name {clone.name}; "

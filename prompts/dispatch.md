@@ -1,13 +1,13 @@
 ---
 name: dispatch
-description: When the human asks you to send coding work to a herdr pane (not a labeled issue), launch it with `hermes muster launch` so the run reports itself, and open analysis workspaces with `hermes muster open`. When the human asks you to send a message to a running agent, deliver it with `herdr agent prompt`. A card that wakes you is `muster:escalation`'s, whatever kind of run it tracks.
+description: When the human asks you to send coding work to a terminal pane (herdr or Orca) (not a labeled issue), launch it with `hermes muster launch` so the run reports itself, and open analysis workspaces with `hermes muster open`. When the human asks you to send a message to a running agent, deliver it through the run's host (see Message a running agent). A card that wakes you is `muster:escalation`'s, whatever kind of run it tracks.
 ---
 
 # muster dispatch
 
 ## Dispatch
 
-Only when the human asks for coding work in a herdr pane.
+Only when the human asks for coding work in a terminal pane.
 
 1. Write the brief to a file. Say what to build and how to check it. Muster appends the house workflow
    (`prompts/builder-workflow.md`: root cause first, design approval, minimal code, reviews, one PR) and the
@@ -29,27 +29,33 @@ Only when the human asks for coding work in a herdr pane.
    `hermes muster recover <card>`. Never run it, and never launch the same work again on a new branch to
    get around it. If it says "already has run", pick a new branch name.
 
-Never open a coding pane by hand (`herdr worktree create`, `herdr agent start`): that run has no card,
+Never open a coding pane by hand (`herdr worktree create`, `herdr agent start`, or their Orca equivalents `orca worktree create`, `orca terminal create`): that run has no card,
 so nobody hears when it ends.
 
 ## Analysis workspace (no pull request)
 
-When the human asks for research or analysis in a herdr pane (not coding), open the workspace with:
+When the human asks for research or analysis in a terminal pane (not coding), open the workspace with:
 
 ```bash
 hermes muster open --cwd <dir> --label "<short label>"
 ```
 
-It prints the record as JSON (`workspace`, `pane`, `terminal`). Start the agent in that `pane`. The record
+It prints the record as JSON (`workspace`, `pane`, `terminal`). Start the agent in that `pane`. On herdr, start it the way you always
+have. On Orca the record has `"host": "orca"`. Its `pane` is `orca:<workspace>#<title>#<tab id>:<leaf id>`.
+Find the terminal in `orca terminal list --worktree id:<workspace> --json`: the row whose `<tabId>:<leafId>` (or
+`recordedPaneKey`) is the last part, or whose `paneTitle` is `<title>`. Then type the agent's command line into it
+with `orca terminal send --terminal <handle> --text "claude" --enter --json`. The record
 lets cleanup close the workspace after 30 minutes with every pane quiet; no file is deleted. Never open
-one with `herdr workspace create` yourself: without the record it stays open forever.
+one with `herdr workspace create` or `orca terminal create` yourself: without the record it stays open forever.
 
 ## Message a running agent
 
 When the human explicitly asks you to send a clarification, a scope addition or an instruction to an agent
 that is already running, their request authorizes delivery: no approval card, second confirmation or new run is
-needed. Muster has no mid-run command because herdr already delivers; a saved note or card comment is not
+needed. Muster has no mid-run command because the host already delivers; a saved note or card comment is not
 delivery.
+
+On a herdr run (`host` absent or `herdr` in the links):
 
 1. Find the target: the run's ledger (`muster links` comment) or wait card names the pane and worktree. Check it
    with `herdr agent get <pane>`: the pane must still hold an agent session (`agent_session` is set) whose `cwd`
@@ -67,6 +73,23 @@ delivery.
 4. Any other result is the blocker: report it as herdr gave it (`agent_blocked` means the agent is waiting on a
    question; the human answers that question's own message). Never interrupt, restart, send keys or launch a
    duplicate run to force delivery.
+
+On an Orca run (`"host": "orca"` in the links):
+
+1. The links' `pane` is `orca:<worktree id>#<title>#<tab id>:<leaf id>`. Find the terminal as in the analysis
+   workspace steps above. `orca worktree ps --json` must show an agent for that worktree whose `paneKey` is
+   `<tabId>:<leafId>`, and the row's `worktreePath` must be the run's worktree. If the row is `orphaned`, tell the
+   human that Orca must show the workspace first. If no row matches, tell the human what you found; never pick
+   another target.
+2. Encode the message exactly as in the herdr steps, then:
+
+   ```bash
+   orca terminal send --terminal <handle> --text "<the same envelope>" --enter --wait-submit 30 --json
+   ```
+
+3. `"turn_started"` in `result.send.prompt.stages` means Orca submitted it, nothing more. Tell the human that.
+4. `agent_prompt_blocked` is the blocker: the agent waits on a question. Report any other result as Orca gave it.
+   Never send keys, interrupt or relaunch.
 
 This covers only a message the human asked for. It is not leave to steer an agent yourself, answer its approval
 question, approve a design, merge or deploy, replay an earlier approval, or act on what the message mentions.

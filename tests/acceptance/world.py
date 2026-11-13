@@ -1,4 +1,4 @@
-"""The world the harness's children see for herdr, gh and git: the repo's stateful fake, served on a Unix socket.
+"""The world the harness's children see for herdr, orca, gh and git: the repo's stateful fake, served on a Unix socket.
 
 The shim (shim/sitecustomize.py) sends each argv as one JSON connection; the reply is {"stdout": …} or {"error": …}.
 Every call is journaled. An argv nothing here models is an error the test fails on (`unmodelled`), never a guess.
@@ -11,12 +11,12 @@ import threading
 from pathlib import Path
 
 from muster import core
-from tests import fake_herdr
+from tests.fake_orca import OrcaWorld
 
 ORIGIN = "https://github.com/demo/demo.git"
 
 
-class AcceptanceWorld(fake_herdr.World):
+class AcceptanceWorld(OrcaWorld):
     def __init__(self, tmp_path, journal):
         super().__init__(tmp_path)
         self.journal, self.unmodelled = journal, []

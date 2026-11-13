@@ -37,7 +37,7 @@ def launch_args(model: str, settings_path: Path) -> list[str]:
 
 
 def is_ours(agent: dict, name: str, cwd: Path) -> bool:
-    """The `herdr agent get` json names this kind, this name, this cwd."""
+    """The host's agent dict (herdr's shape) names this kind, this name, this cwd."""
     if agent.get("agent") != KIND or agent.get("name") != name:
         return False
     where = agent.get("foreground_cwd") or agent.get("cwd") or ""

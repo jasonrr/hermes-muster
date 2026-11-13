@@ -343,6 +343,26 @@ def test_active_pane_restarts_the_clock(world):
             assert len(removes(world)) == 1
 
 
+def test_a_restarted_clock_logs_which_evidence_changed(world):
+    assert main([]) == 0
+    tick(world, 5)
+    world.screens["wR:p1"] = "typed"
+    tick(world, 5)
+    restarts = [line for line in core.log_path("cleanup").read_text().splitlines() if "quiet clock restarts" in line]
+    assert len(restarts) == 1
+    assert "seen wR:p1:" in restarts[0] and "wR:p2" not in restarts[0] and "head" not in restarts[0]
+
+
+def test_a_failed_check_logs_that_it_dropped_the_clock(world):
+    assert main([]) == 0
+    world.agent_status["wR:p2"] = "working"
+    tick(world, 5)
+    log = core.log_path("cleanup").read_text()
+    assert "quiet clock dropped" in log and "claude is working" in log
+    tick(world, 5)  # a clock already gone is not logged again
+    assert core.log_path("cleanup").read_text().count("quiet clock dropped") == 1
+
+
 # 4. agent not ready ----------------------------------------------------------
 
 @pytest.mark.parametrize("status", ["working", "blocked", "some-unknown-status"])
@@ -879,6 +899,7 @@ def test_open_registers_an_analysis_workspace(world, monkeypatch, capsys):
     rec = json.loads((cleanup.owned_dir() / "term_new.json").read_text())
     assert rec["kind"] == "analysis" and (rec["workspace"], rec["terminal"], rec["label"]) == (
         "w0", "term_new", "deal-review")
+    assert rec["host"] == "herdr"
     assert json.loads(capsys.readouterr().out)["pane"] == "w0:p1"
 
 
@@ -1772,3 +1793,78 @@ def test_dry_run_preserves_nothing(world, capsys):
     window(world, argv=["--dry-run"])
     assert world.removed is False and not cleanup.backups_dir().exists()
     assert "after preserving it" in capsys.readouterr().out
+
+
+# 19. the host seam -----
+
+def test_host_never_enters_a_links_digest(world):
+    world.card["host"] = "herdr"
+    world._write_card()
+    assert main([]) == 0
+    found, _ = cleanup.targets()
+    assert found
+    for target in found:
+        target["check"](world.t[0])  # an issue worktree's link is read from its card by the check
+        link = target.get("link", {})
+        assert link
+        assert "host" not in link and "host" not in link.get("card", {})
+
+
+def test_a_card_naming_an_unknown_host_keeps_only_that_worktree(world, capsys):
+    world.card["host"] = "bogus"
+    world._write_card()
+    world.extra = []
+    _analysis(world, "wY-x.json", "wY", "x", "term_y")
+    assert main([]) in (0, 1)
+    out = capsys.readouterr().out
+    assert "kept" in out and "bogus" in out
+    assert "wY x: kept, quiet clock starts now" in out
+
+
+def test_a_corrupt_card_still_claims_its_path_against_a_run_record(world):
+    (world.git_dir / core.CARD_FILE).write_text("{not json")
+    as_run_rec = {"kind": "coding", "repo": REPO, "clone": str(world.clone), "branch": world.branch, "base": "main",
+                  "worktree": world.path, "workspace": world.workspace, "card": "t_run1"}
+    directory = runs.runs_dir() / "t_run1"
+    directory.mkdir(parents=True)
+    (directory / "run.json").write_text(json.dumps(as_run_rec))
+    for _ in range(7):
+        assert main([]) == 1  # the unreadable card fails every pass
+        world.t[0] += 300
+    assert removes(world) == []
+
+
+def _cannot_remove(world, capsys, error):
+    def remove():
+        raise error
+    target = {"name": "x", "key": "k", "check": lambda now: ("fp", None, None), "remove": remove}
+    now = cleanup.clock()
+    held = {"fp": "fp", "since": now - cleanup.IDLE - 1, "seen": now}
+    new = {"k": held}
+    result = cleanup.remove(target, "fp", (now, held["since"]), new, False)
+    assert removes(world) == []
+    return result, capsys.readouterr().out
+
+
+def test_remove_that_cannot_name_its_target_keeps_it(world, capsys):
+    result, out = _cannot_remove(world, capsys, cleanup.NotReady("gone"))
+    assert result is False
+    assert "x: kept, gone" in out
+
+
+def test_remove_whose_host_fails_is_a_failure(world, capsys):
+    result, out = _cannot_remove(world, capsys, core.CommandError("orca down"))
+    assert result is True
+    assert "x: remove failed: orca down" in out
+
+
+def test_an_issue_worktree_follows_its_cards_host(world, monkeypatch, capsys):
+    world.card["host"] = "orca"
+    world._write_card()
+
+    def down(clone):
+        raise core.CommandError("orca down")
+    monkeypatch.setattr("muster.hosts.orca.worktrees", down, raising=False)
+    main([])
+    assert "orca down" in capsys.readouterr().out
+    assert removes(world) == []

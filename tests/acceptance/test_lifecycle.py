@@ -10,7 +10,7 @@ import time
 
 from muster import launcher
 from tests.acceptance import hermes_kit as kit
-from tests.acceptance.conftest import APPROVER, CHANNEL, OTHER, SCAN, shown
+from tests.acceptance.conftest import APPROVER, CHANNEL, OTHER, SCAN, shown, start
 
 
 def wait(what, pred, timeout):
@@ -151,7 +151,15 @@ def settle(rig, decision, pattern, timeout=30):
 
 
 def prompts(rig):
-    return [e for e in rig.entries() if e.get("argv", [])[:3] == ["herdr", "agent", "prompt"]]
+    """Every prompt delivered to the builder, whichever host carried it."""
+    found = []
+    for e in rig.entries():
+        argv = e.get("argv", [])
+        if argv[:3] == ["herdr", "agent", "prompt"]:
+            found.append({**e, "text": argv[4]})
+        elif argv[:3] == ["orca", "terminal", "send"] and "--wait-submit" in argv:
+            found.append({**e, "text": argv[argv.index("--text") + 1]})
+    return found
 
 
 def hold(seconds):
@@ -290,6 +298,8 @@ def to_pr_card(rig, token, subtests, choice, feedback=None):
     hook(rig, "stop", card_id, {"hook_event_name": "Stop"})
     for agent in rig.world.agents.values():  # what herdr then reports for the pane: Claude's turn is over
         agent["agent_status"] = "idle"
+    for state in rig.world.orca_agents.values():
+        state["state"] = "done"
     wait("the PR's decision card", lambda: card(rig), 60)
     hold(3 * SCAN)
     return card_id, head
@@ -318,7 +328,7 @@ def test_pr_send_back(rig, subtests):
     decision = card(rig)
     rig.standin.block_action(APPROVER, CHANNEL, decision.message_id, button(rig, decision, "Send back with this feedback"))
     wait("the feedback reached the builder", lambda: len(prompts(rig)) == 2, 30)
-    assert "Handle the empty title" in prompts(rig)[1]["argv"][4] and merges(rig) == []
+    assert "Handle the empty title" in prompts(rig)[1]["text"] and merges(rig) == []
 
 
 def test_pr_merge(rig, subtests):
@@ -330,6 +340,20 @@ def test_pr_merge(rig, subtests):
     hold(SCAN)  # a second merge, or a hit on the gh stub, would land here
     assert [e["argv"] for e in merges(rig)] == [["gh", "pr", "merge", PR, "--squash", "--match-head-commit", head]]
     assert "error" not in merges(rig)[0]  # answered by the world; the gh stub saw nothing
+
+
+def test_pr_merge_on_orca(make_rig, subtests, tmp_path):
+    """test_pr_merge with host: orca: the brief goes through `orca terminal send --wait-submit`."""
+    rig = start(make_rig(settings={"host": "orca"}))
+    card_id, head = to_pr_card(rig, "o3", subtests, "merge")
+    assert prompts(rig) and all(p["argv"][0] == "orca" for p in prompts(rig))
+    run = json.loads((rig.hermes / "plugin-data" / "muster" / "runs" / card_id / "run.json").read_text())
+    assert run["worktree"].startswith(str(tmp_path.resolve()))  # the world's path (sandbox patches orca.ROOT), never ~/orca
+    checkpoint_b(rig, subtests, "PR #7", build_files(), r"^🟡 PR #7 ·.*Merge PR #7")
+    decision = card(rig)
+    rig.standin.block_action(APPROVER, CHANNEL, decision.message_id, button(rig, decision, "Merge PR #7"))
+    wait("the merge", lambda: merges(rig), 30)
+    assert [e["argv"] for e in merges(rig)] == [["gh", "pr", "merge", PR, "--squash", "--match-head-commit", head]]
 
 
 def ephemeral(rig, user, pattern):

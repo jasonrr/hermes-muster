@@ -115,6 +115,12 @@ def test_require_rejects_an_unknown_agent_kind():
         config.require()
 
 
+def test_require_rejects_an_unknown_host():
+    config.settings.update(approver_login="me", repos=["o/a"], approver_id=7, host="tmux")
+    with pytest.raises(config.ConfigError, match="host 'tmux'"):
+        config.require()
+
+
 @pytest.mark.parametrize("prefix", ["bad prefix/", "a..b/", "x~"])
 def test_require_rejects_a_branch_prefix_that_is_not_a_valid_ref(prefix):
     config.settings.update(approver_login="me", repos=["o/a"], approver_id=7, branch_prefix=prefix)

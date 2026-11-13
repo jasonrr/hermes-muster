@@ -111,7 +111,7 @@ def test_run_of_adhoc_run():
     (runs.run_dir("t_9") / "run.json").write_text(json.dumps(run))
     assert decisions.run_of("t_9") == {
         "repo": "acme/app", "branch": "muster/x", "base": "main", "worktree": "/wt", "pane": "p_1",
-        "title": "T", "evidence_dir": str(runs.run_dir("t_9")), "kind": "adhoc", "card": "t_9"}
+        "title": "T", "evidence_dir": str(runs.run_dir("t_9")), "kind": "adhoc", "card": "t_9", "host": None}
 
 
 def show(monkeypatch, *bodies):
@@ -127,7 +127,7 @@ def test_run_of_issue_run_takes_the_newest_links_comment(monkeypatch):
          f"{core.LINKS_PREFIX} {json.dumps(new)}", "later chatter")
     assert decisions.run_of("t_5") == {
         "repo": "acme/app", "issue": 3, "branch": "muster/3", "base": "main", "worktree": "/wt",
-        "pane": "p_new", "title": "T", "evidence_dir": "/launch", "kind": "issue", "card": "t_5"}
+        "pane": "p_new", "title": "T", "evidence_dir": "/launch", "kind": "issue", "card": "t_5", "host": None}
 
 
 def test_run_of_issue_run_without_branch_falls_back_to_the_prefix(monkeypatch):
@@ -215,6 +215,8 @@ class World:
                 self.pr.update(state="MERGED", mergeCommit={"oid": "c" * 40})
             return ""
         if argv[:3] == ["herdr", "agent", "get"]:
+            if self.agent == "down":
+                raise core.CommandError("herdr: exit 1\nthe terminal is detached")
             if self.agent is None:
                 raise core.CommandError("herdr: exit 1\nagent_not_found")
             return json.dumps({"result": {"agent": self.agent}})
@@ -779,6 +781,15 @@ def test_a_gone_agent_fails(world):
     decisions.execute(rid)
     assert state(rid)[0] == "failed" and "session is gone, so Muster did not send it" in state(rid)[1]
     assert world.prompts == []
+
+
+def test_an_agent_the_host_cannot_show_fails_with_a_retry(world):
+    world.agent = "down"
+    rid = feedback(world, {"action": "send"})
+    decisions.execute(rid)
+    assert state(rid)[0] == "failed" and "host cannot show the builder's session right now" in state(rid)[1]
+    assert world.prompts == []
+    assert len(decisions.for_ledger("t_1", "feedback")) == 2  # a retry request
 
 
 def test_a_run_without_evidence_is_never_sent_to(world):
