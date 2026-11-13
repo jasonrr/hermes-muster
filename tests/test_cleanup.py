@@ -879,6 +879,7 @@ def test_open_registers_an_analysis_workspace(world, monkeypatch, capsys):
     rec = json.loads((cleanup.owned_dir() / "term_new.json").read_text())
     assert rec["kind"] == "analysis" and (rec["workspace"], rec["terminal"], rec["label"]) == (
         "w0", "term_new", "deal-review")
+    assert rec["host"] == "herdr"
     assert json.loads(capsys.readouterr().out)["pane"] == "w0:p1"
 
 
@@ -1772,3 +1773,47 @@ def test_dry_run_preserves_nothing(world, capsys):
     window(world, argv=["--dry-run"])
     assert world.removed is False and not cleanup.backups_dir().exists()
     assert "after preserving it" in capsys.readouterr().out
+
+
+# 19. the host seam -----
+
+def test_host_never_enters_a_links_digest(world):
+    assert main([]) == 0
+    found, _ = cleanup.targets()
+    assert found and not any("host" in target.get("link", {}) for target in found)
+
+
+def _cannot_remove(world, capsys, error):
+    def remove():
+        raise error
+    target = {"name": "x", "key": "k", "check": lambda now: ("fp", None, None), "remove": remove}
+    now = cleanup.clock()
+    held = {"fp": "fp", "since": now - cleanup.IDLE - 1, "seen": now}
+    new = {"k": held}
+    result = cleanup.remove(target, "fp", (now, held["since"]), new, False)
+    assert removes(world) == []
+    return result, capsys.readouterr().out
+
+
+def test_remove_that_cannot_name_its_target_keeps_it(world, capsys):
+    result, out = _cannot_remove(world, capsys, cleanup.NotReady("gone"))
+    assert result is False
+    assert "x: kept, gone" in out
+
+
+def test_remove_whose_host_fails_is_a_failure(world, capsys):
+    result, out = _cannot_remove(world, capsys, core.CommandError("orca down"))
+    assert result is True
+    assert "x: remove failed: orca down" in out
+
+
+def test_an_issue_worktree_follows_its_cards_host(world, monkeypatch, capsys):
+    world.card["host"] = "orca"
+    world._write_card()
+
+    def down(clone):
+        raise core.CommandError("orca down")
+    monkeypatch.setattr("muster.hosts.orca.worktrees", down, raising=False)
+    main([])
+    assert "orca down" in capsys.readouterr().out
+    assert removes(world) == []
