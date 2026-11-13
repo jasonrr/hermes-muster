@@ -87,6 +87,24 @@ def test_the_launch_runs_no_setup_command_before_the_brief(world):
     assert calls.index(start) < calls.index(submit)
 
 
+def test_a_launch_record_names_the_configured_host(world, monkeypatch):
+    assert new_rec(world)["host"] == "herdr"
+    monkeypatch.setitem(config.settings, "host", "orca")
+    assert new_rec(world)["host"] == "orca"
+
+
+def test_a_record_from_before_hosts_launches_on_herdr(world):
+    rec = new_rec(world)
+    del rec["host"]
+    assert ensure(world, rec) == "working"
+    assert {c[0] for c in world.calls if isinstance(c, list)} - {"git", "gh"} == {"herdr"}
+
+
+def test_intake_links_carry_the_host(world):
+    record = {"card": "t_1", "repo": "o/r", "issue": 3, "title": "x", "launch": {}}
+    assert intake.links(record, new_rec(world))["host"] == "herdr"
+
+
 def test_start_without_a_task_waits_for_idle_then_submits_the_brief_and_sees_it_working(world):
     rec = new_rec(world)
     assert ensure(world, rec) == "working"

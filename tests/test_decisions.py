@@ -111,7 +111,7 @@ def test_run_of_adhoc_run():
     (runs.run_dir("t_9") / "run.json").write_text(json.dumps(run))
     assert decisions.run_of("t_9") == {
         "repo": "acme/app", "branch": "muster/x", "base": "main", "worktree": "/wt", "pane": "p_1",
-        "title": "T", "evidence_dir": str(runs.run_dir("t_9")), "kind": "adhoc", "card": "t_9"}
+        "title": "T", "evidence_dir": str(runs.run_dir("t_9")), "kind": "adhoc", "card": "t_9", "host": None}
 
 
 def show(monkeypatch, *bodies):
@@ -127,7 +127,7 @@ def test_run_of_issue_run_takes_the_newest_links_comment(monkeypatch):
          f"{core.LINKS_PREFIX} {json.dumps(new)}", "later chatter")
     assert decisions.run_of("t_5") == {
         "repo": "acme/app", "issue": 3, "branch": "muster/3", "base": "main", "worktree": "/wt",
-        "pane": "p_new", "title": "T", "evidence_dir": "/launch", "kind": "issue", "card": "t_5"}
+        "pane": "p_new", "title": "T", "evidence_dir": "/launch", "kind": "issue", "card": "t_5", "host": None}
 
 
 def test_run_of_issue_run_without_branch_falls_back_to_the_prefix(monkeypatch):

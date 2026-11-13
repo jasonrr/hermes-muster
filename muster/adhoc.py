@@ -34,7 +34,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import bridge, claude, config, core, decisions, events, launcher, progress, runs
+from . import bridge, claude, config, core, decisions, events, hosts, launcher, progress, runs
 
 IDLE_AFTER = 10 * 60
 BRANCH = re.compile(r"(feat|fix|chore|deps)/[a-z0-9][a-z0-9._-]*")
@@ -143,7 +143,7 @@ def deliver(run, entry):
 def reconcile(run):
     """The backstop for a hook that never ran, and the page for an agent that stopped unfinished.
 
-    Only while the ledger is ready, nothing is queued and no wait card is open. herdr shows the
+    Only while the ledger is ready, nothing is queued and no wait card is open. The host shows the
     pane's agent: gone -> session-end; on a dialog -> notification; newly idle -> stop (completes it
     if its pull request is finished, else silent); idle and unchanged for IDLE_AFTER -> idle (pages).
     """
@@ -152,11 +152,8 @@ def reconcile(run):
         return
     if events.status(card) != "ready":
         return
-    try:
-        agent = json.loads(core.run(["herdr", "agent", "get", run["pane"]]))["result"]["agent"]
-    except core.CommandError as error:
-        if "agent_not_found" not in str(error):
-            raise  # herdr itself failed: unknown, try at the next flush
+    agent = hosts.of(run.get("launch")).agent(run["pane"])  # a host failure raises: unknown, try at the next flush
+    if agent is None:
         runs.enqueue(card, "session-end", "the pane's agent is gone")
         return
     if agent.get("agent") != core.adapter().KIND:
@@ -220,7 +217,8 @@ def relaunch(run, prepare_text):
     # The pane runs now: a failed comment must not block it. run.json holds the same links.
     try:
         core.kanban("comment", card, f"{core.LINKS_PREFIX} " + json.dumps(
-            {k: run[k] for k in ("card", "repo", "branch", "pane", "workspace", "worktree")}))
+            {**{k: run[k] for k in ("card", "repo", "branch", "pane", "workspace", "worktree")},
+             "host": run["launch"].get("host") or "herdr"}))
     except runs.ERRORS as error:
         runs.log(f"{card} launch: links comment failed: {error}")
     return run
@@ -331,7 +329,8 @@ def recover(card, resend=False, adopt=False):
                 plan = launcher.plan(card, run["repo"], run["clone"], run["branch"], run["base"], run["title"][:40],
                                  launcher.agent_name("run", run["branch"].split("/", 1)[1]), config.settings["agent_model"],
                                  directory / "settings.json", "run", launcher.pane_env())
-                live = launcher.agent_at(run["pane"]) if run.get("pane") else None
+                plan["host"] = "herdr"  # a run from before launch records lives in herdr, whatever the setting says now
+                live = hosts.of(plan).agent(run["pane"]) if run.get("pane") else None
                 plan.update(workspace=run.get("workspace"), pane=run.get("pane") if live else None,
                             prompt={"state": "unknown", "at": None, "seq": None} if live else None)
                 run["launch"] = plan

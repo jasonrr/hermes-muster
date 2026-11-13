@@ -23,7 +23,7 @@ import shlex
 import time
 from pathlib import Path
 
-from . import config, conversation, core, events, intake, launcher
+from . import config, conversation, core, events, hosts, intake, launcher
 
 TASK = "muster_dedupe"
 LIVE = 10  # newest live runs a new issue is compared with
@@ -94,7 +94,7 @@ def run_of(card):
 
 def ours(launch):
     """The run's own agent in its pane, None when it is gone. Raises when herdr fails (try again later)."""
-    agent = launcher.agent_at(launch["pane"])
+    agent = hosts.of(launch).agent(launch["pane"])
     return agent if agent and core.adapter().is_ours(agent, launch["name"], Path(launch["path"])) else None
 
 
@@ -259,8 +259,7 @@ def deliver(rec):
     delivery["sent_at"], delivery["sends"] = clock(), delivery["sends"] + 1
     save(rec)  # before the send: a crash after it counts as a send
     try:
-        launcher.herdr_result("agent", "prompt", run["launch"]["pane"], delivery["text"], "--wait", "--until", "working",
-                          "--until", "blocked", "--timeout", "30000")
+        hosts.of(run["launch"]).prompt(run["launch"]["pane"], delivery["text"])
     except core.CommandError as error:  # not proof it did not arrive: the hook's evidence decides
         core.log("hold", f"{rec['card']}: herdr prompt: {error}")
 

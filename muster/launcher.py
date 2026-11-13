@@ -2,6 +2,7 @@
 (muster.adhoc). ensure() brings a launch record from wherever it stopped to a delivered first prompt: a trusted
 herdr worktree, a tab, a Claude started with no task, then the brief. A failed launch blocks its card as setup
 trouble (report_failure), and `hermes muster recover` resumes it (recoverable).
+The host (muster.hosts) does each step; herdr's protocol is described below, orca's in muster.hosts.orca.
 """
 
 import contextlib
@@ -15,7 +16,8 @@ import subprocess
 import time
 from pathlib import Path
 
-from . import config, core
+from . import config, core, hosts
+from .hosts import DELIVERED, READY
 
 
 def startup_prompt(text):
@@ -71,8 +73,6 @@ def setup_trouble(step, error):
 #   adopt, resend                                   set only by a person's --adopt / --resend
 
 AGENT_NAME = re.compile(r"[a-z][a-z0-9_-]{0,31}")  # herdr's rule for agent names
-READY = ("idle", "done")
-DELIVERED = ("working", "blocked", "done")
 OWNER_FILE = "muster-launch-owner.json"
 
 
@@ -97,7 +97,7 @@ def agent_name(prefix, tail):
 
 
 def worktree_path(clone, branch):
-    return str(core.worktrees_dir() / Path(clone).name / branch.replace("/", "-"))
+    return hosts.configured().worktree_path(clone, branch)
 
 
 def base_of(clone, configured=None):
@@ -128,35 +128,12 @@ def plan(owner, repo, clone, branch, base, label, name, model, settings, tab, en
     return {"owner": owner, "repo": repo, "clone": str(clone), "branch": branch,
             "base": base, "path": worktree_path(clone, branch), "planned": worktree_path(clone, branch), "label": label, "name": name, "model": model,
             "settings": str(settings), "tab": tab, "env": list(env), "step": None, "workspace": None,
-            "pane": None, "prompt": None, "evidence": []}
+            "pane": None, "prompt": None, "evidence": [], "host": config.settings["host"]}
 
 
 def note(rec, what):
     rec["evidence"] = (rec.get("evidence") or [])[-19:] + [f"{time.strftime('%Y-%m-%dT%H:%M:%S')} "
                                                            + " ".join(str(what).split())[:300]]
-
-
-def herdr_result(*args):
-    return json.loads(core.run(["herdr", *args]))["result"]
-
-
-def agent_at(target):
-    """herdr's agent for a pane or name, or None when herdr says there is none. Raises when herdr fails."""
-    try:
-        return herdr_result("agent", "get", target)["agent"]
-    except core.CommandError as error:
-        if "agent_not_found" in str(error) or "pane_not_found" in str(error):
-            return None
-        raise
-
-
-def pane_at(pane):
-    try:
-        return herdr_result("pane", "get", pane)["pane"]
-    except core.CommandError as error:
-        if "pane_not_found" in str(error):
-            return None
-        raise
 
 
 def pull_requests(repo, branch):
@@ -230,9 +207,10 @@ def owner_of(path):
 
 def take_worktree(rec, save, known):
     """The record's checkout, made or adopted. Raises LaunchFailure("refused") for anything not ours."""
+    host = hosts.of(rec)
     rec["phase"] = "worktree"
     clone, branch, base = rec["clone"], rec["branch"], rec["base"]
-    listing = herdr_result("worktree", "list", "--cwd", clone)["worktrees"]
+    listing = host.worktrees(clone)
     here = next((w for w in listing if w.get("path") == rec["path"]), None)
     other = next((w for w in listing if w.get("branch") == branch and w.get("path") != rec["path"]), None)
     if other:
@@ -265,10 +243,13 @@ def take_worktree(rec, save, known):
                 note(rec, f"branch {branch} had no commits of its own; fast-forwarded {head[:12]} -> {tip[:12]}")
         rec["step"] = "worktree"
         save(rec)
-        made = herdr_result("worktree", "create", "--cwd", clone, "--branch", branch, "--base", f"origin/{base}",
-                            "--path", rec["path"], "--label", rec["label"], "--no-focus", "--trust-repository")
-        rec["workspace"] = made["workspace"]["workspace_id"]
-        git_dir, _ = owner_of(made["worktree"]["path"])
+        made = host.create_worktree(clone, branch, base, rec["path"], rec["label"])
+        rec["workspace"] = made["workspace"]
+        if made["path"] != rec["path"]:
+            # ponytail: a crash before the save below leaves planned at the old path, so recovery asks for --adopt.
+            note(rec, f"the host put the checkout at {made['path']}")
+            rec["path"] = rec["planned"] = made["path"]
+        git_dir, _ = owner_of(made["path"])
         core.save_json(git_dir / OWNER_FILE, {"owner": rec["owner"], "branch": branch})
         save(rec)
         return git_dir
@@ -288,8 +269,7 @@ def take_worktree(rec, save, known):
                                            f"to reuse it")
         workspace = here.get("open_workspace_id")
         if workspace:
-            busy = [p["pane_id"] for p in herdr_result("pane", "list", "--workspace", workspace)["panes"]
-                    if p.get("agent") and p["pane_id"] != rec.get("pane")]
+            busy = [p["pane_id"] for p in host.panes(workspace) if p.get("agent") and p["pane_id"] != rec.get("pane")]
             if busy:
                 raise LaunchFailure("refused", f"{rec['path']} has a live agent in pane {busy[0]}; it is not free to reuse")
         dirty = core.run(["git", "-C", rec["path"], "status", "--porcelain", "--untracked-files=all"]).splitlines()
@@ -302,8 +282,7 @@ def take_worktree(rec, save, known):
     if not workspace:
         rec["step"] = "worktree"
         save(rec)
-        workspace = herdr_result("worktree", "open", "--cwd", rec["clone"], "--path", rec["path"], "--label",
-                                 rec["label"], "--no-focus", "--trust-repository")["workspace"]["workspace_id"]
+        workspace = host.open_worktree(rec["clone"], rec["path"], rec["label"])
     if workspace != rec.get("workspace"):
         rec["workspace"], rec["pane"] = workspace, (rec["pane"] if rec.get("workspace") == workspace else None)
     save(rec)
@@ -311,9 +290,10 @@ def take_worktree(rec, save, known):
 
 
 def take_pane(rec, save):
+    host = hosts.of(rec)
     rec["phase"] = "tab"
     if rec.get("pane"):
-        pane = pane_at(rec["pane"])
+        pane = host.pane(rec["pane"])
         if pane and pane.get("workspace_id") == rec["workspace"]:
             return
         if (rec.get("prompt") or {}).get("state") in DELIVERED:
@@ -321,7 +301,7 @@ def take_pane(rec, save):
                                            f"ended. Start a new run")
         note(rec, f"recorded pane {rec['pane']} is gone; opening a new tab")
         rec["pane"] = None
-    agent = agent_at(rec["name"])
+    agent = host.agent(rec["name"])
     if agent:
         if agent.get("workspace_id") != rec["workspace"]:
             raise LaunchFailure("refused", f"agent name {rec['name']} already runs in pane {agent.get('pane_id')}, "
@@ -334,10 +314,7 @@ def take_pane(rec, save):
     save(rec)
     # ponytail: a crash between this create and the save below leaves one empty shell tab behind.
     # A fresh shell tab, not the layout's own claude pane: its start races any scripted exit.
-    argv = ["herdr", "tab", "create", "--workspace", rec["workspace"], "--cwd", rec["path"], "--label", rec["tab"]]
-    for pair in rec["env"]:
-        argv += ["--env", pair]
-    rec["pane"] = json.loads(core.run([*argv, "--no-focus"]))["result"]["root_pane"]["pane_id"]
+    rec["pane"] = host.open_tab(rec["workspace"], rec["path"], rec["tab"], rec["env"], rec["name"])
     save(rec)
 
 
@@ -353,28 +330,29 @@ def check_agent(rec, agent):
 
 def take_agent(rec, save):
     """A Claude in the pane, ready for its first prompt: started here with no task, or adopted."""
+    host = hosts.of(rec)
     rec["phase"] = "agent"
-    agent = agent_at(rec["pane"])
+    agent = host.agent(rec["pane"])
     if agent is None:
-        elsewhere = agent_at(rec["name"])
+        elsewhere = host.agent(rec["name"])
         if elsewhere:
             raise LaunchFailure("refused", f"agent name {rec['name']} already runs in pane {elsewhere.get('pane_id')}")
         rec["step"] = "agent"
         save(rec)
         try:
-            core.run(["herdr", "agent", "start", rec["name"], "--kind", core.adapter().KIND, "--pane", rec["pane"],
-                 "--timeout", "120000", "--", *core.adapter().launch_args(rec["model"], rec["settings"])])
+            host.start_agent(rec["name"], core.adapter().KIND, rec["pane"],
+                             core.adapter().launch_args(rec["model"], rec["settings"]), rec["env"])
         except core.CommandError as error:
             note(rec, f"agent start: {error}")
             save(rec)
-            agent = agent_at(rec["pane"])
+            agent = host.agent(rec["pane"])
             if agent is None:
                 raise LaunchFailure("start", f"Claude did not start in pane {rec['pane']}: "
                                                  f"{' '.join(str(error).split())}") from None
         else:
-            agent = agent_at(rec["pane"])
+            agent = host.agent(rec["pane"])
             if agent is None:
-                raise LaunchFailure("readiness", f"herdr reported a start but shows no agent in pane {rec['pane']}")
+                raise LaunchFailure("readiness", f"{host.NAME} reported a start but shows no agent in pane {rec['pane']}")
     else:
         note(rec, f"adopted the agent already in pane {rec['pane']} ({agent.get('agent_status')})")
     check_agent(rec, agent)
@@ -390,7 +368,7 @@ def take_agent(rec, save):
 
 def delivered(rec, directory):
     """What the evidence says happened to a prompt whose sending was not confirmed: a delivered state, or None."""
-    agent = agent_at(rec["pane"])
+    agent = hosts.of(rec).agent(rec["pane"])
     status = agent.get("agent_status") if agent else None
     if status in ("working", "blocked"):
         return status
@@ -422,24 +400,24 @@ def send_prompt(rec, save, directory, agent):
     rec["step"] = "prompt"
     rec["prompt"] = {"state": "sending", "at": int(time.time()), "seq": agent.get("state_change_seq")}
     save(rec)
+    host = hosts.of(rec)
     try:
-        got = herdr_result("agent", "prompt", rec["pane"], rec["text"], "--wait", "--until", "working",
-                           "--until", "blocked", "--timeout", "30000")["agent"]
-        state = got.get("agent_status")
+        state = host.prompt(rec["pane"], rec["text"])
         if state not in ("working", "blocked"):
-            raise core.CommandError(f"herdr agent prompt: matched {state}")
+            raise core.CommandError(f"{host.NAME} agent prompt: matched {state}")
+    except hosts.Blocked as error:  # refused before any input was sent
+        note(rec, f"agent prompt: {error}")
+        rec["prompt"] = {**rec["prompt"], "state": "not-sent"}
+        save(rec)
+        raise LaunchFailure("readiness", f"Claude in pane {rec['pane']} showed a dialog, so its brief was not sent. "
+                                         f"Answer it in the pane, then recover") from None
     except core.CommandError as error:
         note(rec, f"agent prompt: {error}")
-        if "agent_blocked" in str(error):  # refused before any input was sent (agent-automation.mdx)
-            rec["prompt"] = {**rec["prompt"], "state": "not-sent"}
-            save(rec)
-            raise LaunchFailure("readiness", f"Claude in pane {rec['pane']} showed a dialog, so its brief was not sent. "
-                                             f"Answer it in the pane, then recover") from None
         state = delivered(rec, directory)
         if not state:
             rec["prompt"] = {**rec["prompt"], "state": "unknown"}
             save(rec)
-            raise LaunchFailure("delivery-unknown", f"herdr could not confirm the brief reached Claude in pane "
+            raise LaunchFailure("delivery-unknown", f"{host.NAME} could not confirm the brief reached Claude in pane "
                                                     f"{rec['pane']} ({' '.join(str(error).split())[:200]}). Look at the "
                                                     f"pane: if it shows no brief, recover with --resend") from None
     rec["prompt"] = {**rec["prompt"], "state": state}
@@ -472,7 +450,7 @@ def ensure(rec, save, directory, prepare, known=None):
         rec["sha256"] = hashlib.sha256(rec["text"].encode()).hexdigest()
         save(rec)
     if state in ("sending", "unknown"):
-        agent = agent_at(rec["pane"])
+        agent = hosts.of(rec).agent(rec["pane"])
         if agent:
             check_agent(rec, agent)
         elif rec.get("resend"):
