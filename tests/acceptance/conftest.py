@@ -100,17 +100,17 @@ KEEP = ("PYTHONPATH", "PYTHONDONTWRITEBYTECODE", "HOME", "PATH", "TMPDIR", "TZ",
 
 def scripts(rig, py):
     """$HOME/.local/bin, first on PATH: the hermes wrapper (the production launcher's -I would drop the shim), and
-    herdr and gh stubs that journal and refuse."""
+    herdr, orca and gh stubs that journal and refuse."""
     bin_ = rig.user / ".local" / "bin"
     bin_.mkdir(parents=True, exist_ok=True)
     env = rig.child_env()
     exports = "".join(f"export {k}={shlex.quote(v)}\n" for k, v in sorted(env.items())
                       if k.startswith(("MUSTER_", "HERMES_", "SLACK_", "XDG_")) or k in KEEP)
     (bin_ / "hermes").write_text(f"#!/bin/sh\n{exports}exec {shlex.quote(py)} -m hermes_cli.main \"$@\"\n")
-    for name in ("herdr", "gh"):
+    for name in ("herdr", "orca", "gh"):
         line = shlex.quote(json.dumps({"stub": name, "refused": True}))
         (bin_ / name).write_text(f"#!/bin/sh\necho {line} >> {shlex.quote(str(rig.journal))}\nexit 97\n")
-    for name in ("hermes", "herdr", "gh"):
+    for name in ("hermes", "herdr", "orca", "gh"):
         (bin_ / name).chmod(0o755)
 
 
@@ -193,7 +193,7 @@ def preflight_static(rig):
         raise Preflight(f"channel: Hermes's Slack allowed_channels is {slack.get('allowed_channels')}")
     if rig.settings["notify_user_id"] != APPROVER:
         raise Preflight(f"identity: the approver is {rig.settings['notify_user_id']}, not the test user")
-    for name in ("hermes", "herdr", "gh"):
+    for name in ("hermes", "herdr", "orca", "gh"):
         found = shutil.which(name, path=env["PATH"])
         if found != str(rig.user / ".local" / "bin" / name):
             raise Preflight(f"path-scripts: {name} resolves to {found}")
