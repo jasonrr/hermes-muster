@@ -7,13 +7,15 @@ every call. An orphaned match is unknown, never gone. Orca's agent detection rid
 in its shells, so Claude is typed into a shell, never exec'd with `env`.
 """
 
+import hashlib
 import json
+import secrets
 import shlex
 import time
 from pathlib import Path
 
 from .. import core
-from . import READY, Blocked
+from . import QUIET, READY, Blocked, NotReady, helper, processes, program, under
 
 NAME = "orca"
 ROOT = "~/orca/workspaces"  # Orca's default workspace directory: <ROOT>/<clone dir name>/<worktree name>
@@ -254,3 +256,94 @@ def screen(pane_id):
 def remove_argv(workspace, path, force):
     """Orca's rm takes Orca-made and git-made checkouts alike, closes their terminals and keeps the branch."""
     return ["orca", "worktree", "rm", "--worktree", f"path:{path}", *(["--force"] if force else []), "--json"]
+
+
+def cwd_pids(path):
+    """pids of processes whose working directory is the checkout or inside it."""
+    found, pid = set(), None
+    for line in core.run(["lsof", "-a", "-d", "cwd", "-Fpn"]).splitlines():
+        if line.startswith("p"):
+            pid = int(line[1:])
+        elif line.startswith("n") and (line[1:] == path or line[1:].startswith(path + "/")):
+            found.add(pid)
+    return found
+
+
+# ponytail: an analysis folder's own terminals (not only muster's) count too, so a folder the human works in stays
+# open; scope to muster's terminal if that bites.
+def quiet(workspace):
+    """Each terminal's evidence. NotReady when one is busy or unknown: an orphaned terminal (Orca shows no agent for
+    it), an agent not idle or done, a Claude process Orca shows no agent for, anything under a terminal's shell but
+    the agent, a nested shell or an MCP/language server, a process in the checkout outside any terminal's shell, or
+    fewer shells in the checkout than Orca has terminals (one left it, so its jobs cannot be seen). Orca shows no
+    shell pid per terminal, so shells are found by working directory (lsof)."""
+    path = workspace.split("::", 1)[1]
+    rows = terminals(workspace)
+    if not rows:
+        raise NotReady(f"workspace {workspace} lists no terminals")
+    showing, seen = agents(workspace), []
+    for t in sorted(rows, key=lambda t: t["ptyId"]):
+        if t.get("orphaned"):
+            raise NotReady(f"terminal {t['ptyId']} is detached from Orca's window; its agent cannot be seen")
+        a = showing.get(own(t))
+        status = STATE.get(a.get("state"), a.get("state")) if a else None
+        if a and status not in READY:
+            raise NotReady(f"terminal {t.get('paneTitle') or t['handle']}: {a.get('agentType')} is {status}")
+        text = "\n".join(result("terminal", "read", "--terminal", t["handle"], "--screen")["terminal"]["tail"])
+        seen.append([t["ptyId"], [a.get("agentType"), a.get("state"), a.get("stateStartedAt")] if a else None,
+                     hashlib.sha256(text.encode()).hexdigest()])
+    table, inside = processes(), cwd_pids(path)
+    roots = sorted(p for p in inside if p in table and table[p][0] not in inside)
+    odd = [p for p in roots if program(table[p][1]) not in QUIET]
+    if odd:
+        raise NotReady(f"{path}: {table[odd[0]][1][:80]} runs outside any terminal's shell")
+    if len(roots) < len(rows):
+        raise NotReady(f"{path}: {len(rows)} terminals but {len(roots)} shells: a shell left the checkout")
+    kind, agents_running = core.adapter().KIND, 0
+    for shell in roots:
+        tree = under(shell, table)
+        for _, depth, command in tree:
+            if depth == 1 and program(command) == kind:
+                agents_running += 1  # judged by Orca's state above
+            elif not (depth == 1 and program(command) in QUIET) and not helper(command):
+                raise NotReady(f"{path}: {command[:80]} is running")
+        seen.append([shell, [p for p, _, _ in tree]])
+    if agents_running > len(showing):
+        raise NotReady(f"{path}: {agents_running} {kind} processes but Orca shows no state for "
+                       f"{agents_running - len(showing)} of them")
+    return seen
+
+
+def open_workspace(cwd, label):
+    """A terminal muster owns in a folder, the folder added to Orca the first time. label: the record's; the pane
+    title is unique per open, so two opens of one folder stay apart."""
+    title = f"muster-{secrets.token_hex(4)}"
+    try:
+        made = result("terminal", "create", "--worktree", f"path:{cwd}", "--title", title)["terminal"]
+    except core.CommandError as error:
+        if "selector_not_found" not in str(error):
+            raise
+        result("repo", "add", "--path", cwd, "--kind", "folder")
+        made = result("terminal", "create", "--worktree", f"path:{cwd}", "--title", title)["terminal"]
+    return {"workspace": made["worktreeId"], "terminal": made["handle"],
+            "pane": key(made["worktreeId"], title, made["paneKey"])}
+
+
+def analysis_gone(rec):
+    """Its terminal was closed by hand. An orphaned one is not gone. (Orca cannot remove a folder project from its
+    CLI; the folder stays listed in Orca.)"""
+    return find(rec["pane"]) is None
+
+
+def analysis_check(rec):
+    live_or_not = find(rec["pane"])
+    if live_or_not is None:
+        raise NotReady(f"terminal {rec['pane']} is gone")
+
+
+def close_argv(rec):
+    """Close muster's own terminal, found again (its handle may be stale), never the folder's other terminals."""
+    row = find(rec["pane"])
+    if row is None:
+        raise NotReady(f"terminal {rec['pane']} is gone")
+    return ["orca", "terminal", "close", "--terminal", row["handle"], "--json"]

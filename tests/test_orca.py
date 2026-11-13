@@ -1,3 +1,4 @@
+import json
 import shlex
 
 import pytest
@@ -216,3 +217,90 @@ def test_agent_by_key_keeps_the_keys_title_when_claude_retitles_the_terminal(wor
 def test_remove_argv_names_the_checkout_by_path():
     assert orca.remove_argv("rid::/p", "/p", True) == [
         "orca", "worktree", "rm", "--worktree", "path:/p", "--force", "--json"]
+
+
+def quiet_world(w):
+    path, h = w.orca_live(w.clone, "muster/7", "run-x")
+    return path, h, w.wid(path), w.terminals[h]["shell"], w.terminals[h]["agent_pid"]
+
+
+def test_an_idle_checkout_is_quiet_with_a_stable_fingerprint(world):
+    _, _, ws, _, _ = quiet_world(world)
+    first = orca.quiet(ws)
+    assert first == orca.quiet(ws)
+    json.dumps(first)
+
+
+def test_a_working_agent_is_busy(world):
+    _, h, ws, _, _ = quiet_world(world)
+    world.orca_agents[h]["state"] = "working"
+    with pytest.raises(hosts.NotReady, match="is working"):
+        orca.quiet(ws)
+
+
+def test_a_job_under_a_shell_is_busy(world):
+    _, _, ws, shell, _ = quiet_world(world)
+    world.procs[9001] = (shell, "npm run dev")
+    with pytest.raises(hosts.NotReady, match="npm run dev"):
+        orca.quiet(ws)
+
+
+def test_an_agents_mcp_server_is_quiet_and_its_command_is_not(world):
+    _, _, ws, _, agent_pid = quiet_world(world)
+    world.procs[9002] = (agent_pid, "node tally-mcp")
+    orca.quiet(ws)
+    world.procs[9003] = (agent_pid, "pytest -q")
+    with pytest.raises(hosts.NotReady, match="pytest"):
+        orca.quiet(ws)
+
+
+def test_a_detached_job_in_the_checkout_is_busy(world):
+    path, _, ws, _, _ = quiet_world(world)
+    world.cwds[9100] = path
+    world.procs[9100] = (1, "python server.py")
+    with pytest.raises(hosts.NotReady, match="outside any terminal"):
+        orca.quiet(ws)
+
+
+def test_a_shell_that_left_the_checkout_is_busy(world):
+    path, _, ws, _, _ = quiet_world(world)
+    h2 = world.terminal(ws, path, None)
+    world.cwds[world.terminals[h2]["shell"]] = "/elsewhere"
+    with pytest.raises(hosts.NotReady, match="left the checkout"):
+        orca.quiet(ws)
+
+
+def test_a_claude_orca_cannot_see_is_busy(world):
+    _, h, ws, _, _ = quiet_world(world)
+    world.orca_agents.pop(h)
+    with pytest.raises(hosts.NotReady, match="shows no state"):
+        orca.quiet(ws)
+
+
+def test_an_orphaned_terminal_is_busy(world):
+    _, _, ws, _, _ = quiet_world(world)
+    world.restart()
+    with pytest.raises(hosts.NotReady, match="detached"):
+        orca.quiet(ws)
+
+
+def test_open_workspace_adds_the_folder_once_and_titles_its_terminal(world, tmp_path):
+    folder = tmp_path / "notes"
+    folder.mkdir()
+    rec = orca.open_workspace(str(folder), "deal review")
+    assert calls(world, "orca", "repo", "add") == [["orca", "repo", "add", "--path", str(folder), "--kind", "folder",
+                                                    "--json"]]
+    assert calls(world, "orca", "terminal", "create")
+    assert orca.pane(rec["pane"]) is not None
+    orca.open_workspace(str(folder), "deal review")
+    assert len(calls(world, "orca", "repo", "add")) == 1
+
+
+def test_analysis_close_and_gone(world, tmp_path):
+    folder = tmp_path / "notes"
+    folder.mkdir()
+    rec = orca.open_workspace(str(folder), "deal review")
+    world.handle(orca.close_argv(rec))
+    assert orca.analysis_gone(rec)
+    with pytest.raises(hosts.NotReady):
+        orca.close_argv(rec)

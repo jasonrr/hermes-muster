@@ -49,8 +49,8 @@ class OrcaWorld(World):
 
     def terminal(self, wid, path, title):
         handle = self.next_id("term_")
+        login, shell = self.pid + 1, self.pid + 2
         self.pid += 2
-        login, shell = self.pid, self.pid + 1
         self.procs[login] = (1, "/usr/bin/login -flpq u /bin/zsh -l")
         self.procs[shell] = (login, "-/bin/zsh -l")
         self.cwds[shell] = path
