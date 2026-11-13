@@ -105,3 +105,17 @@ def test_a_crash_after_worktree_create_recovers_it(w):
     assert again["workspace"] == f"{w.repos[str(w.clone)]}::{again['path']}"
     assert w.submitted == [again["text"]]
     assert len(calls(w, "orca", "worktree", "create")) == 1
+
+
+def test_a_crash_after_the_checkout_recovers_it_visible_to_orca(w):
+    w.branches[(str(w.clone), "fix/x")] = "sha_x"
+    w.ahead["fix/x"] = 2
+    w.crash_after = lambda argv: argv[:1] == ["git"] and argv[3:5] == ["worktree", "add"]
+    rec = new_rec(w, adopt=True)
+    with pytest.raises(KeyboardInterrupt):
+        ensure(w, rec)
+    assert not w.visible
+    w.crash_after = None
+    ensure(w, last(w))
+    assert w.visible == {w.repos[str(w.clone)]}
+    assert w.submitted == [last(w)["text"]]

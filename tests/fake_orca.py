@@ -23,6 +23,7 @@ class OrcaWorld(World):
         super().__init__(tmp_path)
         self.repos = {}         # clone or folder path -> repo id
         self.visible = set()    # repo ids that show external worktrees
+        self.git_made = set()   # checkouts git made outside Orca: Orca opens terminals in them only while visible
         self.terminals = {}     # handle -> {worktreeId, worktreePath, paneTitle, tabId, leafId, ptyId, shell, login,
                                 #            late, orphaned, recordedPaneKey}
         self.orca_agents = {}   # handle -> {agentType, state, stateStartedAt}
@@ -116,6 +117,7 @@ class OrcaWorld(World):
             assert (where, branch) in self.branches, "git worktree add of a branch that does not exist"
             assert not any(w["branch"] == branch and w["clone"] == where for w in self.worktrees.values())
             self.worktree(where, branch, path)
+            self.git_made.add(path)
             return ""
         return super().git(where, args)
 
@@ -187,7 +189,9 @@ class OrcaWorld(World):
             sel = opt("--worktree")
             if sel.startswith("id:"):
                 wid = sel[3:]
-                path = wid.split("::", 1)[1]
+                rid, path = wid.split("::", 1)
+                if path in self.git_made and rid not in self.visible:
+                    fail(argv, "selector_not_found")  # live check: invisible until external worktrees show
             else:
                 path = sel.removeprefix("path:")
                 if path not in self.repos:

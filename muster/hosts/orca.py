@@ -53,8 +53,12 @@ def worktree_path(clone, branch):
 
 def worktrees(clone):
     """Every git worktree of the clone, from git: Orca's own list leaves out checkouts it did not create. Read-only:
-    a clone Orca does not know yet has no workspace open (open_workspace_id None)."""
-    rid = known_repo(clone)
+    a clone Orca does not know yet, or cannot be asked (not running), has no workspace open (open_workspace_id None),
+    so cleanup of every host's worktrees still runs."""
+    try:
+        rid = known_repo(clone)
+    except core.CommandError:
+        rid = None
     found, entry = [], None
     for line in core.run(["git", "-C", str(clone), "worktree", "list", "--porcelain"]).splitlines() + [""]:
         if line.startswith("worktree "):
@@ -72,9 +76,9 @@ def worktrees(clone):
 
 def create_worktree(clone, branch, base, path, label):
     """Orca's own create for a new branch. An existing branch gets git's checkout at the same place, since Orca
-    renames a branch with commits of its own (muster/3 -> muster/3-2); the repo then shows external worktrees, so
-    the checkout is visible in Orca. label: unused (Orca names the worktree by its directory). Setup hooks are
-    skipped: builders own dependency setup (#69)."""
+    renames a branch with commits of its own (muster/3 -> muster/3-2); open_tab makes such a checkout visible in
+    Orca. label: unused (Orca names the worktree by its directory). Setup hooks are skipped: builders own
+    dependency setup (#69)."""
     rid = repo_id(clone)
     try:
         core.run(["git", "-C", str(clone), "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"])
@@ -83,16 +87,12 @@ def create_worktree(clone, branch, base, path, label):
                       "--base-branch", f"origin/{base}", "--setup", "skip", "--no-parent")["worktree"]
         return {"workspace": made["id"], "path": made["path"]}
     core.run(["git", "-C", str(clone), "worktree", "add", path, branch])
-    result("repo", "set", "--repo", f"id:{rid}", "--external-worktree-visibility", "show")
     return {"workspace": f"{rid}::{path}", "path": path}
 
 
 def open_worktree(clone, path, label):
-    """Orca needs no open: a checkout's workspace is its id. A checkout git made outside Orca is visible to Orca
-    (terminal create, worktree ps) only while the repo shows external worktrees, so that is set (idempotent)."""
-    rid = repo_id(clone)
-    result("repo", "set", "--repo", f"id:{rid}", "--external-worktree-visibility", "show")
-    return f"{rid}::{path}"
+    """Orca needs no open: a checkout's workspace is its id (open_tab makes a git-made checkout visible)."""
+    return f"{repo_id(clone)}::{path}"
 
 
 def key(workspace, title, pane_key):
@@ -160,10 +160,13 @@ def panes(workspace):
 
 def open_tab(workspace, path, label, env, title):
     """A shell titled with the agent's name. A titled shell left by a crash after create is reused; env is applied
-    when Claude starts (start_agent). path, label: unused (the workspace is the checkout)."""
+    when Claude starts (start_agent). A checkout git made outside Orca is visible to Orca (terminal create, worktree
+    ps) only while its repo shows external worktrees, so that is set first (idempotent; recovery and --adopt reach
+    here without create_worktree). path, label: unused (the workspace is the checkout)."""
     for t in terminals(workspace):
         if t.get("paneTitle") == title and not t.get("orphaned"):
             return key(workspace, title, own(t))
+    result("repo", "set", "--repo", f"id:{workspace.split('::', 1)[0]}", "--external-worktree-visibility", "show")
     made = result("terminal", "create", "--worktree", f"id:{workspace}", "--title", title)["terminal"]
     pane_id = key(workspace, title, made["paneKey"])
     deadline = clock() + TITLE_WAIT
@@ -249,11 +252,6 @@ def prompt(pane_id, text):
     return "blocked" if now and now["agent_status"] == "blocked" else "working"
 
 
-def screen(pane_id):
-    row = live(pane_id)
-    return "\n".join(result("terminal", "read", "--terminal", row["handle"], "--screen")["terminal"]["tail"])
-
-
 def remove_argv(workspace, path, force):
     """Orca's rm takes Orca-made and git-made checkouts alike, closes their terminals and keeps the branch."""
     return ["orca", "worktree", "rm", "--worktree", f"path:{path}", *(["--force"] if force else []), "--json"]
@@ -329,7 +327,10 @@ def open_workspace(cwd, label):
     except core.CommandError as error:
         if "selector_not_found" not in str(error):
             raise
-        result("repo", "add", "--path", cwd, "--kind", "folder")
+        if Path(cwd, ".git").exists():
+            repo_id(cwd)  # a clone is a repo: a folder project of it could not be removed (no `repo rm`)
+        else:
+            result("repo", "add", "--path", cwd, "--kind", "folder")
         made = result("terminal", "create", "--worktree", f"path:{cwd}", "--title", title)["terminal"]
     return {"workspace": made["worktreeId"], "terminal": made["handle"],
             "pane": key(made["worktreeId"], title, made["paneKey"])}

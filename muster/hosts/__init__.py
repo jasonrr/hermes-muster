@@ -22,7 +22,6 @@ shapes and fills only the fields it really has. A record made before this seam n
   a dialog; raises core.CommandError otherwise (the caller then reads `agent(pane)` itself).
 - `prompt(pane, text) -> agent_status`: send one prompt; raises Blocked when refused before anything was sent,
   core.CommandError when delivery is unproven.
-- `screen(pane) -> str`: what the pane shows now.
 - `quiet(workspace) -> list`: each pane's evidence, JSON-serialisable; raises NotReady when one is busy or unknown.
 - `remove_argv(workspace, path, force) -> argv`: the command that removes the checkout and its workspace.
 - `open_workspace(cwd, label) -> {"workspace", "terminal", "pane"}`: an analysis workspace.

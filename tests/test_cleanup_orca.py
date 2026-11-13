@@ -98,3 +98,20 @@ def test_an_orca_analysis_workspace_closes_only_its_terminal(world, tmp_path):
     new = next(h for h, t in world.orca.terminals.items() if t["paneTitle"] is None and t["worktreePath"] == str(folder))
     window(world)
     assert orca_removes(world)[-1:] == [["orca", "terminal", "close", "--terminal", new, "--json"]]
+
+
+def test_a_herdr_worktree_is_still_cleaned_when_orca_is_down(world, monkeypatch):
+    world.herdr = True
+    world.card.pop("host")
+    world.card["workspace"] = "wR"
+    world._write_card()
+    run = world.run
+
+    def down(argv, env=None):
+        if argv[0] == "orca":
+            raise core.CommandError("orca: exit 1\nnot running")
+        return run(argv, env)
+    monkeypatch.setattr(core, "run", down)
+    window(world)
+    assert [c for c in world.calls if c[:3] == ["herdr", "worktree", "remove"]] == [
+        ["herdr", "worktree", "remove", "--workspace", "wR"]]

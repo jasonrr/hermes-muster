@@ -965,7 +965,12 @@ def _send(req, boot):
         fail(rid, "this run predates delivery evidence; send it in the pane")
         return
     if not launcher.seen(evidence, sha):
-        agent = hosts.of(run).agent(run["pane"]) if run.get("pane") else None
+        try:
+            agent = hosts.of(run).agent(run["pane"]) if run.get("pane") else None
+        except core.CommandError as caught:  # unknown, not gone: an Orca terminal detached by a restart
+            core.log("decisions", f"{rid}: {hosts.of(run).NAME} agent: {caught}")
+            _retry(req, "Not sent: the host cannot show the builder's session right now, so Muster did not send it")
+            return
         if agent is None:
             _retry(req, "Not sent: the builder's session is gone, so Muster did not send it")
             return

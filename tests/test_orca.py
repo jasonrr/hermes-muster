@@ -50,13 +50,15 @@ def test_a_new_branch_gets_orcas_own_worktree(world):
     assert calls(world, "orca", "repo", "add")
 
 
-def test_an_existing_branch_gets_gits_checkout_and_a_visible_repo(world):
+def test_an_existing_branch_gets_gits_checkout_and_open_tab_makes_it_visible(world):
     world.repos[str(world.clone)] = "repo9"
     world.branches[(str(world.clone), "muster/3")] = "sha_x"
     path = orca.worktree_path(world.clone, "muster/3")
-    orca.create_worktree(str(world.clone), "muster/3", "main", path, "l")
+    made = orca.create_worktree(str(world.clone), "muster/3", "main", path, "l")
     assert ["git", "-C", str(world.clone), "worktree", "add", path, "muster/3"] in world.calls
     assert not calls(world, "orca", "worktree", "create")
+    assert world.visible == set()
+    orca.open_tab(made["workspace"], path, "l", [], "run-x")
     assert world.visible == {"repo9"}
 
 
@@ -201,10 +203,9 @@ def test_a_prompt_into_a_bare_shell_sends_nothing(world):
     assert not calls(world, "orca", "terminal", "send")
 
 
-def test_open_worktree_shows_external_checkouts(world):
+def test_open_worktree_is_the_workspace_id(world):
     world.repos[str(world.clone)] = "repo9"
     assert orca.open_worktree(str(world.clone), "/p", "l") == "repo9::/p"
-    assert world.visible == {"repo9"}
 
 
 def test_agent_by_key_keeps_the_keys_title_when_claude_retitles_the_terminal(world):
@@ -339,3 +340,10 @@ def test_analysis_check_rejects_a_pane_from_another_workspace(world, tmp_path):
     orca.analysis_check(rec)
     with pytest.raises(hosts.NotReady, match="belongs to"):
         orca.analysis_check({**rec, "workspace": "repo99::/elsewhere"})
+
+
+def test_open_workspace_adds_a_checkout_as_a_repo_not_a_folder(world, tmp_path):
+    clone = tmp_path / "other"
+    (clone / ".git").mkdir(parents=True)
+    orca.open_workspace(str(clone), "review")
+    assert calls(world, "orca", "repo", "add") == [["orca", "repo", "add", "--path", str(clone), "--json"]]
