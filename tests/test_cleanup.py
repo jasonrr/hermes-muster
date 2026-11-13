@@ -1784,7 +1784,9 @@ def test_host_never_enters_a_links_digest(world):
     found, _ = cleanup.targets()
     assert found
     for target in found:
+        target["check"](world.t[0])  # an issue worktree's link is read from its card by the check
         link = target.get("link", {})
+        assert link
         assert "host" not in link and "host" not in link.get("card", {})
 
 
