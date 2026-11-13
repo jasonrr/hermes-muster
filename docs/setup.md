@@ -6,7 +6,7 @@ Muster does, start with the [README](../README.md).
 ## Requirements
 
 - Hermes >= 0.21.5, with its gateway running and connected to Telegram or Slack.
-- herdr >= 0.9.3 **or** Orca (the desktop app, running whenever cron ticks), `git`, `gh` (logged in) and Claude Code (`claude`). Claude Code is the only supported
+- herdr >= 0.9.3 **or** Orca (its runtime reachable whenever cron ticks: `orca serve service install`), `git`, `gh` (logged in) and Claude Code (`claude`). Claude Code is the only supported
   coding agent.
 - macOS or Linux.
 - Local clones of the repositories Muster will work in.
@@ -193,10 +193,15 @@ first 300 items are searched). The `gh` login the tick uses needs the `project` 
 
 herdr stays the default. Set `host: orca` to run new work in Orca instead.
 
-- Orca must be running when cron ticks. Muster finds it at `/Applications/Orca.app/Contents/Resources/bin`.
+- Muster needs an Orca runtime whenever cron ticks. Run `orca serve service install` once: it adds a LaunchAgent
+  that runs `orca serve --supervise` for your profile. It waits while the desktop app is open and takes over when
+  you quit it, so quitting the app no longer stalls runs. Open a window on it with the Orca app or `orca open`.
+  Remove it with `orca serve service uninstall`. Muster finds `orca` at `/Applications/Orca.app/Contents/Resources/bin`.
+- Quitting Orca normally (Cmd-Q) leaves agents running: Orca's terminal daemon owns them. "Quit Completely",
+  "Kill all sessions" and a reboot end them.
 - A configured clone is added to Orca on its first run.
-- A branch with commits of its own is checked out by git, because Orca would rename it. That repo is then set to
-  show external worktrees.
+- A branch with commits of its own is checked out by git, because Orca would rename it. Muster sets each repo it
+  opens a terminal in to show external worktrees, so Orca can see such a checkout.
 - After Orca restarts, a run's terminal is "detached" until its workspace is open in Orca again. Muster reads it
   as unknown and waits. It never ends or removes the run meanwhile, and it types nothing into a detached
   terminal or one with no agent.
