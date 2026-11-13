@@ -343,6 +343,26 @@ def test_active_pane_restarts_the_clock(world):
             assert len(removes(world)) == 1
 
 
+def test_a_restarted_clock_logs_which_evidence_changed(world):
+    assert main([]) == 0
+    tick(world, 5)
+    world.screens["wR:p1"] = "typed"
+    tick(world, 5)
+    restarts = [line for line in core.log_path("cleanup").read_text().splitlines() if "quiet clock restarts" in line]
+    assert len(restarts) == 1
+    assert "seen wR:p1:" in restarts[0] and "wR:p2" not in restarts[0] and "head" not in restarts[0]
+
+
+def test_a_failed_check_logs_that_it_dropped_the_clock(world):
+    assert main([]) == 0
+    world.agent_status["wR:p2"] = "working"
+    tick(world, 5)
+    log = core.log_path("cleanup").read_text()
+    assert "quiet clock dropped" in log and "claude is working" in log
+    tick(world, 5)  # a clock already gone is not logged again
+    assert core.log_path("cleanup").read_text().count("quiet clock dropped") == 1
+
+
 # 4. agent not ready ----------------------------------------------------------
 
 @pytest.mark.parametrize("status", ["working", "blocked", "some-unknown-status"])

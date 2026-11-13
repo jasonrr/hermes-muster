@@ -142,6 +142,36 @@ def digest(data):
     return hashlib.sha256(json.dumps(data).encode()).hexdigest()
 
 
+class Fingerprint(str):
+    """digest(parts' values), carrying the evidence it was made from so a restarted quiet clock can say what moved."""
+    evidence: dict | None = None
+
+
+def fingerprint(**parts):
+    made = Fingerprint(digest(list(parts.values())))  # the same digest as before: no clock restarts on upgrade
+    made.evidence = {"parts": {k: digest(v) for k, v in parts.items() if k != "seen"}, "seen": parts["seen"]}
+    return made
+
+
+def moved(old, new):
+    """What differs between two evidence records: part names, and each pane entry (keyed by its first field) as
+    old -> new."""
+    if not isinstance(old, dict):
+        return "no evidence from the last run"
+    names = [k for k in new["parts"] if old.get("parts", {}).get(k) != new["parts"][k]]
+    def by_id(seen):
+        return {str(e[0] if isinstance(e, list) and e else i): e for i, e in enumerate(seen or [])}
+    was, now = by_id(old.get("seen")), by_id(new["seen"])
+    names += [f"seen {k}: {json.dumps(was.get(k))} -> {json.dumps(now.get(k))}"
+              for k in sorted(was.keys() | now.keys()) if was.get(k) != now.get(k)]
+    return "; ".join(names) or "nothing in the evidence"
+
+
+def logged(line):
+    say(line)
+    core.log("cleanup", core.SECRET.sub("[redacted]", line))
+
+
 def listed(clone, host):
     return [w for w in host.worktrees(clone) if w.get("is_linked_worktree")]
 
@@ -468,7 +498,8 @@ def coding(link, wt, now, clone, ledger=None, host=None):
         if ledger:
             owner_free(ledger)
         warning = gate = None
-    return (digest([link, head, status, copies, prs_seen, seen, standing]), warning, gate, copies, retire, keep)
+    return (fingerprint(link=link, head=head, status=status, copies=copies, prs=prs_seen, seen=seen, standing=standing),
+            warning, gate, copies, retire, keep)
 
 
 def closure(link, prs, ledger):
@@ -495,7 +526,7 @@ def analysis(rec):
     """(fingerprint, None, None) of a quiet analysis workspace that is still the recorded one."""
     host = hosts.of(rec)
     host.analysis_check(rec)
-    return digest([rec, host.quiet(rec["workspace"])]), None, None
+    return fingerprint(record=rec, seen=host.quiet(rec["workspace"])), None, None
 
 
 def escalate(link, reason, signature, ledger=None, stranded=False, overdue=False):
@@ -557,10 +588,11 @@ def step(target, state, dry):
     try:
         fingerprint, warning, gate = check(now)
     except NotReady as why:
-        say(f"{name}: kept, {why}")
+        (logged if key in old else say)(f"{name}: kept, {why}" + ("; quiet clock dropped" if key in old else ""))
         return overdue(target, str(why), warned, dry)
     except FAILURES as error:
-        say(f"{name}: kept, check failed: {error}")
+        (logged if key in old else say)(f"{name}: kept, check failed: {error}"
+                                        + ("; quiet clock dropped" if key in old else ""))
         return True
     held = warned.get(key, {})
     if held and (warning[1] != held["sig"] if warning else not (gate and held.get("overdue"))) and not dry:
@@ -570,11 +602,17 @@ def step(target, state, dry):
     watched = (was.get("fingerprint") == fingerprint
                and all(isinstance(t, (int, float)) for t in (since, last))
                and since <= last <= now <= last + MAX_GAP)
+    evidence = getattr(fingerprint, "evidence", None)
     if not watched:
-        new[key] = {"fingerprint": fingerprint, "since": now, "seen": now}
-        say(f"{name}: kept, quiet clock starts now")
+        new[key] = {"fingerprint": fingerprint, "since": now, "seen": now, "evidence": evidence}
+        if not was:
+            say(f"{name}: kept, quiet clock starts now")
+        elif was.get("fingerprint") != fingerprint and evidence:
+            logged(f"{name}: kept, quiet clock restarts: {moved(was.get('evidence'), evidence)}")
+        else:
+            logged(f"{name}: kept, quiet clock restarts: last seen {since=} {last=}, now {now}")
         return False
-    new[key] = {"fingerprint": fingerprint, "since": since, "seen": now}
+    new[key] = {"fingerprint": fingerprint, "since": since, "seen": now, "evidence": evidence}
     if now - since < IDLE:
         say(f"{name}: kept, quiet {int(now - since) // 60} of {IDLE // 60} min")
         return False
