@@ -62,6 +62,27 @@ def test_an_existing_branch_gets_gits_checkout_and_open_tab_makes_it_visible(wor
     assert world.visible == {"repo9"}
 
 
+def test_open_tab_waits_until_orca_finds_a_git_made_checkout(world):
+    world.repos[str(world.clone)] = "repo9"
+    world.branches[(str(world.clone), "muster/3")] = "sha_x"
+    world.found_late = 3  # live: Orca finds a git-made checkout about 16 s after `git worktree add`
+    path = orca.worktree_path(world.clone, "muster/3")
+    made = orca.create_worktree(str(world.clone), "muster/3", "main", path, "l")
+    assert orca.pane(orca.open_tab(made["workspace"], path, "l", [], "run-x"))
+
+
+def test_open_tab_gives_up_when_orca_never_finds_the_checkout(world, monkeypatch):
+    world.repos[str(world.clone)] = "repo9"
+    world.branches[(str(world.clone), "muster/3")] = "sha_x"
+    world.found_late = 10**6
+    path = orca.worktree_path(world.clone, "muster/3")
+    made = orca.create_worktree(str(world.clone), "muster/3", "main", path, "l")
+    jump(monkeypatch, 0, 0, 1000)
+    with pytest.raises(core.CommandError, match="not found by Orca"):
+        orca.open_tab(made["workspace"], path, "l", [], "run-x")
+    assert not calls(world, "orca", "terminal", "create")
+
+
 def test_worktrees_lists_git_checkouts_and_adds_nothing(world):
     assert all(w["open_workspace_id"] is None for w in orca.worktrees(str(world.clone)))
     assert not calls(world, "orca", "repo", "add")
