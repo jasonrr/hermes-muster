@@ -216,3 +216,7 @@
 - Discovery that lists through the configured host (here `hosts.configured()` in cleanup) makes that host's outage stall every other host's cleanup → list from the shared substrate (git) and let a down host read as "unknown", never as an error for the whole repo.
 - A side effect placed only on the create path (Orca's external-worktree visibility) is skipped by crash recovery and adopt, which reuse an existing checkout → put idempotent preconditions on the step every path passes through (open_tab), not on create.
 - A live check run with the desktop window open does not cover the headless runtime (`orca serve`): pane titles need a renderer → run host live checks in every runtime mode the operator will use.
+
+## activate-alert-pr-link (2026-11-14)
+
+- A link saved only in a card's body (the Activate card's "ledger … | <url> | head …") never reaches the human: Hermes's needs-input alert shows just the title and the block reason → anything the human must act on from the alert goes in the block reason.
