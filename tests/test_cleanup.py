@@ -1394,7 +1394,8 @@ def test_a_merge_outside_the_button_gets_the_reviewed_handoff_read_before_its_re
     assert main([]) == 0
     [(card, rec)] = activate_cards(world).items()
     assert world.keys[f"muster-activate:t_1:{world.head_sha}"] == card and rec["status"] == "blocked"
-    assert rec["reason"] == "Merged; activation not verified.\nMerge triggers: nothing.\nSteps: restart."
+    assert rec["reason"] == (f"Merged; activation not verified.\nhttps://github.com/{REPO}/pull/16\n"
+                             "Merge triggers: nothing.\nSteps: restart.")
     assert decisions.load(rid)["status"] == "stale" and topic()["resolved_at"] == BASE
 
 

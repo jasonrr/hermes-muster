@@ -908,7 +908,8 @@ def test_a_merge_with_steps_opens_one_blocked_activate_card_in_the_runs_thread(w
                                    "check are on the Activate card."))
     [(card, rec)] = world.cards.items()
     assert world.keys == {f"muster-activate:t_1:{HEAD}": card} and world.subscribed == [(card, "t_1")]
-    assert rec["status"] == "blocked" and rec["reason"] == "Merged; activation not verified.\n" + STEPS
+    assert rec["status"] == "blocked" and rec["reason"] == f"Merged; activation not verified.\n{URL}\n" + STEPS
+    assert URL in rec["reason"].splitlines()  # the alert shows only the block reason, so the link must be in it
     assert rec["title"] == "Activate · T (PR #9)" and URL in rec["body"]
     assert (progress.activity("t_1") / "activation").read_text() == f"steps {card}"
 
@@ -935,7 +936,8 @@ def test_another_recommendation_for_the_merged_head_is_flagged(world):
     rid = build(world, {"action": "merge"}, activation=STEPS, recommended="send-back")
     decisions.execute(rid)
     [rec] = world.cards.values()
-    assert rec["reason"].startswith("Merged; activation not verified.\nCoordinator recommended send-back, not merge")
+    assert rec["reason"].startswith(f"Merged; activation not verified.\n{URL}\nCoordinator recommended send-back, "
+                                    "not merge")
 
 
 def test_the_handoff_is_idempotent_across_the_tap_its_recovery_and_a_replay(world):
@@ -965,7 +967,7 @@ def test_a_legacy_none_without_a_reason_is_activation_unknown_not_nothing(world)
     decisions.execute(rid)
     assert "Activation unknown" in state(rid)[1] and "Nothing to activate" not in state(rid)[1]
     [rec] = world.cards.values()
-    assert rec["reason"].startswith("Activation unknown")
+    assert rec["reason"].startswith("Activation unknown") and rec["reason"].count(URL) == 1
 
 
 def merges_another_head_then_raises(world, monkeypatch):
@@ -990,6 +992,7 @@ def test_a_merge_of_another_head_never_uses_the_reviewed_heads_handoff_or_says_a
     assert "Activation unknown" in outcome and "Nothing to activate" not in outcome
     [(key, card)] = world.keys.items()
     assert key == f"muster-activate:t_1:{'b' * 40}" and world.cards[card]["reason"].startswith("Activation unknown")
+    assert world.cards[card]["reason"].count(URL) == 1  # "unknown" names the link already; not added twice
 
 
 def test_a_merge_read_back_without_a_head_opens_no_card_and_claims_no_commit(world):

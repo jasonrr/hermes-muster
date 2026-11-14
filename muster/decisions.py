@@ -894,7 +894,9 @@ def handoff(ledger, repo, number, head):
             ref = conversation.load(ledger) or {}
             # in the run's thread while it is open; a closed one may refuse the ping, so the main chat then
             core.subscribe(card["id"], ledger if ref.get("state") == "open" and not ref.get("resolved_at") else None)
-            core.kanban("block", "--kind", "needs_input", card["id"], text)  # never "-": "Merged;" or "Activation …"
+            # the alert shows only this reason, so "steps" carries the link on its own line ("unknown" names it already)
+            reason = text.replace("\n", f"\n{url}\n", 1) if kind == "steps" else text
+            core.kanban("block", "--kind", "needs_input", card["id"], reason)  # never "-": "Merged;" or "Activation …"
             events.expect(card["id"], "blocked", "activation handoff")
     progress.touch(ledger, "activation", f"{kind} {card['id']}")
     return kind
