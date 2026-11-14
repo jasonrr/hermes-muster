@@ -24,6 +24,7 @@ ROOT = "~/orca/workspaces"  # Orca's default workspace directory: <ROOT>/<clone 
 STATE = {"working": "working", "waiting": "blocked", "done": "done", "idle": "idle"}
 TITLE_WAIT = 5    # s a new terminal takes to show its pane title (about 1 s observed)
 START_WAIT = 120  # s Claude may take to be ready (herdr's start --timeout 120000)
+FIND_WAIT = 60    # s Orca may take to find a checkout git made (about 16 s observed; no rescan command)
 clock, sleep = time.time, time.sleep  # tests replace both
 
 
@@ -168,11 +169,17 @@ def open_tab(workspace, path, label, env, title):
     """A shell titled with the agent's name. A titled shell left by a crash after create is reused; env is applied
     when Claude starts (start_agent). A checkout git made outside Orca is visible to Orca (terminal create, worktree
     ps) only while its repo shows external worktrees, so that is set first (idempotent; recovery and --adopt reach
-    here without create_worktree). path, label: unused (the workspace is the checkout)."""
+    here without create_worktree), and only once Orca has found it (about 16 s after git adds it, live check
+    2026-11-14), so open_tab waits for that. path, label: unused (the workspace is the checkout)."""
     for t in terminals(workspace):
         if shown(t) == title:
             return key(workspace, title, own(t))
     result("repo", "set", "--repo", f"id:{workspace.split('::', 1)[0]}", "--external-worktree-visibility", "show")
+    deadline = clock() + FIND_WAIT
+    while workspace not in {w.get("id") for w in result("worktree", "list", "--limit", "10000")["worktrees"]}:
+        if clock() >= deadline:
+            raise core.CommandError(f"orca: {workspace} not found by Orca within {FIND_WAIT} s")
+        sleep(1)
     made = result("terminal", "create", "--worktree", f"id:{workspace}", "--title", title)["terminal"]
     pane_id = key(workspace, title, made["paneKey"])
     deadline = clock() + TITLE_WAIT

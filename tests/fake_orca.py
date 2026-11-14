@@ -24,6 +24,8 @@ class OrcaWorld(World):
         self.repos = {}         # clone or folder path -> repo id
         self.visible = set()    # repo ids that show external worktrees
         self.git_made = set()   # checkouts git made outside Orca: Orca opens terminals in them only while visible
+        self.found_late = 0     # `worktree list` calls before Orca finds a visible git-made checkout (~16 s live)
+        self.unfound = {}       # git-made path -> list calls left before Orca finds it
         self.terminals = {}     # handle -> {worktreeId, worktreePath, paneTitle, tabId, leafId, ptyId, shell, login,
                                 #            late, orphaned, recordedPaneKey}
         self.orca_agents = {}   # handle -> {agentType, state, stateStartedAt}
@@ -120,6 +122,7 @@ class OrcaWorld(World):
             assert not any(w["branch"] == branch and w["clone"] == where for w in self.worktrees.values())
             self.worktree(where, branch, path)
             self.git_made.add(path)
+            self.unfound[path] = self.found_late
             return ""
         return super().git(where, args)
 
@@ -164,6 +167,16 @@ class OrcaWorld(World):
             for h in [h for h, t in self.terminals.items() if t["worktreePath"] == path]:
                 self.close(h)
             return ok({})
+        if verb == ["worktree", "list"]:
+            listed = []
+            for path in self.worktrees:
+                rid = self.repos.get(self.worktrees[path]["clone"])
+                if path in self.git_made and (rid not in self.visible or self.unfound.get(path, 0) > 0):
+                    if rid in self.visible:
+                        self.unfound[path] -= 1
+                    continue
+                listed.append({"id": self.wid(path), "path": path})
+            return ok({"worktrees": listed})
         if verb == ["worktree", "ps"]:
             self.advance_boot()
             rows = {}
@@ -193,8 +206,8 @@ class OrcaWorld(World):
             if sel.startswith("id:"):
                 wid = sel[3:]
                 rid, path = wid.split("::", 1)
-                if path in self.git_made and rid not in self.visible:
-                    fail(argv, "selector_not_found")  # live check: invisible until external worktrees show
+                if path in self.git_made and (rid not in self.visible or self.unfound.get(path, 0) > 0):
+                    fail(argv, "selector_not_found")  # live check: invisible until external worktrees show and found
             else:
                 path = sel.removeprefix("path:")
                 if path not in self.repos:
