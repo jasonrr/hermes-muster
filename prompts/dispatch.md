@@ -1,6 +1,6 @@
 ---
 name: dispatch
-description: When the human asks you to send coding work to a terminal pane (herdr or Orca) (not a labeled issue), launch it with `hermes muster launch` so the run reports itself, and open analysis workspaces with `hermes muster open`. When the human asks you to send a message to a running agent, deliver it through the run's host (see Message a running agent). A card that wakes you is `muster:escalation`'s, whatever kind of run it tracks.
+description: When the human asks you to send coding work to a terminal pane (herdr TUI, Orca or herdr-core) (not a labeled issue), launch it with `hermes muster launch` so the run reports itself, and open analysis workspaces with `hermes muster open`. When the human asks you to send a message to a running agent, deliver it through the run's host (see Message a running agent). A card that wakes you is `muster:escalation`'s, whatever kind of run it tracks.
 ---
 
 # muster dispatch
@@ -29,7 +29,7 @@ Only when the human asks for coding work in a terminal pane.
    `hermes muster recover <card>`. Never run it, and never launch the same work again on a new branch to
    get around it. If it says "already has run", pick a new branch name.
 
-Never open a coding pane by hand (`herdr worktree create`, `herdr agent start`, or their Orca equivalents `orca worktree create`, `orca terminal create`): that run has no card,
+Never open a coding pane by hand (`herdr worktree create`, `herdr agent start`, or their Orca equivalents `orca worktree create`, `orca terminal create`, or `hc run`, `herdr-app do space.new`): that run has no card,
 so nobody hears when it ends.
 
 ## Analysis workspace (no pull request)
@@ -44,7 +44,9 @@ It prints the record as JSON (`workspace`, `pane`, `terminal`). Start the agent 
 have. On Orca the record has `"host": "orca"`. Its `pane` is `orca:<workspace>#<title>#<tab id>:<leaf id>`.
 Find the terminal in `orca terminal list --worktree id:<workspace> --json`: the row whose `<tabId>:<leafId>` (or
 `recordedPaneKey`) is the last part, or whose `paneTitle` is `<title>`. Then type the agent's command line into it
-with `orca terminal send --terminal <handle> --text "claude" --enter --json`. The record
+with `orca terminal send --terminal <handle> --text "claude" --enter --json`. On herdr-core the record has
+`"host": "herdr-core"`. Its `pane` is the hc terminal's name. Type the agent's command line into it with
+`hc send --json -- <pane> "claude"`. The record
 lets cleanup close the workspace after 30 minutes with every pane quiet; no file is deleted. Never open
 one with `herdr workspace create` or `orca terminal create` yourself: without the record it stays open forever.
 
@@ -89,6 +91,21 @@ On an Orca run (`"host": "orca"` in the links):
 
 3. `"turn_started"` in `result.send.prompt.stages` means Orca submitted it, nothing more. Tell the human that.
 4. `agent_prompt_blocked` is the blocker: the agent waits on a question. Report any other result as Orca gave it.
+   Never send keys, interrupt or relaunch.
+
+On a herdr-core run (`"host": "herdr-core"` in the links):
+
+1. The links' `pane` is the terminal name. `hc get <pane> --json` must show `state: live`, a `status.app` (the
+   agent), a `foreground`, and `labels["muster.path"]` equal to the run's worktree. Otherwise tell the human what
+   you found; never pick another target.
+2. Encode the message exactly as in the herdr steps, then:
+
+   ```bash
+   hc send --wait --timeout 10 --json -- <pane> "<the same envelope>"
+   ```
+
+3. `"started": true` means hc submitted it, nothing more. Tell the human that.
+4. A `blocked` error is the blocker: the agent waits on a question. Report any other result as hc gave it.
    Never send keys, interrupt or relaunch.
 
 This covers only a message the human asked for. It is not leave to steer an agent yourself, answer its approval

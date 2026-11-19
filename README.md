@@ -1,7 +1,7 @@
 # Muster
 
 Muster is a Hermes plugin that coordinates subscription-backed coding agents in visible terminal
-sessions. You start work from a GitHub issue or an ad-hoc request, follow it in herdr or Orca, and direct the
+sessions. You start work from a GitHub issue or an ad-hoc request, follow it in the herdr TUI, Orca or the Herdr app, and direct the
 process through Telegram or Slack. Your Hermes agent reviews the result; you decide whether to merge.
 
 ## Why use it
@@ -9,7 +9,7 @@ process through Telegram or Slack. Your Hermes agent reviews the result; you dec
 - **Use the subscription you already pay for.** Each run is an ordinary interactive Claude Code session,
   so it draws on your Claude plan rather than billing you per API call. How much work that covers depends
   on your plan, your workload and its usage limits.
-- **See and take over the work.** herdr (or Orca) keeps each agent in an ordinary terminal pane. Watch it or
+- **See and take over the work.** The herdr TUI (or Orca, or the Herdr app) keeps each agent in an ordinary terminal pane. Watch it or
   type into it directly, rather than relying only on the factory's status reports.
 - **Keep project knowledge with the code.** Agents use the repository's instructions, history and
   tooling, alongside Muster's default workflow. Improvements committed there travel with the repository
@@ -20,13 +20,13 @@ The design favors repository-owned practice and a clear human-facing orchestrati
 opinion, not a claim that every project should work this way. See [why this design](docs/design.md) for
 the rationale, today's hybrid and the intended direction.
 
-Muster supports **Claude Code** only. Because each run is a plain terminal pane (herdr or Orca), other coding agents, or
+Muster supports **Claude Code** only. Because each run is a plain terminal pane (herdr TUI, Orca or the Herdr app), other coding agents, or
 several side by side, could be added later; they are not supported today.
 
 ## How a run goes
 
 1. **You start it:** label a GitHub issue (`agent-ready` by default), or ask your Hermes agent for the work.
-2. **Muster launches it:** a new git worktree and a terminal pane (herdr or Orca), Claude Code with a brief, and a card on
+2. **Muster launches it:** a new git worktree and a terminal pane (herdr TUI, Orca or the Herdr app), Claude Code with a brief, and a card on
    Muster's Hermes kanban board.
 3. **The builder asks you:** questions and permission prompts arrive in your chat. For a feature, it
    proposes a design and waits for your approval before writing code.
@@ -74,7 +74,7 @@ Command and flags: [`hermes muster launch`](docs/reference.md#ad-hoc-runs).
 
 ### Research without a pull request
 
-Ask your Hermes agent for research or analysis in a terminal pane (herdr or Orca), and it opens an analysis workspace. No
+Ask your Hermes agent for research or analysis in a terminal pane (herdr TUI, Orca or the Herdr app), and it opens an analysis workspace. No
 card tracks it, and cleanup closes it once it has been quiet for 30 minutes, without deleting any file.
 See [analysis workspaces](docs/reference.md#analysis-workspaces).
 

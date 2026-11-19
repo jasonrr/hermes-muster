@@ -51,8 +51,8 @@ this approach, not a supported capability today.
 ### Orca
 
 The same reasons hold for Orca: a run there is a visible, ordinary Claude Code session in a terminal you can
-watch and take over. Orca is an alternative host behind `muster/hosts/`, chosen with the `host` setting. herdr
-stays the default.
+watch and take over. Orca and the Herdr desktop app's core (`herdr-core`) are alternative hosts behind `muster/hosts/`, chosen with the
+`host` setting. The herdr TUI stays the default.
 
 ## GitHub identity is a control, not a sandbox
 
