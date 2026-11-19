@@ -1,6 +1,7 @@
 """hosts: the terminal host a run lives in, one module per host, picked by name (`host` setting).
 
-herdr is the default; orca is the option (docs/decisions/2026-11-12-orca-host.md). A host module is a peer of the
+herdr is the default; orca and herdr-core are options (docs/decisions/2026-11-12-orca-host.md,
+docs/decisions/2026-11-19-herdr-core-host.md). A host module is a peer of the
 others; the contract is this docstring, no base class (the muster/channels pattern). Every host speaks herdr's dict
 shapes and fills only the fields it really has. A record made before this seam names no host: it is herdr's.
 
@@ -36,7 +37,7 @@ import re
 from .. import config, core
 from ..config import ConfigError
 
-NAMES = ("herdr", "orca")
+NAMES = ("herdr", "orca", "herdr-core")
 READY = ("idle", "done")
 DELIVERED = ("working", "blocked", "done")
 # The only foreground processes a pane without an agent may run.
@@ -60,7 +61,24 @@ class Blocked(core.CommandError):
 def get(name):
     if name not in NAMES:
         raise ConfigError(f"muster: host {name!r} is not one of {', '.join(NAMES)}")
-    return importlib.import_module(f"{__name__}.{name}")
+    return importlib.import_module(f"{__name__}.{name.replace('-', '_')}")
+
+
+def git_worktrees(clone):
+    """Every git worktree of the clone, from `git worktree list --porcelain`: [{"path", "branch",
+    "is_linked_worktree"}], branch short (no refs/heads/), the main checkout first and not linked."""
+    found, entry = [], None
+    for line in core.run(["git", "-C", str(clone), "worktree", "list", "--porcelain"]).splitlines() + [""]:
+        if line.startswith("worktree "):
+            entry = {"path": line[len("worktree "):], "branch": None}
+        elif line.startswith("branch ") and entry:
+            entry["branch"] = line[len("branch "):].removeprefix("refs/heads/")
+        elif not line and entry:
+            found.append(entry)
+            entry = None
+    for n, wt in enumerate(found):
+        wt["is_linked_worktree"] = n > 0  # git lists the main checkout first
+    return found
 
 
 def of(record):
