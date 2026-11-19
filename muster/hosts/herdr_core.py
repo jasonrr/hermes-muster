@@ -36,6 +36,7 @@ APPS = {"claude-code": "claude"}  # hc status.app -> the agent kind muster's ada
 START_WAIT = 120   # s Claude may take to be ready (herdr's start --timeout 120000)
 WINDOW_WAIT = 30   # s a window muster opened may take to answer `herdr-app status`
 SEND_WAIT = "10"   # s `hc send --wait` waits on the turn before it checks in; `started: true` is proof either way
+SHELLS = {"zsh", "bash", "sh", "fish"}  # hc reports a shell at its prompt as its own foreground (live check)
 clock, sleep = time.time, time.sleep  # tests replace both
 
 # The app's own worktree layout is herdr's: <worktrees setting>/<repo>/<branch with / as ->.
@@ -162,7 +163,7 @@ def panes(workspace):
         t = get(row["address"])
         if t:
             found.append({"pane_id": t.get("name") or t["address"], "workspace_id": workspace,
-                          "terminal_id": t["address"], "agent": app(t) if t.get("foreground") else None})
+                          "terminal_id": t["address"], "agent": app(t) if agent(row["address"]) else None})
     return found
 
 
@@ -189,11 +190,12 @@ def open_tab(workspace, path, label, env, title):
 def agent(target):
     """The agent in a pane or under a name (the same thing here), in herdr's shape; None when there is none: no live
     terminal, a shell with no agent (a core restart leaves a kept terminal so), or a status left over after the
-    agent exited (hc reports a foreground only while a program runs, so no foreground is no agent). state_change_seq
+    agent exited (the foreground is then the shell, not the agent). state_change_seq
     is hc's status_ms, which every status change moves and which holds still while idle (live check); hc has no
     completion seq."""
     t = get(target)
-    if t is None or app(t) is None or not t.get("foreground"):
+    fg = (t or {}).get("foreground") or {}
+    if t is None or app(t) is None or program((fg.get("argv") or [""])[0]) != app(t):
         return None
     state = t["status"].get("state")
     return {"agent": app(t), "name": t.get("name"), "cwd": t.get("cwd"),
@@ -210,6 +212,8 @@ def start_agent(name, kind_, pane_id, args, env):
     if t is None:
         raise core.CommandError(f"herdr-core: no live terminal {pane_id}")
     running = (t.get("foreground") or {}).get("argv") or []
+    if running and program(running[0]) in SHELLS:
+        running = []
     if running and program(running[0]) != kind_:
         raise core.CommandError(f"herdr-core: {pane_id} already runs {' '.join(running)[:80]}; nothing typed")
     if not running:

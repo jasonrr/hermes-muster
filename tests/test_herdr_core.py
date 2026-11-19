@@ -69,7 +69,7 @@ def test_the_fake_answers_like_the_live_check(w):
     address = json.loads(core.run(run))["address"]
     with pytest.raises(core.CommandError, match="name_taken"):
         core.run(run)
-    assert "foreground" not in json.loads(core.run(["hc", "get", "a", "--json"]))
+    assert json.loads(core.run(["hc", "get", "a", "--json"]))["foreground"]["argv"] == ["/bin/zsh", "-l"]
     w.hc_claude(address, "blocked")
     with pytest.raises(core.CommandError, match="blocked"):
         core.run(["hc", "send", "--wait", "--timeout", "10", "--json", "--", "a", "x"])
@@ -421,3 +421,14 @@ def test_quiet_refuses_a_program_behind_a_stale_agent_status(w):
     w.hc[a]["foreground"] = {"argv": ["vim", "notes"], "pid": 996}
     with pytest.raises(herdr_core.NotReady, match="vim"):
         herdr_core.quiet(path)
+
+
+def test_a_bare_shell_is_its_own_foreground_and_claude_gone_leaves_no_agent(w):
+    """Live 2026-11-19: hc reports a shell at its prompt as foreground `/bin/zsh -l`; after Claude exits the status
+    stays but the foreground is the shell again."""
+    path = checkout(w)
+    herdr_core.open_tab(path, path, "run", [], "run-x")
+    herdr_core.start_agent("run-x", "claude", "run-x", [], [])
+    assert herdr_core.agent("run-x")["agent_status"] == "idle"
+    next(t for t in w.hc.values() if t["name"] == "run-x")["foreground"] = None  # Claude exited, status left
+    assert herdr_core.agent("run-x") is None

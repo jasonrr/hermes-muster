@@ -111,12 +111,14 @@ class HcWorld(OrcaWorld):
         return {k: t[k] for k in ("address", "name", "cwd", "state", "turn")} | {"agent": "zsh"}
 
     def shown(self, t):
-        """`hc get`'s shape: foreground only while a program runs; a booting Claude has no status yet."""
+        """`hc get`'s shape (live check): a shell at its prompt is its own foreground (`/bin/zsh -l`); a booting
+        Claude has no status yet."""
         out = {k: v for k, v in t.items() if k != "foreground"}
         if self.booting.get(t["address"]):
             self.booting[t["address"]] -= 1
             out["status"] = None
-        return out | ({"foreground": t["foreground"]} if t["foreground"] else {})
+        shell = {"argv": ["/bin/zsh", "-l"], "cwd": t["cwd"], "name": "zsh", "pid": t["pid"]}
+        return out | {"foreground": t["foreground"] or shell}
 
     def hc_cmd(self, argv):
         if argv[1] == "read":
