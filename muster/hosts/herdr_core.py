@@ -19,6 +19,7 @@ from .. import core
 from . import (
     QUIET,
     READY,
+    SHELLS,
     Blocked,
     NotReady,
     git_worktrees,
@@ -31,12 +32,11 @@ from . import (
 
 NAME = "herdr-core"
 LABEL = "muster.path"
-STATE = {"idle": "idle", "working": "working", "blocked": "blocked", "done": "done"}  # hc status.state -> muster's
+STATES = ("idle", "working", "blocked", "done")  # hc status.state values muster knows; any other is hc-<state>
 APPS = {"claude-code": "claude"}  # hc status.app -> the agent kind muster's adapter names (claude.KIND)
 START_WAIT = 120   # s Claude may take to be ready (herdr's start --timeout 120000)
 WINDOW_WAIT = 30   # s a window muster opened may take to answer `herdr-app status`
 SEND_WAIT = "10"   # s `hc send --wait` waits on the turn before it checks in; `started: true` is proof either way
-SHELLS = {"zsh", "bash", "sh", "fish"}  # hc reports a shell at its prompt as its own foreground (live check)
 clock, sleep = time.time, time.sleep  # tests replace both
 
 # The app's own worktree layout is herdr's: <worktrees setting>/<repo>/<branch with / as ->.
@@ -77,7 +77,7 @@ def kind(error):
     """hc's error kind from a CommandError (hc prints {"error": {"kind": …}} on stderr; core.run keeps stderr)."""
     text = str(error)
     try:
-        return json.loads(text[text.index("{"):])["error"]["kind"]
+        return json.loads(text[text.rindex('{"error"'):])["error"]["kind"]
     except (ValueError, KeyError, TypeError):
         return None
 
@@ -163,7 +163,7 @@ def panes(workspace):
         t = get(row["address"])
         if t:
             found.append({"pane_id": t.get("name") or t["address"], "workspace_id": workspace,
-                          "terminal_id": t["address"], "agent": app(t) if agent(row["address"]) else None})
+                          "terminal_id": t["address"], "agent": app(t) if shape(t) else None})
     return found
 
 
@@ -187,25 +187,29 @@ def open_tab(workspace, path, label, env, title):
     return title
 
 
-def agent(target):
-    """The agent in a pane or under a name (the same thing here), in herdr's shape; None when there is none: no live
-    terminal, a shell with no agent (a core restart leaves a kept terminal so), or a status left over after the
-    agent exited (the foreground is then the shell, not the agent). state_change_seq
-    is hc's status_ms, which every status change moves and which holds still while idle (live check); hc has no
-    completion seq."""
-    t = get(target)
+def shape(t):
+    """herdr's shape of the agent in an already fetched terminal; None when there is none: no terminal, a shell with
+    no agent (a core restart leaves a kept terminal so), or a status left over after the agent exited (the
+    foreground is then the shell, not the agent). state_change_seq is hc's status_ms, which every status change
+    moves and which holds still while idle (live check); hc has no completion seq."""
     fg = (t or {}).get("foreground") or {}
     if t is None or app(t) is None or program((fg.get("argv") or [""])[0]) != app(t):
         return None
     state = t["status"].get("state")
     return {"agent": app(t), "name": t.get("name"), "cwd": t.get("cwd"),
             "foreground_cwd": (t.get("foreground") or {}).get("cwd"),
-            "agent_status": STATE.get(state, f"hc-{state}"), "state_change_seq": t.get("status_ms"),
+            "agent_status": state if state in STATES else f"hc-{state}", "state_change_seq": t.get("status_ms"),
             "completion_seq": None, "pane_id": t.get("name") or t["address"], "workspace_id": labels(t).get(LABEL)}
 
 
+def agent(target):
+    """The agent in a pane or under a name (the same thing here), in herdr's shape; None when there is none."""
+    return shape(get(target))
+
+
 def start_agent(name, kind_, pane_id, args, env):
-    """Type `export <env>; <kind> <args>` into the pane's shell, then wait until hc shows the agent ready or at a
+    """Type `env <env> <kind> <args>` into the pane's shell (the env is the agent's alone: it does not outlive it in
+    the visible shell), then wait until hc shows the agent ready or at a
     dialog (herdr's start contract). A pane already running the agent (a crash after typing, Claude still booting
     with no status yet) gets nothing typed and is waited on; a pane running anything else raises."""
     t = get(pane_id)
@@ -219,7 +223,7 @@ def start_agent(name, kind_, pane_id, args, env):
     if not running:
         line = " ".join(shlex.quote(a) for a in [kind_, *args])
         if env:
-            line = "export " + " ".join(shlex.quote(pair) for pair in env) + "; " + line
+            line = "env " + " ".join(shlex.quote(pair) for pair in env) + " " + line
         send(pane_id, line)
     deadline = clock() + START_WAIT
     while clock() < deadline:
@@ -268,15 +272,22 @@ def quiet(workspace):
         busy = [c for p, depth, c in tree if not (depth == 1 and p == fg.get("pid")) and not helper(c)]
         if busy:
             raise NotReady(f"terminal {address} runs in the background: {busy[0][:80]}")
-        if app(t) and STATE.get(status.get("state")) not in READY:
+        # An agent's state counts only while it is the foreground: hc leaves a status after the agent exits.
+        if shape(t) and shape(t)["agent_status"] not in READY:
             raise NotReady(f"terminal {address}: {app(t)} is {status.get('state')}")
-        # The foreground is judged even under an agent status: hc may leave a status after the agent exits.
         if fg and program((fg.get("argv") or [""])[0]) not in QUIET | {app(t)}:
             raise NotReady(f"terminal {address} runs {' '.join(fg.get('argv') or [])[:80]}")
         screen = core.run(["hc", "read", address])
         seen.append([address, t.get("name"), app(t), status.get("state"), t.get("turn"), t.get("status_ms"),
                      fg.get("argv"), hashlib.sha256(screen.encode()).hexdigest(), [p for p, _, _ in tree]])
     return seen
+
+
+def end_step(address):
+    """The shell step that ends and removes a terminal; one hc no longer knows counts as removed."""
+    a = shlex.quote(address)
+    return (f"{{ hc kill {a} --json >/dev/null 2>&1; hc rm {a} --json >/dev/null 2>&1 "
+            f"|| ! hc get {a} --json >/dev/null 2>&1; }}")
 
 
 # ponytail: the space whose folder is the checkout is closed even when a person opened it, ending a terminal of
@@ -293,8 +304,7 @@ def remove_argv(workspace, path, force):
     mine = [t["address"] for t in hc("ls", "--all", "--label", f"{LABEL}={workspace}")["terminals"]]
     steps = [f"herdr-app do space.close --id {shlex.quote(s)} --confirmed true >/dev/null" for s in spaces]
     # hc rm fails if space.close already removed the terminal; one that hc no longer knows is removed as wanted.
-    steps += [f"{{ hc kill {shlex.quote(a)} --json >/dev/null 2>&1; hc rm {shlex.quote(a)} --json >/dev/null 2>&1 "
-              f"|| ! hc get {shlex.quote(a)} --json >/dev/null 2>&1; }}" for a in mine]
+    steps += [end_step(a) for a in mine]
     steps.append(shlex.join(["git", "-C", common, "worktree", "remove", *(["--force"] if force else []), path]))
     return ["sh", "-c", " && ".join(steps)]
 
@@ -326,6 +336,4 @@ def close_argv(rec):
     """End and remove muster's own terminal; the folder's space and its other terminals stay."""
     if get(rec["pane"]) is None:
         raise NotReady(f"terminal {rec['pane']} is gone")
-    a = shlex.quote(rec["pane"])
-    return ["sh", "-c", (f"{{ hc kill {a} --json >/dev/null 2>&1; hc rm {a} --json >/dev/null 2>&1 "
-                         f"|| ! hc get {a} --json >/dev/null 2>&1; }}")]
+    return ["sh", "-c", end_step(rec["pane"])]

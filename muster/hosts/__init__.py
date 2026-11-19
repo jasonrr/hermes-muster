@@ -40,10 +40,11 @@ from ..config import ConfigError
 NAMES = ("herdr", "orca", "herdr-core")
 READY = ("idle", "done")
 DELIVERED = ("working", "blocked", "done")
+SHELLS = {"zsh", "bash", "sh", "fish"}
 # The only foreground processes a pane without an agent may run.
 # The herdr layout's own tools: herdr-reviewr and herdr-file-view only show files; lazygit keeps
 # nothing but the repository, and a change it has not committed still fails `clean`.
-QUIET = {"zsh", "bash", "sh", "fish", "herdr-reviewr", "herdr-file-view", "lazygit"}
+QUIET = SHELLS | {"herdr-reviewr", "herdr-file-view", "lazygit"}
 # Long-lived helpers an agent keeps under it while idle: MCP servers and language servers, named by
 # the program or its first argument (`tally mcp`, `pyright-langserver`, `node .../langserver.index.js`),
 # never by a path or word further along. An MCP server named otherwise keeps the workspace (safe side).

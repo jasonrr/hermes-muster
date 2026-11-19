@@ -29,7 +29,7 @@ in #79 stands, with these decisions:
   - `open_tab` is a shell started with `hc run --bg`.
   - `start_agent` types `env K=V claude <args>` into that shell with `hc send`, then waits until hc reports
     the agent idle.
-  - `prompt` is `hc send --wait --timeout 30`:
+  - `prompt` is `hc send --wait --timeout 10`:
     - a turn that is working or done, or a check-in on a working agent, counts as delivered;
     - `not_started` raises `CommandError` (unproven);
     - the blocked refusal raises `hosts.Blocked`.

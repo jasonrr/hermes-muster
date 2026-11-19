@@ -29,7 +29,6 @@ class HcWorld(OrcaWorld):
         # AcceptanceWorld (Task 8) serves both hosts from one world.
         self.hc_start = "idle"       # what a typed `claude` reports first: idle | blocked | none
         self.hc_send = "started"     # started | not_started | blocked
-        self.hc_after = "working"    # the status right after a started turn
         self.hc_late = 0             # `hc get`s a new Claude answers with no status yet (booting)
         self.booting = {}            # address -> `hc get`s left before its status shows
 
@@ -171,10 +170,10 @@ class HcWorld(OrcaWorld):
             if self.hc_send == "not_started":
                 return json.dumps({"started": False, "status": before, "turn": t["turn"]})
             self.seq += 1
-            t["status"] = {"app": "claude-code", "state": self.hc_after}
+            t["status"] = {"app": "claude-code", "state": "working"}
             t["status_ms"] = self.seq
             return json.dumps({"started": True, "status": before, "turn": t["turn"],
-                               "wait": {"status": self.hc_after, "reason": "timeout", "ended": False,
+                               "wait": {"status": "working", "reason": "timeout", "ended": False,
                                         "turn": t["turn"]}})
         if verb == "kill":
             t = self.find(args[1])

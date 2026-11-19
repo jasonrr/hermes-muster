@@ -167,7 +167,7 @@ def test_start_agent_types_env_and_claude_then_returns_when_ready(w):
     path = checkout(w)
     herdr_core.open_tab(path, path, "run", [], "run-x")
     herdr_core.start_agent("run-x", "claude", "run-x", ["--model", "opus"], ["A=1"])
-    assert w.typed == ["export A=1; claude --model opus"]
+    assert w.typed == ["env A=1 claude --model opus"]
 
 
 def test_start_agent_returns_at_a_trust_dialog(w):
@@ -432,3 +432,16 @@ def test_a_bare_shell_is_its_own_foreground_and_claude_gone_leaves_no_agent(w):
     assert herdr_core.agent("run-x")["agent_status"] == "idle"
     next(t for t in w.hc.values() if t["name"] == "run-x")["foreground"] = None  # Claude exited, status left
     assert herdr_core.agent("run-x") is None
+
+
+def test_quiet_passes_a_leftover_status_when_the_shell_is_the_foreground(w):
+    path, a = w.hc_live(w.clone, "muster/7", "run-x", state="working")
+    t = w.hc[a]
+    del w.procs[t["foreground"]["pid"]]  # Claude exited; hc left "working"
+    t["foreground"] = {"argv": ["/bin/zsh", "-l"], "pid": t["pid"], "cwd": path}
+    herdr_core.quiet(path)
+
+
+def test_kind_ignores_a_stray_brace_before_the_json():
+    error = core.CommandError('hc get x: exit 3\nwarning {x}\n{"error": {"kind": "not_found"}}')
+    assert herdr_core.kind(error) == "not_found"
