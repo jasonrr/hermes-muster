@@ -1,10 +1,12 @@
 import json
+import shlex
 
 import pytest
 
 import muster.core as core
 import muster.hosts as hosts
 import muster.hosts.herdr_core as herdr_core
+from muster.hosts import NotReady
 from tests.fake_herdr_core import HcWorld
 
 
@@ -262,3 +264,97 @@ def test_a_missing_herdr_app_binary_runs_hidden(w, monkeypatch):
     monkeypatch.setattr(core, "run", run)
     assert herdr_core.open_tab(path, path, "run", [], "run-x") == "run-x"
     assert "herdr.space" not in w.find("run-x")["labels"]
+
+
+def test_quiet_passes_an_idle_agent_and_the_spaces_shell(w):
+    path, _ = w.hc_live(w.clone, "muster/7", "run-x", state="done")
+    herdr_core.space(path)
+    seen = herdr_core.quiet(path)
+    assert len(seen) == 2
+    json.dumps(seen)
+
+
+def test_quiet_is_the_same_twice_when_nothing_changed(w):
+    path, _ = w.hc_live(w.clone, "muster/7", "run-x", state="done")
+    assert herdr_core.quiet(path) == herdr_core.quiet(path)
+
+
+@pytest.mark.parametrize("state", ["working", "blocked"])
+def test_quiet_refuses_a_working_agent_or_a_dialog(w, state):
+    path, _ = w.hc_live(w.clone, "muster/7", "run-x", state=state)
+    with pytest.raises(NotReady):
+        herdr_core.quiet(path)
+
+
+def test_quiet_refuses_a_background_job_but_not_a_helper(w):
+    path, a = w.hc_live(w.clone, "muster/7", "run-x", state="done")
+    w.procs[998] = (w.hc[a]["foreground"]["pid"], "node /x/foo-mcp")
+    herdr_core.quiet(path)
+    w.procs[999] = (w.hc[a]["pid"], "sleep 100")
+    with pytest.raises(NotReady):
+        herdr_core.quiet(path)
+
+
+def test_quiet_refuses_a_plain_program_in_a_shell(w):
+    path, _ = w.hc_live(w.clone, "muster/7", "run-x", state="done")
+    b = w.term(None, path)
+    w.hc[b]["foreground"] = {"argv": ["vim"], "pid": 997}
+    w.procs[997] = (w.hc[b]["pid"], "vim")
+    with pytest.raises(NotReady):
+        herdr_core.quiet(path)
+    w.hc[b]["foreground"] = {"argv": ["lazygit"], "pid": 997}
+    w.procs[997] = (w.hc[b]["pid"], "lazygit")
+    herdr_core.quiet(path)
+
+
+def test_quiet_passes_a_checkout_with_no_terminals(w):
+    path, _ = w.hc_live(w.clone, "muster/7", "run-x", state="done")
+    core.run(["hc", "kill", "run-x", "--json"])
+    assert herdr_core.quiet(path) == []
+
+
+def test_remove_closes_the_space_ends_terminals_and_removes_the_checkout(w):
+    path, _ = w.hc_live(w.clone, "muster/7", "run-x", state="done")
+    herdr_core.open_tab(path, path, "run", [], "run-x")
+    argv = herdr_core.remove_argv(path, path, False)
+    w.handle(argv)
+    assert w.spaces == {}
+    assert not [t for t in w.hc.values() if t["labels"].get("muster.path") == path]
+    assert path not in w.worktrees
+    assert argv[2].endswith(shlex.join(["git", "-C", str(w.clone), "worktree", "remove", path]))
+
+
+def test_remove_with_force_passes_force_to_git(w):
+    path, _ = w.hc_live(w.clone, "muster/7", "run-x", state="done")
+    assert herdr_core.remove_argv(path, path, True)[2].endswith(
+        shlex.join(["worktree", "remove", "--force", path]))
+
+
+def test_remove_without_a_window_still_removes_terminals_and_checkout(w):
+    path, _ = w.hc_live(w.clone, "muster/7", "run-x", state="done")
+    w.window = False
+    argv = herdr_core.remove_argv(path, path, False)
+    assert "space.close" not in argv[2]
+    w.handle(argv)
+    assert not calls(w, "open")
+    assert path not in w.worktrees
+    assert w.find("run-x") is None
+
+
+def test_a_failed_git_remove_is_retried_from_quiet(w, monkeypatch):
+    path, _ = w.hc_live(w.clone, "muster/7", "run-x", state="done")
+    argv = herdr_core.remove_argv(path, path, False)
+    original = w.git
+
+    def failing(where, args):
+        if args[:2] == ["worktree", "remove"]:
+            raise core.CommandError("git worktree remove: exit 1")
+        return original(where, args)
+    monkeypatch.setattr(w, "git", failing)
+    with pytest.raises(core.CommandError):
+        w.handle(argv)
+    monkeypatch.setattr(w, "git", original)
+    assert path in w.worktrees
+    assert herdr_core.quiet(path) == []
+    w.handle(herdr_core.remove_argv(path, path, False))
+    assert path not in w.worktrees

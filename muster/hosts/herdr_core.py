@@ -8,13 +8,25 @@ starts is labelled muster.path=<workspace>. A window shows a terminal only when 
 with no window muster opens one in the background, and when none comes up the run proceeds hidden.
 """
 
+import hashlib
 import json
 import shlex
 import time
 from pathlib import Path
 
 from .. import core
-from . import READY, Blocked, git_worktrees, herdr, program
+from . import (
+    QUIET,
+    READY,
+    Blocked,
+    NotReady,
+    git_worktrees,
+    helper,
+    herdr,
+    processes,
+    program,
+    under,
+)
 
 NAME = "herdr-core"
 LABEL = "muster.path"
@@ -227,3 +239,57 @@ def prompt(pane_id, text):
     if sent.get("started") is not True:
         raise core.CommandError(f"herdr-core: hc took the prompt to {pane_id} but saw no turn start")
     return "blocked" if (sent.get("wait") or {}).get("status") == "blocked" else "working"
+
+
+def quiet(workspace):
+    """Each terminal's evidence. NotReady when one is busy or unknown: an agent not idle or done, a program other
+    than a QUIET one in a shell with no agent, or anything under a terminal's shell but its foreground program and
+    MCP/language servers (a job started with &, an agent's background command). Terminals: every live one in the
+    checkout, muster's or not (the space's own shell, a person's). None at all is quiet (empty evidence): nothing
+    runs in hc there, whether a person closed them or a remove ended them and then failed at git (retried)."""
+    rows = terminals(workspace)
+    if not rows:
+        return []
+    table, seen = processes(), []
+    for row in sorted(rows, key=lambda r: r["address"]):
+        address = row["address"]
+        t = get(address)
+        if t is None:
+            raise NotReady(f"terminal {address} ended during the check")
+        if t.get("pid") not in table:
+            raise NotReady(f"terminal {address}: its shell {t.get('pid')} is not running")
+        status, fg = t.get("status") or {}, t.get("foreground") or {}
+        tree = under(t["pid"], table)
+        busy = [c for p, depth, c in tree if not (depth == 1 and p == fg.get("pid")) and not helper(c)]
+        if busy:
+            raise NotReady(f"terminal {address} runs in the background: {busy[0][:80]}")
+        if app(t):
+            if STATE.get(status.get("state")) not in READY:
+                raise NotReady(f"terminal {address}: {app(t)} is {status.get('state')}")
+        elif fg and program((fg.get("argv") or [""])[0]) not in QUIET:
+            raise NotReady(f"terminal {address} runs {' '.join(fg.get('argv') or [])[:80]}")
+        screen = core.run(["hc", "read", address])
+        seen.append([address, t.get("name"), app(t), status.get("state"), t.get("turn"), t.get("status_ms"),
+                     fg.get("argv"), hashlib.sha256(screen.encode()).hexdigest(), [p for p, _, _ in tree]])
+    return seen
+
+
+# ponytail: the space whose folder is the checkout is closed even when a person opened it, ending a terminal of
+# theirs in it whose cwd is elsewhere (quiet only sees terminals in the checkout); scope to muster-opened spaces
+# (a label on the space's own shell) if that bites.
+def remove_argv(workspace, path, force):
+    """One command, named now (quiet has just passed): close the checkout's space if a window shows one (it ends
+    the terminals in it), end and remove muster's terminals in the workspace, then `git worktree remove` from the
+    main clone; the branch stays. With no window a space cannot be closed; the window still lists it, pointing at
+    a deleted folder, until a person closes it."""
+    clone = str(Path(core.run(["git", "-C", path, "rev-parse", "--path-format=absolute",
+                               "--git-common-dir"]).strip()).parent)
+    spaces = [s["id"] for s in json.loads(core.run(["herdr-app", "ls"]))["spaces"]
+              if s.get("folder") == path and not s.get("machine")] if up() else []
+    mine = [t["address"] for t in hc("ls", "--all", "--label", f"{LABEL}={workspace}")["terminals"]]
+    steps = [f"herdr-app do space.close --id {shlex.quote(s)} --confirmed true >/dev/null" for s in spaces]
+    # hc rm fails if space.close already removed the terminal; one that hc no longer knows is removed as wanted.
+    steps += [f"{{ hc kill {shlex.quote(a)} --json >/dev/null 2>&1; hc rm {shlex.quote(a)} --json >/dev/null 2>&1 "
+              f"|| ! hc get {shlex.quote(a)} --json >/dev/null 2>&1; }}" for a in mine]
+    steps.append(shlex.join(["git", "-C", clone, "worktree", "remove", *(["--force"] if force else []), path]))
+    return ["sh", "-c", " && ".join(steps)]
