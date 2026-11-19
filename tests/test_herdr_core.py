@@ -1,5 +1,5 @@
-import re
 import json
+import re
 import shlex
 
 import pytest
@@ -322,7 +322,7 @@ def test_remove_closes_the_space_ends_terminals_and_removes_the_checkout(w):
     assert w.spaces == {}
     assert not [t for t in w.hc.values() if t["labels"].get("muster.path") == path]
     assert path not in w.worktrees
-    assert argv[2].endswith(shlex.join(["git", "-C", str(w.clone), "worktree", "remove", path]))
+    assert argv[2].endswith(shlex.join(["git", "-C", f"{w.clone}/.git", "worktree", "remove", path]))
 
 
 def test_remove_with_force_passes_force_to_git(w):
@@ -404,10 +404,20 @@ def test_analysis_check_refuses_a_terminal_relabelled_elsewhere(w):
 
 
 def test_close_ends_only_musters_terminal(w):
-    cwd, rec = analysis(w)
+    _, rec = analysis(w)
     (sid,) = w.spaces
     shell = [t for t in w.hc.values() if t["labels"].get("herdr.space") == sid and t["name"] != rec["pane"]]
     w.handle(herdr_core.close_argv(rec))
     assert sid in w.spaces
     assert herdr_core.get(rec["pane"]) is None
     assert all(t["state"] == "live" for t in shell)
+
+
+def test_quiet_refuses_a_program_behind_a_stale_agent_status(w):
+    path, a = w.hc_live(w.clone, "muster/7", "run-x", state="done")
+    shell = w.hc[a]["pid"]
+    del w.procs[w.hc[a]["foreground"]["pid"]]  # Claude exited; hc left its status
+    w.procs[996] = (shell, "vim notes")
+    w.hc[a]["foreground"] = {"argv": ["vim", "notes"], "pid": 996}
+    with pytest.raises(herdr_core.NotReady, match="vim"):
+        herdr_core.quiet(path)
