@@ -65,6 +65,7 @@ the code below encode these facts. Do not re-spike them. Task 9 re-checks them l
 | Idle Claude | `status_ms` and `turn` are unchanged over 5 s with no activity, so both are safe as `state_change_seq` and in quiet's evidence. |
 | Name reuse | After `hc kill X` (no rm), `hc run --name X` succeeds. `hc get X` then returns the live terminal; `hc ls --all` lists both. |
 | `--timeout` units | Seconds (`hc send --help`). |
+| A turn that stops at a dialog after the brief was typed | Exit 0: `{"started":true, …, "wait":{"status":"blocked","reason":"status","ended":true}}` (checked during T3 review with `--permission-mode default`), so `prompt()` reports it delivered as `blocked`, never refused. |
 | Claude exiting | **Not checked** (two ctrl+c presses did not exit it). `agent()` therefore also requires `foreground` (departures). Task 9 checks it live. |
 
 ## Conventions every task follows

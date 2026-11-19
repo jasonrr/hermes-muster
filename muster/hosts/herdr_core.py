@@ -83,7 +83,7 @@ def up():
     """True when a Herdr window answers `herdr-app status` (exit 0 and JSON with no error)."""
     try:
         return "error" not in json.loads(core.run(["herdr-app", "status"]))
-    except (core.CommandError, ValueError):
+    except (core.CommandError, OSError, ValueError):
         return False
 
 
@@ -93,7 +93,7 @@ def window():
         return True
     try:
         core.run(["open", "-g", "-a", "Herdr"])
-    except core.CommandError:
+    except (core.CommandError, OSError):
         return False
     deadline = clock() + WINDOW_WAIT
     while clock() < deadline:
@@ -113,7 +113,7 @@ def space(path):
                     return s["id"]
             return json.loads(core.run(["herdr-app", "do", "space.new", "--name", Path(path).name,
                                         "--folder", path]))["space"]
-    except (core.CommandError, ValueError, KeyError) as error:
+    except (core.CommandError, OSError, ValueError, KeyError) as error:
         core.log("hosts", f"herdr-core: the Herdr window failed for {path}: {error}")
         return None
     core.log("hosts", f"herdr-core: no Herdr window came up; {path} runs hidden (hc ls --label {LABEL}={path})")
@@ -149,7 +149,7 @@ def panes(workspace):
         t = get(row["address"])
         if t:
             found.append({"pane_id": t.get("name") or t["address"], "workspace_id": workspace,
-                          "terminal_id": t["address"], "agent": app(t)})
+                          "terminal_id": t["address"], "agent": app(t) if t.get("foreground") else None})
     return found
 
 

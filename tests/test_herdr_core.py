@@ -243,3 +243,22 @@ def test_panes_lists_muster_and_other_terminals_in_the_checkout(w):
     assert set(found) == {"run-x", "sub"}
     assert found["run-x"]["agent"] == "claude"
     assert found["sub"]["agent"] is None
+
+
+def test_panes_does_not_count_a_stale_status_as_an_agent(w):
+    path, a = w.hc_live(w.clone, "muster/7", "run-x")
+    w.hc[a]["foreground"] = None
+    assert [p["agent"] for p in herdr_core.panes(path)] == [None]
+
+
+def test_a_missing_herdr_app_binary_runs_hidden(w, monkeypatch):
+    path = checkout(w)
+    real = core.run
+
+    def run(argv, env=None):
+        if argv[0] in ("herdr-app", "open"):
+            raise FileNotFoundError(argv[0])
+        return real(argv, env)
+    monkeypatch.setattr(core, "run", run)
+    assert herdr_core.open_tab(path, path, "run", [], "run-x") == "run-x"
+    assert "herdr.space" not in w.find("run-x")["labels"]
