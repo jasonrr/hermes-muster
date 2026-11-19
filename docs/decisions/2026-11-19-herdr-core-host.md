@@ -66,3 +66,4 @@ None are deferred. Task 1's probe answers the shape questions above, and none of
 ## Deviations
 
 - T1 commit a0aaf06 — deviation: none (only the `calls` helper added now; `jump`/`checkout` come with the tasks that use them); reviewed by the controller directly (plan transcription, diff matches) — parked: none
+- T2 commit 901cf67 — deviation: none (fake is the plan code verbatim; jump/checkout helpers added); reviewed by the controller directly (byte-identical to the reviewed plan code) — parked: none
