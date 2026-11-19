@@ -1,3 +1,4 @@
+import re
 import json
 import shlex
 
@@ -358,3 +359,55 @@ def test_a_failed_git_remove_is_retried_from_quiet(w, monkeypatch):
     assert herdr_core.quiet(path) == []
     w.handle(herdr_core.remove_argv(path, path, False))
     assert path not in w.worktrees
+
+
+def analysis(w, name="ana"):
+    folder = w.clone / name
+    folder.mkdir()
+    return str(folder), herdr_core.open_workspace(str(folder), "l")
+
+
+def test_open_workspace_starts_a_named_shell_in_the_folders_space(w):
+    cwd, rec = analysis(w)
+    assert rec["terminal"] == rec["pane"]
+    assert re.fullmatch(r"muster-[0-9a-f]{8}", rec["pane"])
+    assert rec["workspace"] == cwd
+    t = w.find(rec["pane"])
+    assert t["labels"]["muster.path"] == cwd
+    assert t["labels"]["herdr.space"] in w.spaces
+
+
+def test_two_opens_of_one_folder_are_two_terminals_in_one_space(w):
+    cwd, first = analysis(w)
+    second = herdr_core.open_workspace(cwd, "l")
+    assert first["pane"] != second["pane"]
+    assert len(w.spaces) == 1
+    spaces = {w.find(r["pane"])["labels"]["herdr.space"] for r in (first, second)}
+    assert len(spaces) == 1
+
+
+def test_analysis_gone_after_the_terminal_is_killed(w):
+    _, rec = analysis(w)
+    assert not herdr_core.analysis_gone(rec)
+    herdr_core.analysis_check(rec)
+    w.handle(["hc", "kill", rec["pane"], "--json"])
+    assert herdr_core.analysis_gone(rec)
+    with pytest.raises(NotReady):
+        herdr_core.analysis_check(rec)
+
+
+def test_analysis_check_refuses_a_terminal_relabelled_elsewhere(w):
+    _, rec = analysis(w)
+    w.handle(["hc", "label", rec["pane"], "muster.path=/elsewhere", "--json"])
+    with pytest.raises(NotReady):
+        herdr_core.analysis_check(rec)
+
+
+def test_close_ends_only_musters_terminal(w):
+    cwd, rec = analysis(w)
+    (sid,) = w.spaces
+    shell = [t for t in w.hc.values() if t["labels"].get("herdr.space") == sid and t["name"] != rec["pane"]]
+    w.handle(herdr_core.close_argv(rec))
+    assert sid in w.spaces
+    assert herdr_core.get(rec["pane"]) is None
+    assert all(t["state"] == "live" for t in shell)

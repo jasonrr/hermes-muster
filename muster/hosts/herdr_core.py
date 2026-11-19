@@ -10,6 +10,7 @@ with no window muster opens one in the background, and when none comes up the ru
 
 import hashlib
 import json
+import secrets
 import shlex
 import time
 from pathlib import Path
@@ -293,3 +294,35 @@ def remove_argv(workspace, path, force):
               f"|| ! hc get {shlex.quote(a)} --json >/dev/null 2>&1; }}" for a in mine]
     steps.append(shlex.join(["git", "-C", clone, "worktree", "remove", *(["--force"] if force else []), path]))
     return ["sh", "-c", " && ".join(steps)]
+
+
+def open_workspace(cwd, label):
+    """A shell muster owns in a folder, in the folder's space. label: the record's; the terminal name is unique per
+    open, so two opens of one folder stay apart (and is safe as a filename: cleanup names files after it)."""
+    name = f"muster-{secrets.token_hex(4)}"
+    open_tab(cwd, cwd, label, [], name)
+    return {"workspace": cwd, "terminal": name, "pane": name}
+
+
+def analysis_gone(rec):
+    """Its terminal was closed by hand."""
+    return get(rec["pane"]) is None
+
+
+def analysis_check(rec):
+    t = get(rec["pane"])
+    if t is None:
+        raise NotReady(f"terminal {rec['pane']} is gone")
+    if labels(t).get(LABEL) != rec["workspace"]:
+        raise NotReady(f"terminal {rec['pane']} is not muster's terminal for {rec['workspace']}")
+
+
+# ponytail: the folder's space (and the shell space.new opened in it) outlives the analysis; a later open of the
+# same folder reuses it, so there is at most one per folder.
+def close_argv(rec):
+    """End and remove muster's own terminal; the folder's space and its other terminals stay."""
+    if get(rec["pane"]) is None:
+        raise NotReady(f"terminal {rec['pane']} is gone")
+    a = shlex.quote(rec["pane"])
+    return ["sh", "-c", f"{{ hc kill {a} --json >/dev/null 2>&1; hc rm {a} --json >/dev/null 2>&1 "
+                        f"|| ! hc get {a} --json >/dev/null 2>&1; }}"]
