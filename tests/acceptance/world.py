@@ -11,12 +11,12 @@ import threading
 from pathlib import Path
 
 from muster import core
-from tests.fake_orca import OrcaWorld
+from tests.fake_herdr_core import HcWorld
 
 ORIGIN = "https://github.com/demo/demo.git"
 
 
-class AcceptanceWorld(OrcaWorld):
+class AcceptanceWorld(HcWorld):
     def __init__(self, tmp_path, journal):
         super().__init__(tmp_path)
         self.journal, self.unmodelled = journal, []

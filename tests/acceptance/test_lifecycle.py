@@ -159,6 +159,8 @@ def prompts(rig):
             found.append({**e, "text": argv[4]})
         elif argv[:3] == ["orca", "terminal", "send"] and "--wait-submit" in argv:
             found.append({**e, "text": argv[argv.index("--text") + 1]})
+        elif argv[:2] == ["hc", "send"] and "--wait" in argv:
+            found.append({**e, "text": argv[-1]})
     return found
 
 
@@ -300,6 +302,9 @@ def to_pr_card(rig, token, subtests, choice, feedback=None):
         agent["agent_status"] = "idle"
     for state in rig.world.orca_agents.values():
         state["state"] = "done"
+    for t in rig.world.hc.values():  # what hc then reports: Claude's turn is over
+        if t["status"]:
+            t["status"]["state"] = "done"
     wait("the PR's decision card", lambda: card(rig), 60)
     hold(3 * SCAN)
     return card_id, head
@@ -349,6 +354,20 @@ def test_pr_merge_on_orca(make_rig, subtests, tmp_path):
     assert prompts(rig) and all(p["argv"][0] == "orca" for p in prompts(rig))
     run = json.loads((rig.hermes / "plugin-data" / "muster" / "runs" / card_id / "run.json").read_text())
     assert run["worktree"].startswith(str(tmp_path.resolve()))  # the world's path (sandbox patches orca.ROOT), never ~/orca
+    checkpoint_b(rig, subtests, "PR #7", build_files(), r"^🟡 PR #7 ·.*Merge PR #7")
+    decision = card(rig)
+    rig.standin.block_action(APPROVER, CHANNEL, decision.message_id, button(rig, decision, "Merge PR #7"))
+    wait("the merge", lambda: merges(rig), 30)
+    assert [e["argv"] for e in merges(rig)] == [["gh", "pr", "merge", PR, "--squash", "--match-head-commit", head]]
+
+
+def test_pr_merge_on_herdr_core(make_rig, subtests):
+    """test_pr_merge with host: herdr-core: the brief goes through `hc send --wait`."""
+    rig = start(make_rig(settings={"host": "herdr-core"}))
+    card_id, head = to_pr_card(rig, "h3", subtests, "merge")
+    assert prompts(rig) and all(p["argv"][0] == "hc" for p in prompts(rig))
+    run = json.loads((rig.hermes / "plugin-data" / "muster" / "runs" / card_id / "run.json").read_text())
+    assert run["worktree"].startswith(str(rig.root.resolve()))  # the sandbox's `worktrees` setting is under the rig's root
     checkpoint_b(rig, subtests, "PR #7", build_files(), r"^🟡 PR #7 ·.*Merge PR #7")
     decision = card(rig)
     rig.standin.block_action(APPROVER, CHANNEL, decision.message_id, button(rig, decision, "Merge PR #7"))

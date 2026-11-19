@@ -16,7 +16,7 @@ from pathlib import Path
 if os.environ.get("MUSTER_CHAIN_SITECUSTOMIZE"):  # the stand-in's own shim (points slack_sdk at the stand-in)
     runpy.run_path(os.environ["MUSTER_CHAIN_SITECUSTOMIZE"])
 
-WORLD = ("herdr", "orca", "lsof", "ps", "gh", "git")
+WORLD = ("herdr", "orca", "hc", "herdr-app", "open", "lsof", "ps", "gh", "git")
 
 
 def append(path, entry):
