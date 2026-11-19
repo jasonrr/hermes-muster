@@ -1,7 +1,8 @@
 """The slice of Hermes the gateway touches: tools.clarify_gateway (real semantics), telegram.ext, an adapter.
 
 clarify_gateway mirrors hermes-agent/tools/clarify_gateway.py: register / wait_for_response (blocks, pops the
-entry) / resolve_gateway_clarify (False once resolved or unknown) / get_pending_for_session / mark_awaiting_text.
+entry) / resolve_gateway_clarify (False once resolved or unknown) / get_pending_for_session / mark_awaiting_text /
+attempt_text_response (per question, as the gateway calls it since hermes-agent#156130).
 """
 
 import json
@@ -113,17 +114,15 @@ def clarify_module():
             return text, None
         return None, "invalid_selection" if shaped else "prose"
 
-    def attempt_text_response_for_session(session_key, response):
-        entry = get_pending_for_session(session_key, include_choice_prompts=True)
-        if entry is None:
+    def attempt_text_response(clarify_id, response):
+        with mod._lock:
+            entry = mod._entries.get(clarify_id)
+        if entry is None or entry.event.is_set():
             return mod.TEXT_NO_PENDING
         value, reason = coerce(entry, response)
         if value is None:
             return mod.TEXT_REJECTED_SELECTION if reason == "invalid_selection" else mod.TEXT_REJECTED_PROSE
         return mod.TEXT_RESOLVED if resolve_gateway_clarify(entry.clarify_id, value) else mod.TEXT_NO_PENDING
-
-    def resolve_text_response_for_session(session_key, response):
-        return attempt_text_response_for_session(session_key, response) == mod.TEXT_RESOLVED
 
     mod.TEXT_RESOLVED, mod.TEXT_REJECTED_PROSE = "resolved", "rejected_prose"
     mod.TEXT_REJECTED_SELECTION, mod.TEXT_NO_PENDING = "rejected_selection", "no_pending"
@@ -131,8 +130,7 @@ def clarify_module():
     mod.register, mod.wait_for_response = register, wait_for_response
     mod.resolve_gateway_clarify, mod.get_pending_for_session = resolve_gateway_clarify, get_pending_for_session
     mod.mark_awaiting_text, mod.clear_session = mark_awaiting_text, clear_session
-    mod.attempt_text_response_for_session = attempt_text_response_for_session
-    mod.resolve_text_response_for_session = resolve_text_response_for_session
+    mod.attempt_text_response = attempt_text_response
     return mod
 
 
