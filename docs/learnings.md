@@ -220,3 +220,8 @@
 ## activate-alert-pr-link (2026-11-14)
 
 - A link saved only in a card's body (the Activate card's "ledger … | <url> | head …") never reaches the human: Hermes's needs-input alert shows just the title and the block reason → anything the human must act on from the alert goes in the block reason.
+
+## herdr-core-host (PR #84, 2026-11-19)
+
+- A mutation check made with macOS `sed -i` (no backup suffix) edits nothing and the "failing" test still passes, so the check looks done and proves nothing → use `sed -i ''` and confirm the edit with `git diff --stat` before reading the test result.
+- Probing the host CLI live during planning (hidden throwaway terminals) settled every shape the fake needed before any code; the probes a reviewer then asked for (a dialog after typing, name reuse, status stability) took one command each → probe live while planning, and again whenever a reviewer names an unverified shape, instead of hedging in code.
