@@ -16,7 +16,17 @@ import time
 from pathlib import Path
 
 from .. import core
-from . import QUIET, READY, Blocked, NotReady, git_worktrees, helper, processes, program, under
+from . import (
+    QUIET,
+    READY,
+    Blocked,
+    NotReady,
+    git_worktrees,
+    helper,
+    processes,
+    program,
+    under,
+)
 
 NAME = "orca"
 ROOT = "~/orca/workspaces"  # Orca's default workspace directory: <ROOT>/<clone dir name>/<worktree name>
