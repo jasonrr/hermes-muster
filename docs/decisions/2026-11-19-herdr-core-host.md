@@ -62,3 +62,7 @@ and what a core restart does to names and labels. The verify commands are the on
 ## Open questions
 
 None are deferred. Task 1's probe answers the shape questions above, and none of them changes the approach.
+
+## Deviations
+
+- T1 commit a0aaf06 — deviation: none (only the `calls` helper added now; `jump`/`checkout` come with the tasks that use them); reviewed by the controller directly (plan transcription, diff matches) — parked: none
