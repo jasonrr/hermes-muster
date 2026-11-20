@@ -220,3 +220,8 @@
 ## activate-alert-pr-link (2026-11-14)
 
 - A link saved only in a card's body (the Activate card's "ledger … | <url> | head …") never reaches the human: Hermes's needs-input alert shows just the title and the block reason → anything the human must act on from the alert goes in the block reason.
+
+## clarify-attempt-text-response (2026-11-19)
+
+- A Hermes name with no leading underscore (`resolve_text_response_for_session`) was still deleted without notice, because it was never on Hermes's published plugin list (`website/docs/developer-guide/plugins/public-api.md`) → check a name against that list, not its underscore, before relying on it; the other clarify calls muster makes (`register`, `wait_for_response`, `get_pending_for_session`, `clear_session`, `attempt_text_response`) are unlisted too.
+- `tests/test_hermes_private.py` reads the local `~/.hermes/hermes-agent` checkout, so it fails on unchanged main whenever that checkout drifts (here `send_clarify` and `send_document` shapes) → run it on origin/main before blaming your diff.

@@ -455,17 +455,18 @@ async def reply(event):
         else:
             entry = clarify_gateway.get_pending_for_session(session(rid, n), include_choice_prompts=True)
             ok = (entry is not None and clarify_gateway.mark_awaiting_text(entry.clarify_id)
-                  and clarify_gateway.resolve_text_response_for_session(session(rid, n), text))
+                  and clarify_gateway.attempt_text_response(entry.clarify_id, text) == clarify_gateway.TEXT_RESOLVED)
         if ok:
             await edit(src.chat_id, str(reply_to), f"Received ✓: {text[:200]}")
             return {"action": "skip"}
         return None  # not (or no longer) waiting in this process: leave it to Hermes
     # after "Other", the next message in that conversation is the answer whatever it replies to (as Hermes's own
     # clarify): only prompts of the topic it was typed in count, so two runs' prompts never compete
-    waiting = [key for rid, count in list(T.shown.items()) if await in_topic(rid, thread)
-               for key in (session(rid, n) for n in range(count))
-               if clarify_gateway.get_pending_for_session(key) is not None]
-    if len(waiting) == 1 and clarify_gateway.resolve_text_response_for_session(waiting[0], text):
+    waiting = [entry for rid, count in list(T.shown.items()) if await in_topic(rid, thread)
+               for entry in (clarify_gateway.get_pending_for_session(session(rid, n)) for n in range(count))
+               if entry is not None]
+    if len(waiting) == 1 and (clarify_gateway.attempt_text_response(waiting[0].clarify_id, text)
+                              == clarify_gateway.TEXT_RESOLVED):
         return {"action": "skip"}
     return None
 
