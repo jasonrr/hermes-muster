@@ -15,8 +15,13 @@ def test_a_record_names_its_host_itself_or_through_its_launch():
 
 
 def test_an_unknown_host_is_a_config_error():
-    with pytest.raises(config.ConfigError, match="host 'tmux' is not one of herdr, orca"):
+    with pytest.raises(config.ConfigError, match="host 'tmux' is not one of herdr, orca, herdr-core"):
         hosts.get("tmux")
+
+
+def test_herdr_core_is_a_host():
+    assert hosts.get("herdr-core").NAME == "herdr-core"
+    assert hosts.of({"host": "herdr-core"}).NAME == "herdr-core"
 
 
 def test_configured_follows_the_setting(monkeypatch):

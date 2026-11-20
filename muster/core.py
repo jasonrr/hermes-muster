@@ -170,7 +170,7 @@ def kanban(*args):
 
 
 def prepare_env():
-    """Point every hermes call at the configured home, and find hermes, herdr, orca and lsof under cron's bare PATH."""
+    """Point every hermes call at the configured home, and find hermes, herdr, orca, hc, herdr-app and lsof under cron's bare PATH."""
     os.environ["HERMES_HOME"] = os.environ.get("HERMES_HOME", str(Path.home() / ".hermes"))
     os.environ["PATH"] = (f"{Path.home() / '.local/bin'}:/opt/homebrew/bin:/Applications/Orca.app/Contents/Resources/bin"
                           f":/usr/sbin:{os.environ.get('PATH', '')}")

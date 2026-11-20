@@ -221,6 +221,13 @@
 
 - A link saved only in a card's body (the Activate card's "ledger … | <url> | head …") never reaches the human: Hermes's needs-input alert shows just the title and the block reason → anything the human must act on from the alert goes in the block reason.
 
+## herdr-core-host (PR #84, 2026-11-19)
+
+- A mutation check made with macOS `sed -i` (no backup suffix) edits nothing and the "failing" test still passes, so the check looks done and proves nothing → use `sed -i ''` and confirm the edit with `git diff --stat` before reading the test result.
+- Probing the host CLI live during planning (hidden throwaway terminals) settled every shape the fake needed before any code; the probes a reviewer then asked for (a dialog after typing, name reuse, status stability) took one command each → probe live while planning, and again whenever a reviewer names an unverified shape, instead of hedging in code.
+- A one-shot planning probe read `hc get` on a just-started shell (no `foreground`) and the plan generalised it to "foreground only while a program runs"; a moment later hc reports the shell itself as foreground, which would have refused every launch → probe a state after it settles, not only at the instant of creation, and let the opt-in live test run before the docs task.
+- The plan typed `export K=V; claude` into a host shell to copy Orca's flow. On a host whose shell is a pane a person keeps using, the run's identity overrides (GH_TOKEN=, GH_CONFIG_DIR) outlived the agent and would have made the person's own gh calls act as the bot. → Pass an agent's env as `env K=V <agent>`, so it ends with the agent. Check first that the host still detects an env-launched agent (hc does).
+
 ## clarify-attempt-text-response (2026-11-19)
 
 - A Hermes name with no leading underscore (`resolve_text_response_for_session`) was still deleted without notice, because it was never on Hermes's published plugin list (`website/docs/developer-guide/plugins/public-api.md`) → check a name against that list, not its underscore, before relying on it; the other clarify calls muster makes (`register`, `wait_for_response`, `get_pending_for_session`, `clear_session`, `attempt_text_response`) are unlisted too.

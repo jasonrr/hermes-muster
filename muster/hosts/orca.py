@@ -16,7 +16,17 @@ import time
 from pathlib import Path
 
 from .. import core
-from . import QUIET, READY, Blocked, NotReady, helper, processes, program, under
+from . import (
+    QUIET,
+    READY,
+    Blocked,
+    NotReady,
+    git_worktrees,
+    helper,
+    processes,
+    program,
+    under,
+)
 
 NAME = "orca"
 ROOT = "~/orca/workspaces"  # Orca's default workspace directory: <ROOT>/<clone dir name>/<worktree name>
@@ -59,19 +69,7 @@ def worktrees(clone):
         rid = known_repo(clone)
     except core.CommandError:
         rid = None
-    found, entry = [], None
-    for line in core.run(["git", "-C", str(clone), "worktree", "list", "--porcelain"]).splitlines() + [""]:
-        if line.startswith("worktree "):
-            entry = {"path": line[len("worktree "):], "branch": None}
-        elif line.startswith("branch ") and entry:
-            entry["branch"] = line[len("branch "):].removeprefix("refs/heads/")
-        elif not line and entry:
-            found.append(entry)
-            entry = None
-    for n, wt in enumerate(found):
-        wt["is_linked_worktree"] = n > 0  # git lists the main checkout first
-        wt["open_workspace_id"] = f"{rid}::{wt['path']}" if rid else None
-    return found
+    return [{**wt, "open_workspace_id": f"{rid}::{wt['path']}" if rid else None} for wt in git_worktrees(clone)]
 
 
 def create_worktree(clone, branch, base, path, label):

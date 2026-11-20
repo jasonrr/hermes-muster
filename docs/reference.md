@@ -40,7 +40,7 @@ To read any card: `hermes kanban --board <board> show <card> --json`.
 2. Within a minute, `tick` checks the issue's timeline: the newest event for the label must come from
    `approver_login` with `approver_id`. A label applied or re-applied by anyone else refuses the issue.
    Each approving label event makes one ledger card, so re-applying the label later starts a new run.
-3. Muster creates a worktree (herdr's, or Orca's) on branch `<branch_prefix><issue number>`, cut from the base branch,
+3. Muster creates a worktree (herdr's, Orca's or herdr-core's) on branch `<branch_prefix><issue number>`, cut from the base branch,
    starts Claude Code in it, and submits the brief as its first prompt. Issue text never enters the brief:
    the builder reads the issue with `gh` and treats it as data.
    Muster installs no dependencies, in this route or the ad-hoc one. The brief's "Dependency setup" section
@@ -238,7 +238,7 @@ agent a turn. Review starts are subscribed `wake` (a turn, no ping), since the s
 review started: the review cards, and the ledger once it completes with an open pull request. A ledger that
 blocks is switched back to `notify+wake` first, so a block always pings. Your Hermes agent never types into a pane on its own, answers the builder, moves a card or
 merges; it tells you what happened and recommends. The exceptions are a message you ask it to send to a
-running agent, which it delivers through the run's host (herdr `agent prompt`, Orca `terminal send --wait-submit`), and completing an Activate card when you say the
+running agent, which it delivers through the run's host (herdr `agent prompt`, Orca `terminal send --wait-submit`, herdr-core `hc send --wait`), and completing an Activate card when you say the
 activation is done or ask it to carry it out. Its instructions are the skills `muster:escalation`,
 `muster:review-standard` and `muster:dispatch`.
 
@@ -312,7 +312,7 @@ Every instruction Muster gives an agent or a model is a file in [`prompts/`](../
 
 ## Security and disclosure
 
-- **Shells out to** `gh`, `git`, `herdr` or `orca`, `lsof` and `hermes`. **Reads** GitHub issues and timelines, the board's
+- **Shells out to** `gh`, `git`, `herdr`, `orca`, `hc` or `herdr-app`, `lsof` and `hermes`. **Reads** GitHub issues and timelines, the board's
   sqlite database (read-only), `$HERMES_HOME/.env` for the DM chat id, and the production notes.
 - **Writes** kanban cards, worktrees under `worktrees`, state and per-pane Claude Code hook settings under
   `$HERMES_HOME/plugin-data/muster/`. Your global Claude Code config is not changed.
