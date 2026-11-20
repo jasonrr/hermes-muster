@@ -41,7 +41,7 @@ Telegram is the first decision surface. Slack is the second (design `docs/plans/
   `hermes_private.approval_session`). Each compares the tapper's user and chat with `core.notify_target()`,
   and on a mismatch answers "Not authorized" and raises `ApplicationHandlerStop`.
 - **Map replies.** The `pre_gateway_dispatch` hook. A reply to a stored message id resolves that prompt
-  through Hermes (`mark_awaiting_text` + `resolve_text_response_for_session`, or a deny with reason on an
+  through Hermes (`mark_awaiting_text` + `attempt_text_response`, or a deny with reason on an
   approval card); so does text after "Other" when exactly one muster prompt waits in the conversation (run topic,
   or the main chat) the text was typed in. It returns
   `{"action": "skip"}` only for those. After "Other", muster sends a ForceReply (group privacy mode).

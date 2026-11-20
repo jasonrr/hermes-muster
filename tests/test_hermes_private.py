@@ -59,11 +59,12 @@ def test_the_clarify_functions_the_gateway_calls_exist_with_their_arguments():
     assert params(path, "register")[0][:5] == ["clarify_id", "session_key", "question", "choices", "multi_select"]
     assert params(path, "wait_for_response")[0] == ["clarify_id", "timeout"]
     assert params(path, "get_pending_for_session") == (["session_key"], ["include_choice_prompts"])
-    for name, expect in (("resolve_text_response_for_session", ["session_key", "response"]),
+    for name, expect in (("attempt_text_response", ["clarify_id", "response"]),
                          ("mark_awaiting_text", ["clarify_id"]), ("clear_session", ["session_key"]),
                          ("resolve_gateway_clarify", ["clarify_id", "response"])):
         assert params(path, name)[0] == expect, name
     source = (HERMES / path).read_text()
+    assert 'TEXT_RESOLVED = "resolved"' in source  # what attempt_text_response returns on an accepted reply
     assert 'CANCELLED = "\\x00cancelled"' in source  # the gateway's waiter ignores values starting with \x00
 
 
