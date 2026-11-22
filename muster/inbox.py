@@ -149,29 +149,42 @@ def running(boot):
 
 
 def sweep():
-    """The gateway scan's housekeeping, for standalone's `muster flush`: stale dead requests, settle and execute the
-    answered ones, recover what a dead `answer` command left executing. One sweep at a time; busy: the next flush."""
+    """The gateway scan's housekeeping, for standalone's `muster flush`: settle and execute the answered requests,
+    recover what a dead `answer` command left executing, then stale the dead ones. One sweep at a time; busy: the next
+    flush."""
     path = decisions.root() / "sweep.lock"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w") as lock:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        lock = open(path, "w")
+    except OSError as caught:
+        core.log("decisions", f"sweep: {caught!r}")
+        return
+    with lock:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             return
         for req in decisions.open_requests():
-            rid, kind, status = req["id"], req["kind"], req["status"]
+            rid, kind = req["id"], req["kind"]
             try:
-                if (kind in ("question", "permission") or status == "open") and stale(req):
-                    continue
-                if kind == "design" and status == "executing":
+                if req["status"] == "executing":  # the snapshot may predate an `answer` command that has since finished
+                    req = decisions.load(rid)
+                if kind == "design" and req["status"] == "executing":
                     decisions.settle_design(req)
-                elif kind in ("build", "feedback", "design") and status == "answered":
+                elif kind in ("build", "feedback", "design") and req["status"] == "answered":
                     decisions.execute(rid, f"cli:{os.getpid()}")
-                elif kind in ("build", "feedback") and status == "executing" and not running(req.get("executing_boot", "")):
+                elif kind in ("build", "feedback") and req["status"] == "executing" and not running(req.get("executing_boot", "")):
                     # ponytail: a cli:<pid> whose pid was reused after a reboot stays executing; add a start-time check if seen
                     decisions.recover(req)
             except Exception as caught:  # noqa: BLE001 - one poisoned request must not stop the others
                 core.log("decisions", f"sweep {rid}: {caught!r}")
+        for req in decisions.open_requests():
+            try:
+                # ponytail: one gh call per open build per flush; throttle like gateway's shared.CHECK_EVERY if rate limits bite
+                if req["kind"] in ("question", "permission") or req["status"] == "open":
+                    stale(req)
+            except Exception as caught:  # noqa: BLE001
+                core.log("decisions", f"sweep {req['id']}: {caught!r}")
 
 
 def values(req, args):

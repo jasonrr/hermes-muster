@@ -340,3 +340,37 @@ def test_flush_sweeps_only_in_standalone(standalone_home, monkeypatch):
     config.load_file()
     with pytest.raises(AssertionError):
         runs.flush()
+
+
+def test_sweep_does_not_recover_a_request_that_finished_since_the_snapshot(home, monkeypatch):
+    rid = build()["id"]
+    decisions.transition(rid, ("open",), "executing", executing_boot="cli:99999999")
+    snapshot = decisions.load(rid)
+    decisions.transition(rid, ("executing",), "done", outcome="finished")
+    monkeypatch.setattr(decisions, "open_requests", lambda: [snapshot])
+    monkeypatch.setattr(decisions, "recover", lambda req: pytest.fail("recovered a finished request"))
+    inbox.sweep()
+
+
+def test_sweep_settles_an_executing_design(home, monkeypatch):
+    rid = decisions.create("design", "t_1", proposal=PROPOSAL)["id"]
+    decisions.transition(rid, ("open",), "executing", executing_boot="cli:1")
+    seen = []
+    monkeypatch.setattr(decisions, "settle_design", lambda req: seen.append(req["id"]))
+    inbox.sweep()
+    assert seen == [rid]
+
+
+def test_sweep_goes_on_after_a_request_raises(home, monkeypatch):
+    first, second = build()["id"], build()["id"]
+    for rid in (first, second):
+        decisions.transition(rid, ("open",), "answered", answer={"action": "nothing"})
+    real = decisions.execute
+
+    def execute(rid, boot=""):
+        if rid == first:
+            raise RuntimeError("boom")
+        real(rid, boot)
+    monkeypatch.setattr(decisions, "execute", execute)
+    inbox.sweep()
+    assert decisions.load(second)["status"] == "done"
