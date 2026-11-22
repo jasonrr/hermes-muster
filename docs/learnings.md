@@ -232,3 +232,8 @@
 
 - A Hermes name with no leading underscore (`resolve_text_response_for_session`) was still deleted without notice, because it was never on Hermes's published plugin list (`website/docs/developer-guide/plugins/public-api.md`) → check a name against that list, not its underscore, before relying on it; the other clarify calls muster makes (`register`, `wait_for_response`, `get_pending_for_session`, `clear_session`, `attempt_text_response`) are unlisted too.
 - `tests/test_hermes_private.py` reads the local `~/.hermes/hermes-agent` checkout, so it fails on unchanged main whenever that checkout drifts (here `send_clarify` and `send_document` shapes) → run it on origin/main before blaming your diff.
+
+## standalone-muster (PR #89, 2026-11-21)
+
+- argparse with `exit_on_error=False` still calls `error()` for missing args but raises `ArgumentError` for a bad `choices=` value → a parser meant to raise one error type needs both the `error()` override and an `ArgumentError` catch.
+- A second implementation of a Hermes CLI (the file ledger) matched the contract test but diverged on untested fallbacks (thread-less subscription matching, #90) → name the CLI's fallback rules in the plan, or the contract test, when cloning a CLI.
