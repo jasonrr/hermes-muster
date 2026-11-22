@@ -11,7 +11,7 @@ chat behavior see [channels](channels.md).
   [questions and permissions](#questions-and-permission-prompts), [design approval](#design-approval),
   [build review and merge](#build-review-and-merge)
 - [Cards](#cards) · [Recovery](#recovery) · [Cleanup](#cleanup) · [Prompts](#prompts) ·
-  [Security and disclosure](#security-and-disclosure)
+  [Security and disclosure](#security-and-disclosure) · [Decisions (standalone)](#decisions-standalone)
 
 ## Commands
 
@@ -328,3 +328,35 @@ Every instruction Muster gives an agent or a model is a file in [`prompts/`](../
   `notify_topics` it creates, closes, reopens (only for new work) and, for archived runs, deletes
   Telegram forum topics in the notify group, and reads Telegram's topic notices there. On Slack it posts
   and updates one thread parent per run and deletes nothing.
+
+## Decisions (standalone)
+
+The `muster` command (no Hermes) shows and answers requests from the command line. Under `hermes muster` these
+commands refuse: answer in your chat channel. A builder pane cannot run `answer` or `ledger`.
+
+- `muster decisions list [--json]` lists the open requests, the work that awaits a review, and the blocked cards.
+- `muster decisions show <id>` prints one request as JSON. An id is 16 lowercase hex characters.
+- `muster decisions answer <id> ...` answers one request:
+  - a question: `--choice <label>` once per question (a multi-select takes a JSON array), or `--text <words>` for a
+    single question. Write `--text=<words>` when the words start with `-`.
+  - a permission prompt: `--allow`, or `--deny [--message <reason>]`.
+- `muster ledger <args>` runs the ledger's `show`, `comment` and `complete`, as `hermes kanban --board <board>` would.
+
+`list --json` prints one object:
+
+```json
+{
+  "requests": [{"id": "...", "kind": "question|permission|build|feedback|design", "ledger": "<card>", "run": "...",
+                "questions": [], "choices": [], "actions": null, "recommended": null, "card": "...", "tool": null}],
+  "reviews": [{"kind": "design|build", "ledger": "<card>", "proposal": "v<n>:<sha>", "head": "<sha>", "card": "<card>"}],
+  "blocked": [{"card": "...", "title": "...", "block_kind": "...", "reason": "..."}]
+}
+```
+
+A `reviews` entry is work no request covers yet. The calling agent reviews it and runs `muster recommend-design` (a
+design) or `muster recommend` (a build); that opens the request a person answers. A design request decides its
+version's Approval question, so answer the design request, not the question.
+
+`answer` exits 0 when it recorded the answer and any action it triggered succeeded. It exits 1 when the request was
+already answered or ended, or when carrying it out failed, and 2 on a bad argument.
+

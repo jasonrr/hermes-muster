@@ -231,6 +231,54 @@ An `@` right after `/` belongs to the path (`node_modules/@scope`); any other `@
 suffix, so give such a path an explicit `@base`. Two clones may not share a directory name, because herdr, Orca and herdr-core
 name worktrees `<worktrees>/<clone dir name>/<branch>`; give one an explicit path.
 
+## Standalone
+
+Muster also runs with no Hermes installed, as the `muster` command. It keeps its settings, ledger and decisions in
+files, and any harness that can run a shell command can use it.
+
+1. Install it from a checkout:
+
+   ```bash
+   uv tool install --editable <checkout>
+   ```
+
+   Prompts are found only through an editable install.
+
+2. Write `~/.muster/config.toml`. It takes the same keys as the plugin settings above:
+
+   ```toml
+   repos = ["you/app", "you/lib=/Users/you/Code/lib"]
+   approver_login = "you"
+   approver_id = 1234567
+   host = "herdr"
+   ```
+
+   Set `MUSTER_HOME` to use another directory than `~/.muster`. Data lives in `$MUSTER_HOME/data`.
+
+3. Run the three timers from one crontab. Cron's `PATH` is bare, so the first line must include the directory of
+   `muster` (`which muster`):
+
+   ```crontab
+   PATH=/Users/<you>/.local/bin:/opt/homebrew/bin:/usr/bin:/bin
+   * * * * * muster tick
+   * * * * * muster flush
+   */5 * * * * muster cleanup
+   ```
+
+4. Put the coordinator skills where your harness reads them: `~/.claude/skills/<name>/SKILL.md` for Claude Code and
+   `~/.codex/skills/<name>/SKILL.md` for Codex. MausBot bots pick them up from those two locations. The skills are
+   `prompts/escalation.md`, `prompts/dispatch.md` and `prompts/review-standard.md`; copy or symlink each one.
+
+Decisions go through the calling harness: it runs `muster decisions list` and `muster decisions answer` (see the
+[reference](reference.md#decisions-standalone)). Anyone with a shell as you can answer decisions, the coordinator
+agent included, so the skill rule that it never merges, approves or allows unless you asked in the conversation is the
+control.
+
+Not available standalone:
+
+- Telegram and Slack, and run topics. `notify_topics` is ignored.
+- The duplicate check. Every run launches without it, including an `auto_approvers` launch.
+
 ## Production notes
 
 Each repository can have a note at `<notes_dir>/<owner>__<repo>.md`, for example `you__app.md`. It goes
