@@ -13,14 +13,29 @@ import pytest
 
 import muster.core as core
 import muster.launcher as launcher
-from muster import config
+from muster import config, ledger
 
 HERMES = shutil.which("hermes") or os.path.expanduser("~/.local/bin/hermes")
-pytestmark = pytest.mark.skipif(not os.path.exists(HERMES), reason="hermes not installed: kanban contract NOT checked")
 
 
-@pytest.fixture
-def k(tmp_path, monkeypatch):
+@pytest.fixture(params=["hermes", "files"])
+def k(request, tmp_path, monkeypatch):
+    if request.param == "files":
+        monkeypatch.setattr(config, "standalone", True)
+        monkeypatch.setenv("MUSTER_HOME", str(tmp_path))
+
+        def run(*args, ok=True):
+            try:
+                out = ledger.call("muster", list(args))
+            except core.CommandError as error:
+                assert not ok, (args, str(error))
+                return ""
+            assert ok, (args, out)
+            return out
+        run.backend = "files"
+        return run
+    if not os.path.exists(HERMES):
+        pytest.skip("hermes not installed: kanban contract NOT checked")
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("HERMES_KANBAN_HOME", str(tmp_path))
     env = {**os.environ, "HERMES_HOME": str(tmp_path), "HERMES_KANBAN_HOME": str(tmp_path)}
@@ -32,6 +47,7 @@ def k(tmp_path, monkeypatch):
                                 capture_output=True, text=True, env=env, timeout=120, check=False)
         assert (result.returncode == 0) == ok, (args, result.stdout, result.stderr)
         return result.stdout
+    run.backend = "hermes"
     return run
 
 
@@ -116,6 +132,8 @@ def test_a_wait_card_subscribes_blocks_and_archives_once(k):
 
 
 def test_board_exists_reads_the_board_list_from_the_real_cli(k, monkeypatch):
+    if k.backend == "files":
+        pytest.skip("no board list to read: the directory is made on first use")
     core.board_exists()
     monkeypatch.setitem(config.settings, "board", "no-such-board")
     with pytest.raises(config.ConfigError, match="no-such-board"):
@@ -127,6 +145,8 @@ def test_board_exists_reads_the_board_list_from_the_real_cli(k, monkeypatch):
     None,  # the DM fallback from TELEGRAM_HOME_CHANNEL
 ])
 def test_subscribe_reads_back_chat_user_type_profile_and_mode_from_the_real_cli(k, tmp_path, monkeypatch, target):
+    if k.backend == "files" and target is None:
+        pytest.skip("the DM fallback reads Telegram's home")
     (tmp_path / ".env").write_text("TELEGRAM_HOME_CHANNEL=4242\n")
     if target:
         for key, value in target.items():
@@ -197,3 +217,32 @@ def test_create_with_a_key_on_a_card_that_is_already_done_returns_that_card(k):
     again = new(k, "review:t_x:abc")
     assert again["id"] == first["id"] and again["status"] == "done"
     assert status(k, first["id"]) == "done"
+
+
+def test_a_card_written_by_one_call_is_read_by_a_fresh_call(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "standalone", True)
+    monkeypatch.setenv("MUSTER_HOME", str(tmp_path))
+    card = json.loads(ledger.call("muster", ["create", "--json", "--", "title"]))["id"]
+    assert ledger.cards("muster")[0]["id"] == card
+    assert json.loads(ledger.call("muster", ["show", card]))["task"]["title"] == "title"
+    assert ledger.last_event("muster", card) == 0 and ledger.last_event("muster", "t_nope") == 0
+
+
+def test_an_archived_cards_key_makes_a_new_card(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "standalone", True)
+    monkeypatch.setenv("MUSTER_HOME", str(tmp_path))
+    args = ["create", "--idempotency-key", "k", "--json", "--", "title"]
+    first = json.loads(ledger.call("muster", args))
+    ledger.call("muster", ["archive", first["id"]])
+    assert json.loads(ledger.call("muster", args))["id"] != first["id"]
+
+
+def test_a_bad_argv_is_a_command_error_and_an_unknown_card_says_so(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "standalone", True)
+    monkeypatch.setenv("MUSTER_HOME", str(tmp_path))
+    with pytest.raises(core.CommandError):
+        ledger.call("muster", ["block", "--no-such-flag"])
+    with pytest.raises(core.CommandError):
+        ledger.call("muster", [])
+    with pytest.raises(core.CommandError, match="no such task"):
+        ledger.call("muster", ["show", "t_nope"])

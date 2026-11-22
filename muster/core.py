@@ -173,6 +173,10 @@ def run(argv, env=None):
 
 
 def kanban(*args):
+    if config.standalone:
+        from . import ledger
+
+        return ledger.call(config.settings["board"], list(args))
     return run(["hermes", "kanban", "--board", config.settings["board"], *args])
 
 
@@ -185,6 +189,8 @@ def prepare_env():
 
 def board_exists():
     """The kanban board must exist before the first tick: a missing board is a CommandError on every call."""
+    if config.standalone:
+        return  # the ledger directory is made on first use
     board = config.settings["board"]
     try:
         boards = [b.get("slug") for b in json.loads(run(["hermes", "kanban", "boards", "list", "--json"]))]
@@ -224,6 +230,8 @@ def notify_target():
     """The notify target: the configured chat, or the channel's home (Telegram: the human's DM) when notify_chat_id
     is empty."""
     s = config.settings
+    if config.standalone and not s["notify_chat_id"]:
+        return {"chat_id": "local", "user_id": "local", "chat_type": "dm"}
     if s["notify_chat_id"]:
         # YAML parses an unquoted Telegram id as an int; argv needs strings.
         return {"chat_id": str(s["notify_chat_id"]), "user_id": ([*approvers(), str(s["notify_chat_id"])])[0],

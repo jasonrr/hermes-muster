@@ -472,6 +472,10 @@ def ensure(rec, save, directory, prepare, known=None):
 
 def block_kind(card):
     """The kind of the card's current block, read-only from the board db (show --json does not carry it)."""
+    if config.standalone:
+        from . import ledger
+
+        return ledger.block_kind(config.settings["board"], card)
     db = core.board_db()
     with contextlib.closing(sqlite3.connect(f"file:{db}?mode=ro", uri=True)) as conn:
         row = conn.execute("SELECT block_kind FROM tasks WHERE id = ?", (card,)).fetchone()

@@ -378,7 +378,7 @@ def intake(repo, dry=False):
                       f"({'bug' if auto or is_bug(issue) else 'feature'})")
                 continue
             before = int(time.time())
-            task = json.loads(core.run(card_argv(repo, issue, event, auto)))
+            task = json.loads(core.kanban(*card_argv(repo, issue, event, auto)[4:]))
             # The create is idempotent: an existing card comes back with its old created_at,
             # and only a card made just now gets a pane.
             # ...unless a tick was killed between that create and launch()'s first save.
