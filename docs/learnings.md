@@ -237,3 +237,4 @@
 
 - argparse with `exit_on_error=False` still calls `error()` for missing args but raises `ArgumentError` for a bad `choices=` value → a parser meant to raise one error type needs both the `error()` override and an `ArgumentError` catch.
 - A second implementation of a Hermes CLI (the file ledger) matched the contract test but diverged on untested fallbacks (thread-less subscription matching, #90) → name the CLI's fallback rules in the plan, or the contract test, when cloning a CLI.
+- A CLI answer path built on `decisions.answer_part` must skip "duplicate" slots as the channels do, and the channels' "covered Approval" rule lives only in `gateway.S.covered` (memory) → any new decision surface has to re-derive it from `decisions.approval_slot`; a public helper in decisions.py would stop the drift.
