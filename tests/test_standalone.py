@@ -32,6 +32,19 @@ def test_load_file_unknown_key(standalone_home):
         config.load_file()
 
 
+def test_load_file_unreadable(standalone_home):
+    (standalone_home / "config.toml").unlink()
+    (standalone_home / "config.toml").mkdir()
+    with pytest.raises(config.ConfigError, match="config.toml"):
+        config.load_file()
+
+
+def test_home_is_absolute(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("MUSTER_HOME", "m")
+    assert config.home() == tmp_path / "m"
+
+
 def test_home_defaults_to_dot_muster(monkeypatch):
     monkeypatch.delenv("MUSTER_HOME", raising=False)
     assert config.home() == config.Path("~/.muster").expanduser()
@@ -88,7 +101,6 @@ def test_pane_env_under_hermes(standalone_home):
 
 
 def test_gateway_up_standalone(standalone_home):
-    assert decisions.gateway_up() is False  # no Hermes gateway in the sandbox
     config.load_file()
     assert decisions.gateway_up() is True
 

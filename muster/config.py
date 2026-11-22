@@ -54,7 +54,7 @@ def load(ctx):
 
 def home() -> Path:
     """Standalone muster's home: $MUSTER_HOME, else ~/.muster."""
-    return Path(os.environ.get("MUSTER_HOME") or "~/.muster").expanduser()
+    return Path(os.environ.get("MUSTER_HOME") or "~/.muster").expanduser().absolute()
 
 
 def load_file():
@@ -68,7 +68,7 @@ def load_file():
         data = tomllib.loads(path.read_text())
     except FileNotFoundError:
         raise ConfigError(f"muster: no settings file at {path}; see docs/setup.md#standalone") from None
-    except tomllib.TOMLDecodeError as error:
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
         raise ConfigError(f"muster: {path}: {error}") from None
     unknown = sorted(set(data) - set(DEFAULTS))
     if unknown:
