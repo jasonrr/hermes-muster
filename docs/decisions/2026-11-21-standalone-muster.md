@@ -1,0 +1,55 @@
+# Standalone muster
+
+## Problem
+
+Muster only runs inside Hermes. Its command is `hermes muster`, its settings come from the plugin context, its
+ledger is `hermes kanban`, its decisions are shown only by the Hermes gateway (Telegram, Slack), and its timers are
+Hermes cron jobs. MausBot, Claude Code and Codex cannot start or direct a run, and a machine without Hermes cannot
+run muster at all. Jason's decision (2026-11-21): Hermes becomes optional, one host among several.
+
+## Chosen approach
+
+Muster is a `muster` command with two backends, chosen by how it is started. `hermes muster` keeps today's
+behaviour unchanged. `muster` alone uses files only. Any harness that can run a shell command can use it.
+
+1. **Command.** `[project.scripts] muster = ...` in `pyproject.toml`. Both entries call the same `cli.main`.
+   `core.hermes_cmd()` becomes the one place that says how muster is called (`muster`, or `hermes [-p x] muster`);
+   pane hooks, briefs and prompts take it from there (`$hermes muster` in prompts becomes `$muster`).
+2. **Settings.** Standalone reads `$MUSTER_HOME/config.toml` (default `~/.muster`, stdlib `tomllib`), same keys and
+   same validation. Data lives in `$MUSTER_HOME/data`. `require()` asks for the `hermes` binary only on the Hermes
+   backend.
+3. **Ledger.** `core.kanban()` is already the one seam (about 55 callers). Standalone routes it to a new
+   `muster/ledger.py`: one JSON file per card, a lock, the same verbs and the same JSON as `hermes kanban`
+   (create, show, comment, block, unblock, complete, archive), plus `last_event` and `block_kind` in place of the
+   two sqlite reads. No caller changes. `tests/test_kanban_contract.py` runs against both, so the two cannot drift.
+   The notify verbs do nothing standalone: nobody is subscribed, and an event counts as delivered.
+4. **Decisions.** `muster decisions list|show|answer` (JSON with `--json`). `answer` calls the existing
+   `decisions.answer_part` / `transition`, then `decisions.execute`. The pane bridge already polls the file, so
+   questions and permission prompts work with no gateway. `list` also names the cards that wait for a review, which
+   is how the calling agent learns it must run `muster recommend`.
+5. **Housekeeping the gateway did.** The channel-free part of `gateway.scan_loop` (settle designs, stale dead
+   requests, recover after a crash) moves to a function that `muster flush` also runs.
+6. **Coordinator.** The three skill files in `prompts/` are plain markdown with frontmatter. Docs say where to put
+   them for Claude Code, Codex and MausBot. `README.md` and `AGENTS.md` change from "Hermes plugin" to "tool with a
+   Hermes host".
+
+Trade-off, stated plainly: this adds a second ledger implementation (about 200 lines) that must match Hermes
+kanban. The shared contract test is the control. Without it, standalone is impossible, because the ledger is the
+largest Hermes need.
+
+## Cut and why
+
+- **Telegram and Slack without Hermes.** They are Hermes adapters. Standalone decisions go through the calling
+  harness. Add when someone runs muster with no Hermes and wants chat buttons.
+- **A daemon or `muster wait`.** `tick`, `flush` and `cleanup` stay one-shot commands; docs give one cron line. The
+  harness polls `muster decisions list`. Add a blocking wait when polling proves too slow.
+- **An LLM for the duplicate check.** It already launches without the check when `ctx.llm` is absent.
+- **A skills installer command.** Copying three files is one documented line.
+- **Secret redaction standalone.** `core.display` uses Hermes's redactor when present, else shows the text as is:
+  it goes to the local harness that already ran the command, not to a chat.
+- **Moving data between backends.** A run stays on the backend it started on.
+
+## Open questions
+
+- MausBot: confirm where a bot's skills live, and whether its bots can reach a `muster` on `PATH`.
+- Name: keep the repository name `hermes-muster`, or rename it.
