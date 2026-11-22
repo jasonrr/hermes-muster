@@ -53,3 +53,7 @@ largest Hermes need.
 
 - MausBot: confirm where a bot's skills live, and whether its bots can reach a `muster` on `PATH`.
 - Name: keep the repository name `hermes-muster`, or rename it.
+
+## Deviations
+
+- T1 commit 5823e50, e03d97a — deviation: review fixes (unreadable config.toml is a ConfigError; MUSTER_HOME made absolute so panes in worktrees find it); .gitignore gains *.egg-info/ from the editable install — parked: none
