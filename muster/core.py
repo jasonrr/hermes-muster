@@ -142,8 +142,10 @@ def display(text, prose=False):
     """Agent-written text as Hermes shows its own approval (prose=False) and clarify (prose=True) prompts: every
     secret shape redacted and hidden characters made visible (agent/redact.py redact_approval_display). Forced:
     muster's cards reach a shared channel, so `security.redact_secrets: false` does not put a secret there."""
-    from agent.redact import redact_approval_display
-
+    try:
+        from agent.redact import redact_approval_display
+    except ImportError:  # no Hermes (standalone): GitHub token shapes only
+        return SECRET.sub("[redacted]", text)
     return redact_approval_display(text, force=True, prose=prose)
 
 
