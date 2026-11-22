@@ -82,6 +82,11 @@ def muster_bin() -> str:
     return shutil.which("muster") or str(Path(sys.argv[0]).resolve())
 
 
+def muster_cli() -> str:
+    """The command a prompt tells an agent to type: `<muster>` standalone, `<hermes> muster` under Hermes."""
+    return muster_bin() if standalone else f"{hermes_bin()} muster"
+
+
 def muster_name() -> str:
     """The command a human types, for usage and error text."""
     return "muster" if standalone else "hermes muster"

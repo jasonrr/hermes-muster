@@ -182,10 +182,10 @@ def reconcile(run):
 
 def footer(run):
     return "\n" + config.prompt("ad-hoc-run", card=run["card"], repo=run["repo"], branch=run["branch"],
-                                base=run["base"], hermes=config.hermes_bin(), workflow=config.workflow_text(),
+                                base=run["base"], workflow=config.workflow_text(),
                                 production=config.production_note(run["repo"]),
                                 setup=config.prompt("dependency-setup"),
-                                ask=config.prompt("ask-the-human", hook=f"{config.hermes_bin()} muster hook --card {run['card']}")) + "\n"
+                                ask=config.prompt("ask-the-human", hook=f"{config.muster_cli()} hook --card {run['card']}")) + "\n"
 
 
 def relaunch(run, prepare_text):
@@ -261,7 +261,7 @@ def launch_run(clone, branch, title, brief, base=None, model=None):
         # A card made before this call, or in the same second by a launch that already registered it.
         if task["created_at"] < before or (directory / "run.json").exists():
             raise core.LaunchError(f"{repo} {branch} already has run {card} ({task.get('status')}); "
-                                   f"use a new branch, or `hermes muster recover {card}`")
+                                   f"use a new branch, or `{config.muster_name()} recover {card}`")
         plan.update(owner=card, settings=str(directory / "settings.json"))
         run = {"card": card, "repo": repo, "clone": str(clone), "branch": branch, "base": base, "title": title,
                "launch": plan}
@@ -399,7 +399,7 @@ def hook(args):
         core.prepare_env()
         try:
             pin, why = events.gate(card, runs.run_dir(card), event, payload,
-                                   f"{config.hermes_bin()} muster hook --card {card} propose <file>")
+                                   f"{config.muster_cli()} hook --card {card} propose <file>")
         except Exception as error:  # noqa: BLE001 - fail closed, and say why
             pin, why = None, f"muster could not check this approval request: {' '.join(str(error).split())}"
         if why:

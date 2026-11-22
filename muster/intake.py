@@ -97,8 +97,8 @@ def brief(repo, number, bug, base="main", auto=None):
     bot = (f" `gh` and `git push` act as the login configured in `{core.gh_config_dir()}`." if s["gh_config_dir"] else "")
     return config.prompt("issue-dispatch", repo=repo, number=number, approved_by=approved_by(repo, number, auto),
                          bot=bot, branch=f"{s['branch_prefix']}{number}", base=base, kind="bug" if bug else "feature",
-                         hermes=config.hermes_bin(), workflow=config.workflow_text(),
-                         ask=config.prompt("ask-the-human", hook=f"{config.hermes_bin()} muster hook"),
+                         muster=config.muster_cli(), workflow=config.workflow_text(),
+                         ask=config.prompt("ask-the-human", hook=f"{config.muster_cli()} hook"),
                          setup=config.prompt("dependency-setup"),
                          production=config.production_note(repo)) + "\n"
 

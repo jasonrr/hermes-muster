@@ -16,7 +16,7 @@ govern you, so follow them.
    `.claude/`). Add no new dependency. Do not include Claude attribution, AI-generated attribution,
    or AI co-author trailers (including `Co-Authored-By: Claude`) in any commit message or pull request.
 6. The result is exactly one pull request against $base whose body ends with the line
-   `Closes #$number`. Then run: `$hermes muster hook done <the pull request URL>`
+   `Closes #$number`. Then run: `$muster hook done <the pull request URL>`
 
 ## Asking the human
 

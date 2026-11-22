@@ -5,6 +5,8 @@ description: When the human asks you to send coding work to a terminal pane (her
 
 # muster dispatch
 
+Outside Hermes: type `muster` where this says `hermes muster`, and `muster ledger` where it says `hermes kanban --board <board>`; `muster decisions list` replaces the kanban wake. Never run `muster decisions answer` to merge, approve or allow unless the human asked for that in this conversation.
+
 ## Dispatch
 
 Only when the human asks for coding work in a terminal pane.
