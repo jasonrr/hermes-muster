@@ -232,3 +232,12 @@
 
 - A Hermes name with no leading underscore (`resolve_text_response_for_session`) was still deleted without notice, because it was never on Hermes's published plugin list (`website/docs/developer-guide/plugins/public-api.md`) → check a name against that list, not its underscore, before relying on it; the other clarify calls muster makes (`register`, `wait_for_response`, `get_pending_for_session`, `clear_session`, `attempt_text_response`) are unlisted too.
 - `tests/test_hermes_private.py` reads the local `~/.hermes/hermes-agent` checkout, so it fails on unchanged main whenever that checkout drifts (here `send_clarify` and `send_document` shapes) → run it on origin/main before blaming your diff.
+
+## standalone-muster (PR #89, 2026-11-21)
+
+- argparse with `exit_on_error=False` still calls `error()` for missing args but raises `ArgumentError` for a bad `choices=` value → a parser meant to raise one error type needs both the `error()` override and an `ArgumentError` catch.
+- A second implementation of a Hermes CLI (the file ledger) matched the contract test but diverged on untested fallbacks (thread-less subscription matching, #90) → name the CLI's fallback rules in the plan, or the contract test, when cloning a CLI.
+- A CLI answer path built on `decisions.answer_part` must skip "duplicate" slots as the channels do, and the channels' "covered Approval" rule lives only in `gateway.S.covered` (memory) → any new decision surface has to re-derive it from `decisions.approval_slot`; a public helper in decisions.py would stop the drift.
+- Standalone `runs.acked` returning True made `runs.flush` mark a run `closed` the moment its card was done, and the plan used "not closed" as "review pending" → under Hermes `closed` meant "the wake was delivered"; when a backend has no notifier, a delivery flag cannot stand in for "reviewed". Key a review queue on the review artifact (a build request), not on delivery state.
+- A file-per-record store keyed by a CLI argument (`ledger.load(card)`) was a path traversal until review → validate ids against the generator's shape at the one load function, the way `inbox.ID` guards request ids.
+- Three reviewers running pytest at once on one machine starved each other (the hermes-param contract tests never finished for two of them) → tell parallel reviewers to run only the files-scoped tests, and run the slow full suite once in the controller.

@@ -3,6 +3,7 @@ import re
 import shutil
 import string
 import subprocess
+import sys
 from pathlib import Path
 
 DEFAULTS = {
@@ -35,6 +36,7 @@ DEFAULTS = {
     "project_status_field": "Status",  # the single-select field set on launch
     "project_status_value": "In Progress",  # the option it is set to
 }
+standalone = False  # True only in the `muster` console command (cli.standalone): files backend, no Hermes
 settings = dict(DEFAULTS)  # module-level; cli.main fills it; tests assign into it
 AUTO_LABEL = "automatic-approval"  # an auto_approvers entry's label when it names none
 AUTO_KEYS = {"login", "id", "label", "repos"}
@@ -48,6 +50,46 @@ class ConfigError(Exception):
 def load(ctx):
     for key, default in DEFAULTS.items():
         settings[key] = ctx.get_config(key, default)
+
+
+def home() -> Path:
+    """Standalone muster's home: $MUSTER_HOME, else ~/.muster."""
+    return Path(os.environ.get("MUSTER_HOME") or "~/.muster").expanduser().absolute()
+
+
+def load_file():
+    """Standalone settings: <home>/config.toml, the same keys as plugin.yaml's config_schema."""
+    import tomllib
+
+    global standalone
+    standalone = True
+    path = home() / "config.toml"
+    try:
+        data = tomllib.loads(path.read_text())
+    except FileNotFoundError:
+        raise ConfigError(f"muster: no settings file at {path}; see docs/setup.md#standalone") from None
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
+        raise ConfigError(f"muster: {path}: {error}") from None
+    unknown = sorted(set(data) - set(DEFAULTS))
+    if unknown:
+        raise ConfigError(f"muster: {path}: unknown settings {unknown}")
+    for key, default in DEFAULTS.items():
+        settings[key] = data.get(key, default)
+    settings["notify_topics"] = False  # no chat exists standalone
+
+
+def muster_bin() -> str:
+    return shutil.which("muster") or str(Path(sys.argv[0]).resolve())
+
+
+def muster_cli() -> str:
+    """The command a prompt tells an agent to type: `<muster>` standalone, `<hermes> muster` under Hermes."""
+    return muster_bin() if standalone else f"{hermes_bin()} muster"
+
+
+def muster_name() -> str:
+    """The command a human types, for usage and error text."""
+    return "muster" if standalone else "hermes muster"
 
 
 def require():
@@ -115,7 +157,7 @@ def require():
     wf = workflow_path()
     if not wf.is_file() or not wf.read_text().strip():
         raise ConfigError(f"muster: workflow prompt file missing or empty: {wf}")
-    if not shutil.which("hermes") and not (Path.home() / ".local/bin/hermes").exists():
+    if not standalone and not shutil.which("hermes") and not (Path.home() / ".local/bin/hermes").exists():
         raise ConfigError("muster: cannot find the hermes executable on PATH or in ~/.local/bin")
 
 
@@ -125,6 +167,10 @@ def is_id(value):
 
 
 def data_dir() -> Path:
+    if standalone:
+        p = home() / "data"
+        p.mkdir(parents=True, exist_ok=True)
+        return p
     try:
         from plugins.plugin_storage import plugin_data_dir
 

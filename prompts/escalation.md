@@ -5,6 +5,8 @@ description: When a Kanban card on the muster board wakes you (blocked, complete
 
 # muster escalation
 
+Outside Hermes: type `muster` where this says `hermes muster`, and `muster ledger` where it says `hermes kanban --board <board>`; `muster decisions list` replaces the kanban wake. Never run `muster decisions answer` to merge, approve or allow unless the human asked for that in this conversation.
+
 ## Judgment and writing
 
 Load the `muster:review-standard` skill: it says how to judge (smallest complete fix, block only on demonstrated wrong behavior or essential risk), what counts as evidence, and how to write the summary the human decides from. This skill owns muster's commands, card fields and approval mechanics.

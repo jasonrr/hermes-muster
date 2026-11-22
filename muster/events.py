@@ -353,7 +353,7 @@ def propose(card, file, **issue):
     from . import runs  # lazy: runs imports events at module level
     try:
         if not file:
-            raise ValueError("usage: hermes muster hook propose <file>")
+            raise ValueError(f"usage: {config.muster_name()} hook propose <file>")
         raw = Path(file).read_bytes()
         if len(raw) > PROPOSAL_MAX:
             raise ValueError(f"{file} is {len(raw)} bytes, over {PROPOSAL_MAX}: shorten it")
@@ -463,7 +463,7 @@ def duplicate(link, number, verdict):
     from . import hold  # hold imports events
 
     if not (number or "").isdigit() or verdict not in ("same", "different") or link.get("issue") is None:
-        print("usage: hermes muster hook duplicate <issue number> same|different (from an issue run's worktree)",
+        print(f"usage: {config.muster_name()} hook duplicate <issue number> same|different (from an issue run's worktree)",
               file=sys.stderr)
         return 2
     try:
@@ -535,7 +535,7 @@ def hook(args):
     if event == "done":
         match = PR_URL.fullmatch(args.url or "")
         if not match or match.group(1).lower() != link["repo"].lower():
-            print(f"usage: hermes muster hook done https://github.com/{link['repo']}/pull/<n>", file=sys.stderr)
+            print(f"usage: {config.muster_name()} hook done https://github.com/{link['repo']}/pull/<n>", file=sys.stderr)
             return 2
         # A links file from before "branch" was recorded: the branch every intake launch uses.
         branch = link.get("branch") or f"{config.settings['branch_prefix']}{link['issue']}"
@@ -554,7 +554,7 @@ def hook(args):
     from . import runs  # lazy: runs imports events at module level
     card = link["card"]
     try:
-        pin, why = gate(card, git_dir, event, payload, f"{config.hermes_bin()} muster hook propose <file>")
+        pin, why = gate(card, git_dir, event, payload, f"{config.muster_cli()} hook propose <file>")
     except Exception as caught:  # noqa: BLE001 - fail closed, and say why
         pin, why = None, f"muster could not check this approval request: {' '.join(str(caught).split())}"
     if why:

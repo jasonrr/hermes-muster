@@ -1,6 +1,6 @@
 # Muster
 
-Muster is a Hermes plugin that coordinates subscription-backed coding agents in visible terminal
+Muster runs as a Hermes plugin or standalone, as a `muster` command with no Hermes installed. It coordinates subscription-backed coding agents in visible terminal
 sessions. You start work from a GitHub issue or an ad-hoc request, follow it in the herdr TUI, Orca or the Herdr app, and direct the
 process through Telegram or Slack. Your Hermes agent reviews the result; you decide whether to merge.
 
@@ -78,6 +78,19 @@ Ask your Hermes agent for research or analysis in a terminal pane (herdr TUI, Or
 card tracks it, and cleanup closes it once it has been quiet for 30 minutes, without deleting any file.
 See [analysis workspaces](docs/reference.md#analysis-workspaces).
 
+## From another harness
+
+Claude Code, Codex and MausBot can direct muster with no Hermes. See [standalone setup](docs/setup.md#standalone).
+
+- Start a run with `muster launch`.
+- Poll `muster decisions list --json` for questions, permission prompts and work awaiting review.
+- Answer with `muster decisions answer`.
+- Review a finished build or design with `muster recommend` or `muster recommend-design`.
+
+The coordinator skills are `prompts/escalation.md`, `prompts/dispatch.md` and `prompts/review-standard.md`. Copy or
+symlink each into the harness's skills directory as `<name>/SKILL.md`: `~/.claude/skills/<name>/SKILL.md` for Claude
+Code, and `~/.codex/skills/<name>/SKILL.md` for Codex. MausBot bots pick them up from those same two locations.
+
 ## What you decide
 
 Every decision is a message with buttons in your chat; you can also answer in the pane.
@@ -126,7 +139,7 @@ Full list of what Muster reads, writes and registers: [security and disclosure](
 
 ## Documentation
 
-- [Setup](docs/setup.md): requirements, install, every setting.
+- [Setup](docs/setup.md): requirements, install, standalone, every setting.
 - [Channels](docs/channels.md): Telegram, Slack, run topics, the status message.
 - [Reference](docs/reference.md): commands, run details, cards, recovery, cleanup, prompts, security.
 

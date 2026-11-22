@@ -29,16 +29,19 @@ def pane_env():
     """The pane's env pairs: this profile's hermes home always (core.hermes_home: a served profile's, not the
     gateway host's), and the shared board home when it differs; the bot's gh login, with token vars blanked, when
     configured. gh prefers a token env var over GH_CONFIG_DIR, so both are blanked."""
-    home = core.hermes_home()
-    try:
-        from hermes_cli.kanban_db import kanban_home
-    except ImportError:
-        board = Path(os.environ.get("HERMES_KANBAN_HOME") or home)
+    if config.standalone:
+        env = [f"MUSTER_HOME={config.home()}", "MUSTER_PANE=1"]
     else:
-        board = kanban_home()
-    env = [f"HERMES_HOME={home}"]
-    if board != home:
-        env.append(f"HERMES_KANBAN_HOME={board}")
+        home = core.hermes_home()
+        try:
+            from hermes_cli.kanban_db import kanban_home
+        except ImportError:
+            board = Path(os.environ.get("HERMES_KANBAN_HOME") or home)
+        else:
+            board = kanban_home()
+        env = [f"HERMES_HOME={home}"]
+        if board != home:
+            env.append(f"HERMES_KANBAN_HOME={board}")
     if config.settings["gh_config_dir"]:
         env += [f"GH_CONFIG_DIR={core.gh_config_dir()}", "GH_TOKEN=", "GITHUB_TOKEN="]
     return env
@@ -469,6 +472,10 @@ def ensure(rec, save, directory, prepare, known=None):
 
 def block_kind(card):
     """The kind of the card's current block, read-only from the board db (show --json does not carry it)."""
+    if config.standalone:
+        from . import ledger
+
+        return ledger.block_kind(config.settings["board"], card)
     db = core.board_db()
     with contextlib.closing(sqlite3.connect(f"file:{db}?mode=ro", uri=True)) as conn:
         row = conn.execute("SELECT block_kind FROM tasks WHERE id = ?", (card,)).fetchone()

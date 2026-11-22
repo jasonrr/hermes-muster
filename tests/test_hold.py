@@ -439,3 +439,15 @@ def test_a_damaged_hold_record_does_not_block_another_verdict(fake):
     delivered(fake)
     hold.path(fake.card_of(495)).write_text("{torn")
     assert hook(fake, 494, "same") == 0
+
+
+def test_standalone_hold_texts_name_muster_recover(fake, standalone_home, monkeypatch):
+    tick()
+    rec = held(fake, 494)
+    monkeypatch.setattr(config, "standalone", True)
+    sent = []
+    monkeypatch.setattr(core, "kanban", lambda *a: sent.append(a) or '{"id": "t_r", "status": "triage"}')
+    hold.remind(rec, "no answer")
+    texts = [hold.message(rec), sent[0][2]]
+    for text in texts:
+        assert f"`/bin/muster recover {rec['card']}`" in text and "hermes" not in text.replace(core.PROVENANCE, "")  # PROVENANCE stays as is

@@ -1,6 +1,6 @@
 # hermes-muster: agent rules
 
-## Be a good Hermes plugin citizen
+## Hermes is one host
 
 muster's goal is to write as little standalone code as possible. Reuse Hermes, so muster inherits what Hermes builds next.
 
@@ -11,3 +11,10 @@ muster's goal is to write as little standalone code as possible. Reuse Hermes, s
   3. Add a test that fails loudly when the private shape changes, rather than degrading silently.
 - **Prefer the host's native feature everywhere.** That means Claude Code hooks and settings, herdr's CLI, `gh` and the standard library, before code of our own.
 - **Never cut a stated requirement because the clean API is missing.** Build it on a segregated workaround and say so.
+
+## Two backends
+
+- muster has two backends, chosen by `config.standalone`. `hermes muster` uses Hermes. `muster` alone uses files.
+- The files backend (`muster/ledger.py`, `muster/inbox.py`) exists by decision `docs/decisions/2026-11-21-standalone-muster.md`. It is the one approved reimplementation of Hermes features.
+- `ledger.py` must pass `tests/test_kanban_contract.py` on both params.
+- No other Hermes feature may be reimplemented.

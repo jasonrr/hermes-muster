@@ -1,3 +1,4 @@
+import argparse
 import importlib
 import sys
 
@@ -14,6 +15,8 @@ SUBCOMMANDS = {  # name → (sibling module, function); resolved relative to thi
     "open": ("cleanup", "open_workspace"),
     "recommend": ("decisions", "recommend"),
     "recommend-design": ("decisions", "recommend_design"),
+    "decisions": ("inbox", "main"),
+    "ledger": ("inbox", "ledger_cmd"),
 }
 
 
@@ -58,6 +61,27 @@ def setup(parser):
     p = sub.add_parser("open", help="open an analysis workspace muster owns")
     p.add_argument("--cwd", required=True)
     p.add_argument("--label", required=True)
+    p = sub.add_parser("decisions", help="the open requests and what awaits review; answer them (standalone)")
+    inbox = p.add_subparsers(dest="decisions_command", required=True)
+    inbox.add_parser("list", help="open requests, reviews due and blocked cards").add_argument("--json", action="store_true")
+    inbox.add_parser("show", help="one request, as JSON").add_argument("id")
+    p = inbox.add_parser("answer", help="answer a request (standalone only; write --text=<words> when they start with -)")
+    p.add_argument("id")
+    how = p.add_mutually_exclusive_group(required=True)
+    how.add_argument("--choice", action="append", help="a label, once per question; a multi-select takes a JSON array")
+    how.add_argument("--text")
+    how.add_argument("--allow", action="store_true")
+    how.add_argument("--deny", action="store_true")
+    p.add_argument("--message", help="with --deny: the reason the builder sees")
+    sub.add_parser("ledger", help="the card ledger: the `hermes kanban` verbs (standalone only)").add_argument(
+        "args", nargs=argparse.REMAINDER)
+
+
+def standalone(argv=None):
+    """The `muster` console command: the same subcommands as `hermes muster`, on the files backend."""
+    parser = argparse.ArgumentParser(prog="muster", description="Human-directed coding agents in terminal panes")
+    setup(parser)
+    return main(parser.parse_args(argv), None)
 
 
 def main(args, ctx):
@@ -65,7 +89,7 @@ def main(args, ctx):
     # `done`, `propose` and `duplicate` are run by the pane agent, which must see a failure.
     failed = 1 if is_hook and args.event in AGENT_RUN else 0
     try:
-        config.load(ctx)
+        config.load_file() if ctx is None else config.load(ctx)
         from . import core
 
         core.operating_profile()  # a mismatch stops every command and hook here, before any side effect

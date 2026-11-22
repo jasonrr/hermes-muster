@@ -41,6 +41,8 @@ def operating_profile():
     (gateway/run.py _active_profile_name), so a subscription stamped with it is one that gateway delivers. Outside
     Hermes (tests), `default`. The operating_profile setting only confirms it: config and state live in the profile
     that loaded muster, so any other name is refused, never routed to."""
+    if config.standalone:
+        return "default"
     try:
         from hermes_cli.profiles import get_active_profile_name, profile_exists
     except ImportError:
@@ -72,8 +74,13 @@ def hermes_cmd():
     return [config.hermes_bin()]
 
 
+def muster_cmd():
+    """How this muster is called from a shell: `muster` standalone, `hermes [-p profile] muster` under Hermes."""
+    return [config.muster_bin()] if config.standalone else [*hermes_cmd(), "muster"]
+
+
 def hook_cmd():
-    return [*hermes_cmd(), "muster", "hook"]
+    return [*muster_cmd(), "hook"]
 
 
 def intake_dir():
@@ -135,8 +142,12 @@ def display(text, prose=False):
     """Agent-written text as Hermes shows its own approval (prose=False) and clarify (prose=True) prompts: every
     secret shape redacted and hidden characters made visible (agent/redact.py redact_approval_display). Forced:
     muster's cards reach a shared channel, so `security.redact_secrets: false` does not put a secret there."""
-    from agent.redact import redact_approval_display
-
+    try:
+        from agent.redact import redact_approval_display
+    except ImportError:  # no Hermes (standalone): GitHub token shapes only; under Hermes a broken import must fail
+        if not config.standalone:
+            raise
+        return SECRET.sub("[redacted]", text)
     return redact_approval_display(text, force=True, prose=prose)
 
 
@@ -166,6 +177,10 @@ def run(argv, env=None):
 
 
 def kanban(*args):
+    if config.standalone:
+        from . import ledger
+
+        return ledger.call(config.settings["board"], list(args))
     return run(["hermes", "kanban", "--board", config.settings["board"], *args])
 
 
@@ -178,6 +193,8 @@ def prepare_env():
 
 def board_exists():
     """The kanban board must exist before the first tick: a missing board is a CommandError on every call."""
+    if config.standalone:
+        return  # the ledger directory is made on first use
     board = config.settings["board"]
     try:
         boards = [b.get("slug") for b in json.loads(run(["hermes", "kanban", "boards", "list", "--json"]))]
@@ -217,6 +234,8 @@ def notify_target():
     """The notify target: the configured chat, or the channel's home (Telegram: the human's DM) when notify_chat_id
     is empty."""
     s = config.settings
+    if config.standalone and not s["notify_chat_id"]:
+        return {"chat_id": "local", "user_id": "local", "chat_type": "dm"}
     if s["notify_chat_id"]:
         # YAML parses an unquoted Telegram id as an int; argv needs strings.
         return {"chat_id": str(s["notify_chat_id"]), "user_id": ([*approvers(), str(s["notify_chat_id"])])[0],

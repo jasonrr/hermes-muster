@@ -1122,3 +1122,10 @@ def test_a_question_answered_in_the_pane_is_settled_by_the_prompt_hook(board, mo
          tool_input={"questions": [q], "answers": {"Which db?": "pg"}})
     assert decisions.load(rid)["outcome"] == "Answered in the pane"
     assert verbs(board) == []  # no wait card open: the hook's early return still settled it
+
+
+def test_standalone_tells_the_builder_to_run_muster_to_propose(board, standalone_home, monkeypatch, capsys):
+    monkeypatch.setattr(config, "standalone", True)
+    assert ask(monkeypatch) == 0
+    why = denied(capsys)
+    assert "`/bin/muster hook propose <file>`" in why and "hermes" not in why

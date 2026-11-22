@@ -155,10 +155,9 @@ def wire(rec):
     """What the live run's agent reads: one line, a fixed instruction and JSON data. Unique per hold (card and
     event), so an earlier hold's evidence never counts as this delivery."""
     repo, n, cand = rec["repo"], rec["issue"], rec["candidates"][0]
-    hermes = config.hermes_bin()
     data = {"report": f"{repo}#{n}", "url": f"https://github.com/{repo}/issues/{n}", "your_issue": cand["issue"],
             "model_reason": rec["reason"], "held_card": rec["card"], "label_event": rec["event"]}
-    return config.prompt("duplicate-handoff", number=n, repo=repo, hermes=hermes,
+    return config.prompt("duplicate-handoff", number=n, repo=repo, muster=config.muster_cli(),
                          data=json.dumps(data, ensure_ascii=True))
 
 
@@ -166,7 +165,7 @@ def message(rec):
     cand = rec["candidates"][0]
     return (f"Possible duplicate of {rec['repo']}#{cand['issue']} (card {cand['card']}); sent to that run's agent to "
             f"evaluate; not dispatched. Model's reason (untrusted): {rec['reason']}\nTo launch it anyway: "
-            f"`{shlex.join(core.hermes_cmd())} muster recover {rec['card']}`. If it is a duplicate, closing the issue drops it.")
+            f"`{shlex.join([*core.muster_cmd(), 'recover', rec['card']])}`. If it is a duplicate, closing the issue drops it.")
 
 
 def hold(repo, issue, card, event, auto, cand, reason):
@@ -219,7 +218,7 @@ def remind(rec, why):
     if rec["reminder"]:
         return
     text = (f"{rec['repo']}#{rec['issue']} is held as a possible duplicate and was not dispatched (held card "
-            f"{rec['card']}): {why}. Release it with `{shlex.join(core.hermes_cmd())} muster recover {rec['card']}`, or close "
+            f"{rec['card']}): {why}. Release it with `{shlex.join([*core.muster_cmd(), 'recover', rec['card']])}`, or close "
             f"the issue if it is a duplicate. This is the only reminder.")
     made = json.loads(core.kanban(
         "create", "--body", f"{text}\n{core.PROVENANCE}", "--idempotency-key", f"muster-hold-reminder:{rec['card']}",

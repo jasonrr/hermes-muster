@@ -80,6 +80,10 @@ def wait_card(directory):
 
 def last_event(card):
     """Id of the card's newest blocked or completed event, read-only from the board db; 0 if none."""
+    if config.standalone:
+        from . import ledger
+
+        return ledger.last_event(config.settings["board"], card)
     with contextlib.closing(sqlite3.connect(f"file:{core.board_db()}?mode=ro", uri=True)) as db:
         row = db.execute("SELECT max(id) FROM task_events WHERE task_id = ? AND kind IN ('blocked', 'completed')",
                          (card,)).fetchone()
@@ -94,6 +98,8 @@ def acked(card):
     notifier delivers an archived card's pending events, then drops its subscriptions, so an archived
     card with none left was delivered (or its chat was dropped as dead after 12 failed sends).
     """
+    if config.standalone:
+        return True  # no notifier exists: nobody waits for a ping
     want = last_event(card)
     subs = [s for s in json.loads(core.kanban("notify-list", card, "--json"))
             if s.get("delivery_mode") in ("notify+wake", "wake")]
@@ -216,4 +222,8 @@ def flush(args=None):
                         core.save_json(directory / "run.json", {**load(card), "closed": True})
             except ERRORS as error:
                 log(f"{card} flush: {error}")
+    if config.standalone:  # no gateway scan runs the requests' housekeeping; after the lock: execute can take a while
+        from . import inbox  # lazy: inbox imports gateway
+
+        inbox.sweep()
     return 0

@@ -1,1 +1,1 @@
-When the revision is pushed, run `$hermes muster hook done $pr` again.
+When the revision is pushed, run `$muster hook done $pr` again.

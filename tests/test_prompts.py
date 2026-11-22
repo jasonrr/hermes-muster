@@ -123,3 +123,22 @@ def test_both_briefs_carry_the_dependency_setup_section():
 def test_a_placeholder_without_a_value_raises():
     with pytest.raises(KeyError):
         config.prompt("design-reply-approve")
+
+
+def test_muster_cli_names_the_command_for_each_mode(standalone_home, monkeypatch):
+    monkeypatch.setattr(config, "hermes_bin", lambda: HERMES)
+    assert config.muster_cli() == f"{HERMES} muster"
+    monkeypatch.setattr(config, "standalone", True)
+    assert config.muster_cli() == "/bin/muster"
+
+
+def test_the_standalone_briefs_tell_the_agent_to_run_muster(standalone_home, monkeypatch):
+    monkeypatch.setattr(config, "standalone", True)
+    texts = [intake.brief("o/r", 1, True), adhoc.footer({"card": "t_1", "repo": "o/r", "branch": "feat/a", "base": "main"}),
+             hold.wire({"repo": "o/r", "issue": 9, "candidates": [{"issue": 5, "card": "t_5"}], "reason": "r",
+                        "card": "t_h", "event": "e1"}),
+             decisions.wire_text({"origin": None, "id": "r1", "cycle": 1, "pr": "https://github.com/o/r/pull/1"},
+                                 {"kind": "issue"}, "text")]
+    for text in texts:
+        assert "/bin/muster hook" in text
+        assert "hermes muster" not in text

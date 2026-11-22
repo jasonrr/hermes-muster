@@ -39,6 +39,8 @@ def gateway_up():
     A multiplexed profile has no status file of its own. Ask Hermes for its serving host;
     prefer the profile's adapter, otherwise use the host's shared transport (e.g. Slack).
     """
+    if config.standalone:  # muster presents requests itself, through `muster decisions`
+        return True
     try:
         from gateway import status
         from hermes_constants import get_hermes_home
@@ -921,7 +923,7 @@ def activate(req, head, repo=None):
 
 
 def wire_text(req, run, text):
-    tail = "\n\n" + (config.prompt("build-revision-issue", hermes=config.hermes_bin(), pr=req["pr"])
+    tail = "\n\n" + (config.prompt("build-revision-issue", muster=config.muster_cli(), pr=req["pr"])
                       if run.get("kind") == "issue" else config.prompt("build-revision-ad-hoc"))
     return config.prompt("build-revision", request=req.get("origin") or req["id"], cycle=req["cycle"],
                          feedback=json.dumps(text + tail, ensure_ascii=True))

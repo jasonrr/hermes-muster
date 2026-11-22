@@ -1,0 +1,397 @@
+import argparse
+import json
+import os
+import sys
+import time
+
+import pytest
+
+from muster import cli, config, core, decisions, events, inbox, ledger, runs
+
+PROPOSAL = {"version": 1, "sha": "a" * 12}
+
+
+@pytest.fixture
+def home(standalone_home):
+    config.load_file()  # flag on: requests and cards live under MUSTER_HOME
+    return standalone_home
+
+
+def run(capsys, *argv):
+    code = cli.standalone(list(argv))
+    out = capsys.readouterr()
+    return code, out.out, out.err
+
+
+def question(**extra):
+    q = {"text": "Which db?", "header": "DB", "multi": False,
+         "options": [{"label": "pg", "description": ""}, {"label": "sqlite", "description": ""}]}
+    return decisions.create("question", "t_1", questions=[q], choices=[["pg", "sqlite"]], alive=time.time(), **extra)
+
+
+def build():
+    labels = ["Merge pr", "Send back…", "Leave PR open"]
+    return decisions.create("build", "t_1", run={}, pr="u", head="h", actions=["merge", "send-back", "nothing"],
+                            choices=[labels], questions=[{"text": "Merge?", "header": "Build", "multi": False,
+                                                          "options": [{"label": x} for x in labels]}])
+
+
+def card(key, status="ready"):
+    made = json.loads(ledger.call(config.settings["board"], ["create", "--idempotency-key", key, "--json", "--", key]))
+    if status != "ready":
+        ledger.call(config.settings["board"], ["complete", made["id"], "--summary", "s"])
+    return made
+
+
+def test_a_question_is_listed_and_answered_by_choice(home, capsys):
+    rid = question()["id"]
+    code, out, _ = run(capsys, "decisions", "list", "--json")
+    listed = json.loads(out)["requests"]
+    assert code == 0 and [r["id"] for r in listed] == [rid] and listed[0]["choices"] == [["pg", "sqlite"]]
+    assert run(capsys, "decisions", "answer", rid, "--choice", "sqlite")[0] == 0
+    req = decisions.load(rid)
+    assert req["status"] == "answered" and req["answer"] == {"Which db?": "sqlite"}
+
+
+def test_free_text_answers_the_only_question(home, capsys):
+    rid = question()["id"]
+    assert run(capsys, "decisions", "answer", rid, "--text=-- use duckdb")[0] == 0
+    assert decisions.load(rid)["answer"] == {"Which db?": "-- use duckdb"}
+
+
+def test_a_wrong_label_records_nothing(home, capsys):
+    rid = question()["id"]
+    code, _, err = run(capsys, "decisions", "answer", rid, "--choice", "mysql")
+    assert code == 2 and err
+    req = decisions.load(rid)
+    assert req["status"] == "open" and "partial" not in req
+
+
+def test_a_multi_select_takes_a_json_array_of_labels(home, capsys):
+    rid = question()["id"]
+    decisions.update(rid, questions=[{**decisions.load(rid)["questions"][0], "multi": True}])
+    assert run(capsys, "decisions", "answer", rid, "--choice", '["pg", "mysql"]')[0] == 2
+    assert run(capsys, "decisions", "answer", rid, "--choice", '["pg", "sqlite"]')[0] == 0
+    assert decisions.load(rid)["answer"] == {"Which db?": "pg, sqlite"}
+
+
+def test_a_permission_deny_with_a_message_reads_back(home, capsys):
+    rid = decisions.create("permission", "t_1", tool={"name": "Bash"}, alive=time.time())["id"]
+    assert run(capsys, "decisions", "answer", rid, "--deny", "--message", "no")[0] == 0
+    assert decisions.load(rid)["answer"] == {"decision": "deny", "message": "no"}
+    other = decisions.create("permission", "t_1", tool={"name": "Bash"}, alive=time.time())["id"]
+    assert run(capsys, "decisions", "answer", other, "--choice", "x")[0] == 2
+    assert run(capsys, "decisions", "answer", other, "--allow")[0] == 0
+    assert decisions.load(other)["answer"] == {"decision": "allow"}
+
+
+def test_allow_on_a_question_is_refused(home, capsys):
+    rid = question()["id"]
+    assert run(capsys, "decisions", "answer", rid, "--allow")[0] == 2
+    assert decisions.load(rid)["status"] == "open"
+
+
+def test_a_builder_pane_cannot_answer(home, capsys, monkeypatch):
+    rid = question()["id"]
+    monkeypatch.setenv("MUSTER_PANE", "1")
+    code, _, err = run(capsys, "decisions", "answer", rid, "--choice", "pg")
+    assert code == 2 and "pane" in err and decisions.load(rid)["status"] == "open"
+    assert run(capsys, "ledger", "show", "t_x")[0] == 2
+
+
+def test_answer_under_hermes_exits_2_and_records_nothing(home, capsys):
+    rid = question()["id"]
+    config.standalone = False
+    args = argparse.ArgumentParser()
+    cli.setup(args)
+    code = inbox.main(args.parse_args(["decisions", "answer", rid, "--choice", "pg"]))
+    config.standalone = True
+    assert code == 2 and "chat channel" in capsys.readouterr().err
+    assert decisions.load(rid)["status"] == "open"
+
+
+def test_a_bad_id_exits_2(home, capsys):
+    for argv in (["show", "../x"], ["answer", "XYZ", "--allow"]):
+        assert run(capsys, "decisions", *argv)[0] == 2
+    assert run(capsys, "decisions", "show", "0" * 16)[0] == 2
+
+
+def test_show_prints_the_request(home, capsys):
+    rid = question()["id"]
+    assert json.loads(run(capsys, "decisions", "show", rid)[1])["id"] == rid
+
+
+def test_a_stale_question_is_ended_not_answered(home, capsys):
+    rid = question()["id"]
+    decisions.update(rid, alive=time.time() - 3600)
+    code, out, _ = run(capsys, "decisions", "answer", rid, "--choice", "pg")
+    assert code == 1 and "stopped waiting" in out
+    assert decisions.load(rid)["status"] == "stale"
+
+
+def test_a_build_left_open_ends_done(home, capsys, monkeypatch):
+    monkeypatch.setattr(decisions, "obsolete", lambda req: None)
+    rid = build()["id"]
+    code, out, _ = run(capsys, "decisions", "answer", rid, "--choice", "Leave PR open")
+    assert code == 0 and "done" in out
+    assert decisions.load(rid)["status"] == "done"
+
+
+def test_an_obsolete_build_is_staled_not_answered(home, capsys, monkeypatch):
+    monkeypatch.setattr(decisions, "obsolete", lambda req: "u is MERGED")
+    rid = build()["id"]
+    code, out, _ = run(capsys, "decisions", "answer", rid, "--choice", "Leave PR open")
+    assert code == 1 and "u is MERGED" in out
+    assert decisions.load(rid)["outcome"] == "Not shown: u is MERGED"
+
+
+def test_answering_twice_says_so(home, capsys):
+    rid = question()["id"]
+    run(capsys, "decisions", "answer", rid, "--choice", "pg")
+    code, out, _ = run(capsys, "decisions", "answer", rid, "--choice", "sqlite")
+    assert code == 1 and "already answered" in out
+    assert decisions.load(rid)["answer"] == {"Which db?": "pg"}
+
+
+def test_a_design_card_without_a_request_is_a_review_until_one_exists(home, capsys, monkeypatch):
+    monkeypatch.setattr(events, "versions", lambda ledger: [1])
+    made = card(f"design:t_1:v1:{PROPOSAL['sha']}", "done")
+    reviews = json.loads(run(capsys, "decisions", "list", "--json")[1])["reviews"]
+    assert reviews == [{"kind": "design", "ledger": "t_1", "proposal": f"v1:{PROPOSAL['sha']}", "card": made["id"]}]
+    decisions.create("design", "t_1", proposal=PROPOSAL)
+    assert json.loads(run(capsys, "decisions", "list", "--json")[1])["reviews"] == []
+
+
+def test_a_superseded_design_card_is_not_a_review(home, capsys, monkeypatch):
+    monkeypatch.setattr(events, "versions", lambda ledger: [1, 2])
+    card(f"design:t_1:v1:{PROPOSAL['sha']}", "done")
+    assert json.loads(run(capsys, "decisions", "list", "--json")[1])["reviews"] == []
+
+
+def test_a_design_the_builder_was_asked_directly_is_not_a_review(home, capsys, monkeypatch):
+    monkeypatch.setattr(events, "versions", lambda ledger: [1])
+    card(f"design:t_1:v1:{PROPOSAL['sha']}", "done")
+    rid = question(proposal=PROPOSAL)["id"]
+    decisions.transition(rid, ("open",), "answered", answer={})
+    assert json.loads(run(capsys, "decisions", "list", "--json")[1])["reviews"] == []
+
+
+def test_a_finished_run_without_a_build_request_is_a_review(home, capsys):
+    made = card("run", "done")
+    (config.data_dir() / "runs" / made["id"]).mkdir(parents=True)
+    (config.data_dir() / "runs" / made["id"] / "run.json").write_text("{}")
+    reviews = json.loads(run(capsys, "decisions", "list", "--json")[1])["reviews"]
+    assert [(r["kind"], r["ledger"]) for r in reviews] == [("build", made["id"])]
+    decisions.create("build", made["id"], head="h")
+    assert json.loads(run(capsys, "decisions", "list", "--json")[1])["reviews"] == []
+
+
+def test_a_closed_run_is_still_a_review_until_a_request_exists(home, capsys):
+    made = card("run", "done")
+    (config.data_dir() / "runs" / made["id"]).mkdir(parents=True)
+    (config.data_dir() / "runs" / made["id"] / "run.json").write_text('{"closed": true}')
+    reviews = json.loads(run(capsys, "decisions", "list", "--json")[1])["reviews"]
+    assert [(r["kind"], r["ledger"]) for r in reviews] == [("build", made["id"])]
+
+
+def test_display_without_hermes_fails_when_the_flag_is_off(monkeypatch):
+    monkeypatch.setattr(config, "standalone", False)
+    monkeypatch.setitem(sys.modules, "agent.redact", None)
+    with pytest.raises(ImportError):
+        core.display("token ghp_abc123 here")
+
+
+def test_a_malformed_review_key_and_a_foreign_ledger_file_are_skipped(home, capsys):
+    card("review:abc")
+    made = card("ok", "done")
+    (config.data_dir() / "runs" / made["id"]).mkdir(parents=True)
+    (config.data_dir() / "runs" / made["id"] / "run.json").write_text("{}")
+    root = ledger.root(config.settings["board"])
+    (root / "junk.json").write_text("{not json")
+    (root / "t_00000000.json").write_text("{}")  # no created_at
+    reviews = json.loads(run(capsys, "decisions", "list", "--json")[1])["reviews"]
+    assert [r["ledger"] for r in reviews] == [made["id"]]
+
+
+def test_a_revised_review_card_is_a_review_until_its_head_has_a_request(home, capsys):
+    made = card("review:t_1:abc123")
+    reviews = json.loads(run(capsys, "decisions", "list", "--json")[1])["reviews"]
+    assert reviews == [{"kind": "build", "ledger": "t_1", "head": "abc123", "card": made["id"]}]
+    decisions.create("build", "t_1", head="abc123")
+    assert json.loads(run(capsys, "decisions", "list", "--json")[1])["reviews"] == []
+
+
+def test_a_blocked_card_is_listed_with_its_reason(home, capsys):
+    made = card("k")
+    ledger.call(config.settings["board"], ["block", made["id"], "launch failed", "--kind", "capability"])
+    blocked = json.loads(run(capsys, "decisions", "list", "--json")[1])["blocked"]
+    assert blocked == [{"card": made["id"], "title": "k", "block_kind": "capability", "reason": "launch failed"}]
+    assert "launch failed" in run(capsys, "decisions", "list")[1]
+
+
+def test_ledger_shows_a_card(home, capsys):
+    made = card("k")
+    code, out, _ = run(capsys, "ledger", "show", made["id"], "--json")
+    assert code == 0 and json.loads(out)["task"]["id"] == made["id"]
+
+
+def test_ledger_under_hermes_is_refused(home, capsys):
+    config.standalone = False
+    args = argparse.ArgumentParser()
+    cli.setup(args)
+    assert inbox.ledger_cmd(args.parse_args(["ledger", "show", "t_1"])) == 2
+    assert "hermes kanban" in capsys.readouterr().err
+
+
+def test_display_redacts_a_token_without_hermes(monkeypatch):
+    monkeypatch.setattr(config, "standalone", True)
+    monkeypatch.setitem(sys.modules, "agent.redact", None)
+    assert core.display("token ghp_abc123 here") == "token [redacted] here"
+
+
+def two_questions():
+    rid = question()["id"]
+    qs = decisions.load(rid)["questions"]
+    decisions.update(rid, questions=qs + [{**qs[0], "text": "Which cache?"}], choices=[["pg", "sqlite"]] * 2)
+    return rid
+
+
+def test_rerunning_a_two_question_answer_fills_the_missing_slot(home, capsys):
+    rid = two_questions()
+    decisions.answer_part(rid, 0, ["pg", [0]], 2, lambda parts: {})
+    code, out, _ = run(capsys, "decisions", "answer", rid, "--choice", "pg", "--choice", "sqlite")
+    assert code == 0 and "answered" in out
+    assert decisions.load(rid)["answer"] == {"Which db?": "pg", "Which cache?": "sqlite"}
+
+
+def approval(proposal=PROPOSAL):
+    from muster import claude
+
+    rid = question(proposal=proposal)["id"]
+    req = decisions.load(rid)
+    decisions.update(rid, questions=[{**req["questions"][0], "header": claude.APPROVAL}])
+    return rid
+
+
+def test_an_approval_a_design_request_covers_is_hidden_and_refused(home, capsys):
+    rid = approval()
+    assert [r["id"] for r in json.loads(run(capsys, "decisions", "list", "--json")[1])["requests"]] == [rid]
+    decisions.create("design", "t_1", proposal=PROPOSAL)
+    assert rid not in [r["id"] for r in json.loads(run(capsys, "decisions", "list", "--json")[1])["requests"]]
+    code, _, err = run(capsys, "decisions", "answer", rid, "--choice", "pg")
+    assert code == 2 and "design request" in err and decisions.load(rid)["status"] == "open"
+
+
+def test_a_malformed_design_key_or_corrupt_run_record_does_not_break_list(home, capsys):
+    card("design:t_1:vx:abc", "done")
+    card("design:short", "done")
+    made = card("run", "done")
+    (config.data_dir() / "runs" / made["id"]).mkdir(parents=True)
+    (config.data_dir() / "runs" / made["id"] / "run.json").write_text("{not json")
+    code, out, _ = run(capsys, "decisions", "list", "--json")
+    assert code == 0 and json.loads(out)["reviews"] == []
+
+
+def test_a_failed_execution_exits_1(home, capsys, monkeypatch):
+    monkeypatch.setattr(decisions, "obsolete", lambda req: None)
+    rid = build()["id"]
+    monkeypatch.setattr(decisions, "execute", lambda rid, boot: decisions.transition(
+        rid, ("answered",), "failed", outcome="gh refused"))
+    code, out, _ = run(capsys, "decisions", "answer", rid, "--choice", "Leave PR open")
+    assert code == 1 and "failed" in out
+
+
+def test_an_empty_multi_select_is_refused(home, capsys):
+    rid = question()["id"]
+    decisions.update(rid, questions=[{**decisions.load(rid)["questions"][0], "multi": True}])
+    assert run(capsys, "decisions", "answer", rid, "--choice", "[]")[0] == 2
+    assert decisions.load(rid)["status"] == "open"
+
+
+def test_show_on_an_unreadable_request_exits_2(home, capsys):
+    rid = question()["id"]
+    (config.data_dir() / "decisions" / f"{rid}.json").write_text("{not json")
+    code, _, err = run(capsys, "decisions", "show", rid)
+    assert code == 2 and "unreadable" in err
+
+
+def test_sweep_stales_a_dead_question_and_keeps_a_fresh_one(home):
+    old = question()["id"]
+    decisions.update(old, alive=time.time() - 10_000)
+    fresh = question()["id"]
+    inbox.sweep()
+    assert decisions.load(old)["status"] == "stale" and decisions.load(fresh)["status"] == "open"
+
+
+def test_sweep_stales_a_build_whose_pull_request_moved_on(home, monkeypatch):
+    rid = build()["id"]
+    monkeypatch.setattr(decisions, "obsolete", lambda req: "u is MERGED, not OPEN")
+    inbox.sweep()
+    assert decisions.load(rid)["status"] == "stale"
+
+
+def test_sweep_executes_an_answered_build(home):
+    rid = build()["id"]
+    decisions.transition(rid, ("open",), "answered", answer={"action": "nothing"})
+    inbox.sweep()
+    assert decisions.load(rid)["status"] == "done"
+
+
+def test_sweep_leaves_a_request_a_live_answer_command_is_running(home):
+    rid = build()["id"]
+    decisions.transition(rid, ("open",), "executing", executing_boot=f"cli:{os.getpid()}")
+    inbox.sweep()
+    assert decisions.load(rid)["status"] == "executing"
+
+
+def test_sweep_recovers_a_request_whose_answer_command_died(home, monkeypatch):
+    rid = build()["id"]
+    decisions.transition(rid, ("open",), "executing", executing_boot="cli:99999999")
+    seen = []
+    monkeypatch.setattr(decisions, "recover", lambda req: seen.append(req["id"]))
+    inbox.sweep()
+    assert seen == [rid]
+
+
+def test_flush_sweeps_only_in_standalone(standalone_home, monkeypatch):
+    def boom():
+        raise AssertionError("sweep ran")
+    monkeypatch.setattr(inbox, "sweep", boom)
+    assert runs.flush() == 0  # flag off
+    config.load_file()
+    with pytest.raises(AssertionError):
+        runs.flush()
+
+
+def test_sweep_does_not_recover_a_request_that_finished_since_the_snapshot(home, monkeypatch):
+    rid = build()["id"]
+    decisions.transition(rid, ("open",), "executing", executing_boot="cli:99999999")
+    snapshot = decisions.load(rid)
+    decisions.transition(rid, ("executing",), "done", outcome="finished")
+    monkeypatch.setattr(decisions, "open_requests", lambda: [snapshot])
+    monkeypatch.setattr(decisions, "recover", lambda req: pytest.fail("recovered a finished request"))
+    inbox.sweep()
+
+
+def test_sweep_settles_an_executing_design(home, monkeypatch):
+    rid = decisions.create("design", "t_1", proposal=PROPOSAL)["id"]
+    decisions.transition(rid, ("open",), "executing", executing_boot="cli:1")
+    seen = []
+    monkeypatch.setattr(decisions, "settle_design", lambda req: seen.append(req["id"]))
+    inbox.sweep()
+    assert seen == [rid]
+
+
+def test_sweep_goes_on_after_a_request_raises(home, monkeypatch):
+    first, second = build()["id"], build()["id"]
+    for rid in (first, second):
+        decisions.transition(rid, ("open",), "answered", answer={"action": "nothing"})
+    real = decisions.execute
+
+    def execute(rid, boot=""):
+        if rid == first:
+            raise RuntimeError("boom")
+        real(rid, boot)
+    monkeypatch.setattr(decisions, "execute", execute)
+    inbox.sweep()
+    assert decisions.load(second)["status"] == "done"

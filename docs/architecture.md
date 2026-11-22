@@ -47,8 +47,19 @@ The three processes share no memory. They communicate only through files under `
 | `conversation` | A run's topic or thread, and where its messages go |
 | `progress` | The evidence behind each run's status message |
 | `cleanup` | Close finished workspaces, after backing up unsaved work (Git preservation lives here) |
+| `ledger` | Standalone only: the card ledger as one JSON file per card, with the verbs of `hermes kanban` |
+| `inbox` | Standalone only: `muster decisions list\|show\|answer`, `muster ledger`, and the sweep `flush` runs |
 | `claude` | The Claude Code adapter: launch arguments, hook settings, and payload parsing |
 | `hermes_private` | The only module that touches private Hermes names (see [AGENTS.md](../AGENTS.md)) |
+
+## Two backends
+
+`config.standalone` picks the backend. `hermes muster` leaves it `False`: the ledger is `hermes kanban`, settings come
+from the plugin context, and the gateway shows decisions in Telegram or Slack. The `muster` command sets it `True`
+(`cli.standalone`): `core.kanban()` calls `ledger.py` instead of `hermes kanban`, settings come from
+`$MUSTER_HOME/config.toml`, and `inbox.py` lists and answers decisions. `inbox.sweep` runs the gateway's channel-free
+housekeeping from `muster flush`. `tests/test_kanban_contract.py` runs on both backends, so they cannot drift. The
+design is in [`docs/decisions/2026-11-21-standalone-muster.md`](decisions/2026-11-21-standalone-muster.md).
 
 ## Where durable state lives
 

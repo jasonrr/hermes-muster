@@ -4,6 +4,16 @@ version = "0.1.0"
 description = "A Hermes plugin that brings human-directed coding agents into your workflow, from dispatch and design approval through review and cleanup, with decisions in Telegram or Slack and the work visible in herdr or Orca."
 requires-python = ">=3.11"
 
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project.scripts]
+muster = "muster.cli:standalone"
+
+[tool.setuptools]
+packages = ["muster", "muster.channels", "muster.hosts"]
+
 [dependency-groups]
 dev = ["pytest>=8"]
 
