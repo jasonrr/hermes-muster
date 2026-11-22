@@ -225,3 +225,69 @@ def test_ledger_under_hermes_is_refused(home, capsys):
 def test_display_redacts_a_token_without_hermes(monkeypatch):
     monkeypatch.setitem(sys.modules, "agent.redact", None)
     assert core.display("token ghp_abc123 here") == "token [redacted] here"
+
+
+def two_questions():
+    rid = question()["id"]
+    qs = decisions.load(rid)["questions"]
+    decisions.update(rid, questions=qs + [{**qs[0], "text": "Which cache?"}], choices=[["pg", "sqlite"]] * 2)
+    return rid
+
+
+def test_rerunning_a_two_question_answer_fills_the_missing_slot(home, capsys):
+    rid = two_questions()
+    decisions.answer_part(rid, 0, ["pg", [0]], 2, lambda parts: {})
+    code, out, _ = run(capsys, "decisions", "answer", rid, "--choice", "pg", "--choice", "sqlite")
+    assert code == 0 and "answered" in out
+    assert decisions.load(rid)["answer"] == {"Which db?": "pg", "Which cache?": "sqlite"}
+
+
+def approval(proposal=PROPOSAL):
+    from muster import claude
+
+    rid = question(proposal=proposal)["id"]
+    req = decisions.load(rid)
+    decisions.update(rid, questions=[{**req["questions"][0], "header": claude.APPROVAL}])
+    return rid
+
+
+def test_an_approval_a_design_request_covers_is_hidden_and_refused(home, capsys):
+    rid = approval()
+    assert [r["id"] for r in json.loads(run(capsys, "decisions", "list", "--json")[1])["requests"]] == [rid]
+    decisions.create("design", "t_1", proposal=PROPOSAL)
+    assert rid not in [r["id"] for r in json.loads(run(capsys, "decisions", "list", "--json")[1])["requests"]]
+    code, _, err = run(capsys, "decisions", "answer", rid, "--choice", "pg")
+    assert code == 2 and "design request" in err and decisions.load(rid)["status"] == "open"
+
+
+def test_a_malformed_design_key_or_corrupt_run_record_does_not_break_list(home, capsys):
+    card("design:t_1:vx:abc", "done")
+    card("design:short", "done")
+    made = card("run", "done")
+    (config.data_dir() / "runs" / made["id"]).mkdir(parents=True)
+    (config.data_dir() / "runs" / made["id"] / "run.json").write_text("{not json")
+    code, out, _ = run(capsys, "decisions", "list", "--json")
+    assert code == 0 and json.loads(out)["reviews"] == []
+
+
+def test_a_failed_execution_exits_1(home, capsys, monkeypatch):
+    monkeypatch.setattr(decisions, "obsolete", lambda req: None)
+    rid = build()["id"]
+    monkeypatch.setattr(decisions, "execute", lambda rid, boot: decisions.transition(
+        rid, ("answered",), "failed", outcome="gh refused"))
+    code, out, _ = run(capsys, "decisions", "answer", rid, "--choice", "Leave PR open")
+    assert code == 1 and "failed" in out
+
+
+def test_an_empty_multi_select_is_refused(home, capsys):
+    rid = question()["id"]
+    decisions.update(rid, questions=[{**decisions.load(rid)["questions"][0], "multi": True}])
+    assert run(capsys, "decisions", "answer", rid, "--choice", "[]")[0] == 2
+    assert decisions.load(rid)["status"] == "open"
+
+
+def test_show_on_an_unreadable_request_exits_2(home, capsys):
+    rid = question()["id"]
+    (config.data_dir() / "decisions" / f"{rid}.json").write_text("{not json")
+    code, _, err = run(capsys, "decisions", "show", rid)
+    assert code == 2 and "unreadable" in err

@@ -20,18 +20,37 @@ def fail(message, code=2):
     return code
 
 
+def covered_slot(req):
+    """The builder's Approval question a design request of the same version stands in for (the channels hide it: the
+    design request decides it), else None."""
+    slot = decisions.approval_slot(req)
+    if slot is None or str(slot) in (req.get("partial") or {}):
+        return None
+    return slot if any(r["status"] == "open" and r.get("proposal") == req["proposal"]
+                       for r in decisions.for_ledger(req["ledger"], "design")) else None
+
+
+def shown(req):
+    slot = covered_slot(req)
+    return not (slot is not None and all(n == slot or str(n) in (req.get("partial") or {})
+                                         for n in range(len(req["questions"]))))
+
+
 def requests():
     return [{"id": r["id"], "kind": r["kind"], "ledger": r["ledger"], "run": r.get("run"),
              "questions": r.get("questions") or [], "choices": r.get("choices") or [], "actions": r.get("actions"),
              "recommended": r.get("recommended"), "card": r.get("card"), "tool": r.get("tool")}
-            for r in decisions.open_requests() if r["status"] == "open"]
+            for r in decisions.open_requests() if r["status"] == "open" and shown(r)]
 
 
 def reviewed_run(card):
     """Whether this done card is a run still awaiting its first review: its record exists and is not closed."""
     for path in (config.data_dir() / "runs" / card / "run.json", config.data_dir() / "intake" / card / "launch.json"):
         if path.is_file():
-            return not json.loads(path.read_text()).get("closed")
+            try:
+                return not json.loads(path.read_text()).get("closed")
+            except (OSError, ValueError):
+                return False  # a corrupt record is skipped, not a reason to hide every other card
     return False
 
 
@@ -50,7 +69,9 @@ def reviews(cards):
     for card in cards:
         key, status = card.get("key") or "", card["status"]
         if key.startswith("design:"):
-            _, led, v, sha = key.split(":")
+            _, led, v, sha = (key.split(":", 3) + [""] * 4)[:4]
+            if not v[1:].isdigit():
+                continue  # a malformed key is skipped, not a reason to hide every other card
             pin = {"version": int(v[1:]), "sha": sha}
             if (pin["version"] == (events.versions(led) or [0])[-1]
                     and not any(r.get("kind") == "design" and r.get("ledger") == led and r.get("proposal") == pin
@@ -99,6 +120,8 @@ def show(args):
         print(json.dumps(decisions.load(args.id), indent=2))
     except FileNotFoundError:
         return fail(f"no request {args.id}")
+    except ValueError as error:
+        return fail(f"request {args.id} is unreadable: {error}")
 
 
 def stale(req):
@@ -119,8 +142,8 @@ def values(req, args):
     if len(args.choice or []) != count:
         return f"give --choice once per question ({count})"
     for n, value in enumerate(args.choice):
-        if gateway.shape(req, n, value)[1] is None:
-            return f"{value!r} is not one of {req['choices'][n]}"
+        if gateway.shape(req, n, value)[1] in (None, []):  # free text, or an empty multi-select
+            return f"{value!r} is not a non-empty selection from {req['choices'][n]}"
     return args.choice
 
 
@@ -146,25 +169,30 @@ def answer(args):
         got = values(req, args)
         if isinstance(got, str):
             return fail(got)
+    if kind == "question" and covered_slot(req) is not None:
+        return fail("the design request decides this design: answer that one")
     if req["status"] == "open" and (why := stale(req)):
         print(why)
         return 1
     if kind == "permission":
         result = "completed" if decisions.transition(rid, ("open",), "answered", answer=got)[1] else "closed"
     else:
-        total = len(req["questions"])
+        total, results = len(req["questions"]), []
         for n, value in enumerate(got):
             _, result = decisions.answer_part(rid, n, gateway.shape(req, n, value), total,
                                               lambda parts: gateway.compose(req, parts))
-            if result in ("closed", "duplicate"):
+            if result == "closed":
                 break
-    if result not in ("accepted", "completed"):
+            results.append(result)  # a "duplicate" slot was answered before: the rest still count
+        result = "completed" if "completed" in results else "accepted" if "accepted" in results else "closed"
+    if result == "closed":
         print("already answered or ended")
         return 1
     if result == "completed" and kind in ("build", "feedback", "design"):
         decisions.execute(rid, f"cli:{os.getpid()}")
     final = decisions.load(rid)
     print(f"{final['status']}: {final.get('outcome') or ''}".rstrip(": "))
+    return 1 if final["status"] == "failed" else 0
 
 
 def main(args):
