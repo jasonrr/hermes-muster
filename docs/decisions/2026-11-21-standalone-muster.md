@@ -58,3 +58,4 @@ largest Hermes need.
 
 - T1 commit 5823e50, e03d97a — deviation: review fixes (unreadable config.toml is a ConfigError; MUSTER_HOME made absolute so panes in worktrees find it); .gitignore gains *.egg-info/ from the editable install — parked: none
 - T2 commit 0f0501b, 723cfc6 — deviation: review fix (block --kind restricted to the four kinds Hermes accepts); created_by stored as "" when omitted — parked: https://github.com/jasonrr/hermes-muster/issues/90
+- T3 commit c9b915c, f6c242e — deviation: dropped the unused hermes= kwarg from adhoc.footer; review fix added standalone tests for the propose and recover text — parked: none
