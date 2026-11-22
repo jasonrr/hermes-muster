@@ -14,7 +14,6 @@ import time
 
 from . import config, core
 
-
 KINDS = ("capability", "dependency", "needs_input", "transient")  # what `hermes kanban block --kind` accepts
 
 
