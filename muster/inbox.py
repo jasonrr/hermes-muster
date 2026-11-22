@@ -3,6 +3,7 @@
 Standalone has no chat channel, so the person (or the coordinator for them) lists the open requests and answers them
 here, through the same request files and the same gateway.shape/compose the channels use."""
 
+import fcntl
 import json
 import os
 import re
@@ -132,6 +133,45 @@ def stale(req):
     if req["kind"] in ("build", "feedback") and (why := decisions.obsolete(req)):
         decisions.transition(req["id"], ("open",), "stale", outcome=f"Not shown: {why}")
         return f"Not shown: {why}"
+
+
+def running(boot):
+    """Whether the `cli:<pid>` that took a request is still alive; any other boot value counts as alive."""
+    if not str(boot).startswith("cli:"):
+        return True
+    try:
+        os.kill(int(boot[4:]), 0)
+    except ProcessLookupError:
+        return False
+    except (ValueError, PermissionError):
+        pass
+    return True
+
+
+def sweep():
+    """The gateway scan's housekeeping, for standalone's `muster flush`: stale dead requests, settle and execute the
+    answered ones, recover what a dead `answer` command left executing. One sweep at a time; busy: the next flush."""
+    path = decisions.root() / "sweep.lock"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return
+        for req in decisions.open_requests():
+            rid, kind, status = req["id"], req["kind"], req["status"]
+            try:
+                if (kind in ("question", "permission") or status == "open") and stale(req):
+                    continue
+                if kind == "design" and status == "executing":
+                    decisions.settle_design(req)
+                elif kind in ("build", "feedback", "design") and status == "answered":
+                    decisions.execute(rid, f"cli:{os.getpid()}")
+                elif kind in ("build", "feedback") and status == "executing" and not running(req.get("executing_boot", "")):
+                    # ponytail: a cli:<pid> whose pid was reused after a reboot stays executing; add a start-time check if seen
+                    decisions.recover(req)
+            except Exception as caught:  # noqa: BLE001 - one poisoned request must not stop the others
+                core.log("decisions", f"sweep {rid}: {caught!r}")
 
 
 def values(req, args):

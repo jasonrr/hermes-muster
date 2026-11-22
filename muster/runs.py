@@ -222,4 +222,8 @@ def flush(args=None):
                         core.save_json(directory / "run.json", {**load(card), "closed": True})
             except ERRORS as error:
                 log(f"{card} flush: {error}")
+    if config.standalone:  # no gateway scan runs the requests' housekeeping; after the lock: execute can take a while
+        from . import inbox  # lazy: inbox imports gateway
+
+        inbox.sweep()
     return 0

@@ -1,11 +1,12 @@
 import argparse
 import json
+import os
 import sys
 import time
 
 import pytest
 
-from muster import cli, config, core, decisions, events, inbox, ledger
+from muster import cli, config, core, decisions, events, inbox, ledger, runs
 
 PROPOSAL = {"version": 1, "sha": "a" * 12}
 
@@ -291,3 +292,51 @@ def test_show_on_an_unreadable_request_exits_2(home, capsys):
     (config.data_dir() / "decisions" / f"{rid}.json").write_text("{not json")
     code, _, err = run(capsys, "decisions", "show", rid)
     assert code == 2 and "unreadable" in err
+
+
+def test_sweep_stales_a_dead_question_and_keeps_a_fresh_one(home):
+    old = question()["id"]
+    decisions.update(old, alive=time.time() - 10_000)
+    fresh = question()["id"]
+    inbox.sweep()
+    assert decisions.load(old)["status"] == "stale" and decisions.load(fresh)["status"] == "open"
+
+
+def test_sweep_stales_a_build_whose_pull_request_moved_on(home, monkeypatch):
+    rid = build()["id"]
+    monkeypatch.setattr(decisions, "obsolete", lambda req: "u is MERGED, not OPEN")
+    inbox.sweep()
+    assert decisions.load(rid)["status"] == "stale"
+
+
+def test_sweep_executes_an_answered_build(home):
+    rid = build()["id"]
+    decisions.transition(rid, ("open",), "answered", answer={"action": "nothing"})
+    inbox.sweep()
+    assert decisions.load(rid)["status"] == "done"
+
+
+def test_sweep_leaves_a_request_a_live_answer_command_is_running(home):
+    rid = build()["id"]
+    decisions.transition(rid, ("open",), "executing", executing_boot=f"cli:{os.getpid()}")
+    inbox.sweep()
+    assert decisions.load(rid)["status"] == "executing"
+
+
+def test_sweep_recovers_a_request_whose_answer_command_died(home, monkeypatch):
+    rid = build()["id"]
+    decisions.transition(rid, ("open",), "executing", executing_boot="cli:99999999")
+    seen = []
+    monkeypatch.setattr(decisions, "recover", lambda req: seen.append(req["id"]))
+    inbox.sweep()
+    assert seen == [rid]
+
+
+def test_flush_sweeps_only_in_standalone(standalone_home, monkeypatch):
+    def boom():
+        raise AssertionError("sweep ran")
+    monkeypatch.setattr(inbox, "sweep", boom)
+    assert runs.flush() == 0  # flag off
+    config.load_file()
+    with pytest.raises(AssertionError):
+        runs.flush()
