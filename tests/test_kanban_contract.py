@@ -246,3 +246,9 @@ def test_a_bad_argv_is_a_command_error_and_an_unknown_card_says_so(tmp_path, mon
         ledger.call("muster", [])
     with pytest.raises(core.CommandError, match="no such task"):
         ledger.call("muster", ["show", "t_nope"])
+
+
+def test_an_unknown_block_kind_is_refused_and_the_card_stays_ready(k):
+    card = new(k)["id"]
+    k("block", "--kind", "bogus", card, "why", ok=False)
+    assert status(k, card) == "ready"

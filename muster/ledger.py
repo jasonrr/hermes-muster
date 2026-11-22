@@ -14,6 +14,9 @@ import time
 from . import config, core
 
 
+KINDS = ("capability", "dependency", "needs_input", "transient")  # what `hermes kanban block --kind` accepts
+
+
 class Parser(argparse.ArgumentParser):
     def error(self, message):  # argparse would print usage and SystemExit
         raise core.CommandError(message)
@@ -72,7 +75,7 @@ def parser():
         for positional in positionals:
             p.add_argument(positional)
         for option in options:
-            p.add_argument("--" + option.replace("_", "-"), dest=option)
+            p.add_argument("--" + option.replace("_", "-"), dest=option, choices=KINDS if option == "kind" else None)
         for option in required:
             p.add_argument("--" + option.replace("_", "-"), dest=option, required=True)
         for flag in flags:
@@ -150,7 +153,10 @@ def unsubscribe(board, a):
 
 
 def call(board, args):
-    a = parser().parse_args(args)
+    try:
+        a = parser().parse_args(args)
+    except argparse.ArgumentError as error:  # exit_on_error=False raises this for a bad choice instead of calling error()
+        raise core.CommandError(str(error)) from None
     with locked(board):
         match a.verb:
             case "create":
