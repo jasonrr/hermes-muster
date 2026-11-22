@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import os
 import subprocess
 import sys
@@ -49,3 +50,18 @@ def sandbox(tmp_path, monkeypatch):
     monkeypatch.setattr(core, "_adapter", None)
     monkeypatch.setattr(orca, "ROOT", str(tmp_path / "orca-workspaces"))
     return tmp_path
+
+
+@pytest.fixture
+def standalone_home(sandbox, monkeypatch):
+    """A MUSTER_HOME whose config.toml holds the sandbox settings; the flag is off until load_file or standalone()
+    turns it on, and is restored afterwards."""
+    home = sandbox / "muster-home"
+    home.mkdir()
+    monkeypatch.setenv("MUSTER_HOME", str(home))
+    monkeypatch.setattr(config, "settings", dict(config.settings))
+    monkeypatch.setattr(config, "standalone", False)
+    monkeypatch.setattr(config, "muster_bin", lambda: "/bin/muster")  # under pytest sys.argv[0] sits in .hermes
+    keys = ("repos", "worktrees", "gh_config_dir", "approver_login", "approver_id")
+    (home / "config.toml").write_text("".join(f"{k} = {json.dumps(config.settings[k])}\n" for k in keys))
+    return home

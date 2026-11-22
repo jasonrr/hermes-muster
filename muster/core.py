@@ -41,6 +41,8 @@ def operating_profile():
     (gateway/run.py _active_profile_name), so a subscription stamped with it is one that gateway delivers. Outside
     Hermes (tests), `default`. The operating_profile setting only confirms it: config and state live in the profile
     that loaded muster, so any other name is refused, never routed to."""
+    if config.standalone:
+        return "default"
     try:
         from hermes_cli.profiles import get_active_profile_name, profile_exists
     except ImportError:
@@ -72,8 +74,13 @@ def hermes_cmd():
     return [config.hermes_bin()]
 
 
+def muster_cmd():
+    """How this muster is called from a shell: `muster` standalone, `hermes [-p profile] muster` under Hermes."""
+    return [config.muster_bin()] if config.standalone else [*hermes_cmd(), "muster"]
+
+
 def hook_cmd():
-    return [*hermes_cmd(), "muster", "hook"]
+    return [*muster_cmd(), "hook"]
 
 
 def intake_dir():

@@ -60,12 +60,21 @@ def setup(parser):
     p.add_argument("--label", required=True)
 
 
+def standalone(argv=None):
+    """The `muster` console command: the same subcommands as `hermes muster`, on the files backend."""
+    import argparse
+
+    parser = argparse.ArgumentParser(prog="muster", description="Human-directed coding agents in terminal panes")
+    setup(parser)
+    return main(parser.parse_args(argv), None)
+
+
 def main(args, ctx):
     is_hook = args.muster_command == "hook"
     # `done`, `propose` and `duplicate` are run by the pane agent, which must see a failure.
     failed = 1 if is_hook and args.event in AGENT_RUN else 0
     try:
-        config.load(ctx)
+        config.load_file() if ctx is None else config.load(ctx)
         from . import core
 
         core.operating_profile()  # a mismatch stops every command and hook here, before any side effect

@@ -39,6 +39,8 @@ def gateway_up():
     A multiplexed profile has no status file of its own. Ask Hermes for its serving host;
     prefer the profile's adapter, otherwise use the host's shared transport (e.g. Slack).
     """
+    if config.standalone:  # muster presents requests itself, through `muster decisions`
+        return True
     try:
         from gateway import status
         from hermes_constants import get_hermes_home
