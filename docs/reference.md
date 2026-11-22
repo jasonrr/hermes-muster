@@ -340,7 +340,7 @@ commands refuse: answer in your chat channel. A builder pane cannot run `answer`
   - a question: `--choice <label>` once per question (a multi-select takes a JSON array), or `--text <words>` for a
     single question. Write `--text=<words>` when the words start with `-`.
   - a permission prompt: `--allow`, or `--deny [--message <reason>]`.
-- `muster ledger <args>` runs the ledger's `show`, `comment` and `complete`, as `hermes kanban --board <board>` would.
+- `muster ledger <args>` runs any `hermes kanban` verb on the ledger (the coordinator mostly needs `show`, `comment` and `complete`), as `hermes kanban --board <board>` would.
 
 `list --json` prints one object:
 

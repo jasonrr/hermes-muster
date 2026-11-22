@@ -73,7 +73,7 @@ def setup(parser):
     how.add_argument("--allow", action="store_true")
     how.add_argument("--deny", action="store_true")
     p.add_argument("--message", help="with --deny: the reason the builder sees")
-    sub.add_parser("ledger", help="the card ledger's show, comment and complete (standalone only)").add_argument(
+    sub.add_parser("ledger", help="the card ledger: the `hermes kanban` verbs (standalone only)").add_argument(
         "args", nargs=argparse.REMAINDER)
 
 

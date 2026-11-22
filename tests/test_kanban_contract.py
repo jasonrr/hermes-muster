@@ -252,3 +252,14 @@ def test_an_unknown_block_kind_is_refused_and_the_card_stays_ready(k):
     card = new(k)["id"]
     k("block", "--kind", "bogus", card, "why", ok=False)
     assert status(k, card) == "ready"
+
+
+def test_a_card_id_that_is_not_a_card_id_never_reaches_a_file(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "standalone", True)
+    monkeypatch.setenv("MUSTER_HOME", str(tmp_path))
+    ledger.root("muster").mkdir(parents=True)
+    (ledger.root("muster").parent / "other.json").write_text("{}")
+    for card in ("../other", "t_zzzzzzzz", "t_1"):
+        for argv in (["show", card], ["comment", card, "x"]):
+            with pytest.raises(core.CommandError, match="no such task"):
+                ledger.call("muster", argv)

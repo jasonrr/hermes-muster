@@ -186,11 +186,31 @@ def test_a_finished_run_without_a_build_request_is_a_review(home, capsys):
     assert json.loads(run(capsys, "decisions", "list", "--json")[1])["reviews"] == []
 
 
-def test_a_closed_run_is_not_a_review(home, capsys):
+def test_a_closed_run_is_still_a_review_until_a_request_exists(home, capsys):
     made = card("run", "done")
     (config.data_dir() / "runs" / made["id"]).mkdir(parents=True)
     (config.data_dir() / "runs" / made["id"] / "run.json").write_text('{"closed": true}')
-    assert json.loads(run(capsys, "decisions", "list", "--json")[1])["reviews"] == []
+    reviews = json.loads(run(capsys, "decisions", "list", "--json")[1])["reviews"]
+    assert [(r["kind"], r["ledger"]) for r in reviews] == [("build", made["id"])]
+
+
+def test_display_without_hermes_fails_when_the_flag_is_off(monkeypatch):
+    monkeypatch.setattr(config, "standalone", False)
+    monkeypatch.setitem(sys.modules, "agent.redact", None)
+    with pytest.raises(ImportError):
+        core.display("token ghp_abc123 here")
+
+
+def test_a_malformed_review_key_and_a_foreign_ledger_file_are_skipped(home, capsys):
+    card("review:abc")
+    made = card("ok", "done")
+    (config.data_dir() / "runs" / made["id"]).mkdir(parents=True)
+    (config.data_dir() / "runs" / made["id"] / "run.json").write_text("{}")
+    root = ledger.root(config.settings["board"])
+    (root / "junk.json").write_text("{not json")
+    (root / "t_00000000.json").write_text("{}")  # no created_at
+    reviews = json.loads(run(capsys, "decisions", "list", "--json")[1])["reviews"]
+    assert [r["ledger"] for r in reviews] == [made["id"]]
 
 
 def test_a_revised_review_card_is_a_review_until_its_head_has_a_request(home, capsys):
@@ -224,6 +244,7 @@ def test_ledger_under_hermes_is_refused(home, capsys):
 
 
 def test_display_redacts_a_token_without_hermes(monkeypatch):
+    monkeypatch.setattr(config, "standalone", True)
     monkeypatch.setitem(sys.modules, "agent.redact", None)
     assert core.display("token ghp_abc123 here") == "token [redacted] here"
 

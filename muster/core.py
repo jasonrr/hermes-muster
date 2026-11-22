@@ -144,7 +144,9 @@ def display(text, prose=False):
     muster's cards reach a shared channel, so `security.redact_secrets: false` does not put a secret there."""
     try:
         from agent.redact import redact_approval_display
-    except ImportError:  # no Hermes (standalone): GitHub token shapes only
+    except ImportError:  # no Hermes (standalone): GitHub token shapes only; under Hermes a broken import must fail
+        if not config.standalone:
+            raise
         return SECRET.sub("[redacted]", text)
     return redact_approval_display(text, force=True, prose=prose)
 

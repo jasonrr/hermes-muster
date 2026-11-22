@@ -13,7 +13,7 @@ import time
 from . import config, core, decisions, events, gateway, ledger
 
 ID = re.compile(r"[0-9a-f]{16}")
-STALE = "Ended: the builder stopped waiting. Nothing was sent."
+STALE = gateway.STALE
 
 
 def fail(message, code=2):
@@ -45,13 +45,14 @@ def requests():
 
 
 def reviewed_run(card):
-    """Whether this done card is a run still awaiting its first review: its record exists and is not closed."""
+    """Whether this done card is a run: its record exists (listed until a build request or archiving covers it)."""
     for path in (config.data_dir() / "runs" / card / "run.json", config.data_dir() / "intake" / card / "launch.json"):
         if path.is_file():
             try:
-                return not json.loads(path.read_text()).get("closed")
+                json.loads(path.read_text())
             except (OSError, ValueError):
                 return False  # a corrupt record is skipped, not a reason to hide every other card
+            return True
     return False
 
 
@@ -81,7 +82,10 @@ def reviews(cards):
                                 for r in decisions.for_ledger(led, "question"))):
                 found.append({"kind": "design", "ledger": led, "proposal": f"{v}:{sha}", "card": card["id"]})
         elif key.startswith("review:"):
-            _, led, head = key.split(":", 2)
+            parts = key.split(":", 2)
+            if len(parts) < 3:
+                continue  # a malformed key is skipped, as for design:
+            _, led, head = parts
             if not any(r.get("ledger") == led and r.get("head") == head for r in builds):
                 found.append(with_run({"kind": "build", "ledger": led, "head": head, "card": card["id"]}))
         elif status == "done" and reviewed_run(card["id"]) and not any(r.get("ledger") == card["id"] for r in builds):
@@ -255,7 +259,7 @@ def main(args):
 
 
 def ledger_cmd(args):
-    """`muster ledger <hermes kanban args>`: the coordinator's `show`, `comment` and `complete`."""
+    """`muster ledger <hermes kanban args>`: any kanban verb (the coordinator mostly needs show, comment, complete)."""
     if not config.standalone:
         return fail("use hermes kanban")
     if os.environ.get("MUSTER_PANE"):

@@ -8,6 +8,7 @@ import argparse
 import contextlib
 import fcntl
 import json
+import re
 import secrets
 import time
 
@@ -36,6 +37,8 @@ def locked(board):
 
 
 def load(board, card):
+    if not re.fullmatch(r"t_[0-9a-f]{8}", card):  # an id names a file: never a path
+        raise core.CommandError(f"no such task: {card}")
     try:
         return json.loads((root(board) / f"{card}.json").read_text())
     except FileNotFoundError:
@@ -48,8 +51,16 @@ def save(board, rec):
 
 def cards(board):
     """Every card record, oldest first."""
-    files = sorted(root(board).glob("*.json"), key=lambda p: p.stat().st_mtime)
-    return sorted((json.loads(p.read_text()) for p in files), key=lambda rec: rec["created_at"])
+    found = []
+    for path in root(board).glob("*.json"):
+        try:
+            rec = json.loads(path.read_text())
+            rec["created_at"]
+        except (OSError, ValueError, KeyError, TypeError):
+            core.log("ledger", f"skipped unreadable card file {path.name}")  # one foreign file must not break every list
+            continue
+        found.append(rec)
+    return sorted(found, key=lambda rec: rec["created_at"])
 
 
 def last_event(board, card):

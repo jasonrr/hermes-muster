@@ -19,6 +19,7 @@ from .channels import shared
 from .channels.shared import log
 
 ALIVE_MAX = 30  # s without a hook heartbeat before a question or permission request is stale
+STALE = "Ended: the builder stopped waiting. Nothing was sent."
 BACKOFF_MAX = 60
 BOOT = secrets.token_hex(4)
 CHANNEL = None  # the configured channel module; set by setup()
@@ -197,7 +198,7 @@ async def handle(req):
     if kind in ("question", "permission") and time.time() - req.get("alive", req.get("created_at", 0)) > ALIVE_MAX:
         # the hook stopped writing `alive`: it died without SIGTERM (a SIGTERM closes the request itself)
         await asyncio.to_thread(decisions.transition, rid, ("open", "answered"), "stale",
-                                outcome="Ended: the builder stopped waiting. Nothing was sent.")
+                                outcome=STALE)
         CHANNEL.release(rid)
         return
     if req["status"] != "open" or rid in S.presenting:
